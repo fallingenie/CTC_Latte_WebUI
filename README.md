@@ -20,6 +20,8 @@ corepack pnpm install
 corepack pnpm dev
 ```
 
+읽기 전용 기후자료 게이트웨이가 다른 주소에서 실행 중이면 개발 서버를 시작하기 전에 `CTC_QUERY_GATEWAY_TARGET`을 지정합니다. 기본값은 `http://127.0.0.1:8765`입니다. 이 값은 Vite 개발·미리보기 프록시에만 사용되며 브라우저 배포 번들에는 포함되지 않습니다.
+
 프로덕션 빌드는 다음 명령으로 `dist/`에 생성됩니다.
 
 ```powershell
@@ -27,6 +29,12 @@ corepack pnpm build
 ```
 
 루트의 `index.html`과 `assets/`는 검증된 배포용 정적 번들입니다. 개발 시에는 `source/`의 읽을 수 있는 공개 소스를 사용합니다.
+
+공개 소스에서 루트 배포본을 동일하게 재현하는지는 다음 명령으로 검증합니다.
+
+```powershell
+corepack pnpm verify:reproducible
+```
 
 ## 자료 연결
 

@@ -297,9 +297,10 @@ Q
 stream
 ${content}endstream`);
   const xrefOffset = byteLength;
-  append("xref\n0 6\n0000000000 65535 f \n");
+  const newline = String.fromCharCode(10);
+  append(["xref", "0 6", "0000000000 65535 f ", ""].join(newline));
   for (let id = 1; id <= 5; id += 1) {
-    append(`${String(offsets[id]).padStart(10, "0")} 00000 n ` + "\n");
+    append(`${String(offsets[id]).padStart(10, "0")} 00000 n ${newline}`);
   }
   append(`trailer
 << /Size 6 /Root 1 0 R >>

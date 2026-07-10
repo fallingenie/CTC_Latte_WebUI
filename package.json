@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "vite --config source/vite.config.js",
     "build": "vite build --config source/vite.config.js",
-    "preview": "vite preview --config source/vite.config.js"
+    "preview": "vite preview --config source/vite.config.js",
+    "verify:reproducible": "pnpm build && node scripts/verify-reproducible-build.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.562.0",
