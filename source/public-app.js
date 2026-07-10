@@ -1,5 +1,5 @@
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
-import { useRef, useState, useEffect, useMemo, StrictMode } from "react";
+import { useRef, useState, useEffect, useLayoutEffect, useMemo, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { X, CalendarDays, Download, Table2, FileText, Image, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge } from "lucide-react";
 async function exportClimateSeries(response, format) {
@@ -1788,7 +1788,7 @@ function MapPanel({
   useEffect(() => {
     setZoom(initialZoom);
   }, [initialZoom]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = mapElementRef.current;
     if (!element) return;
     const updateSize = () => {
