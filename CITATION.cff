@@ -1,0 +1,189 @@
+cff-version: 1.2.0
+message: "If you use CTC Latte / Climate Time Capsule in research, teaching, or public materials, please cite it as below."
+title: "CTC Latte WebUI: Climate Time Capsule"
+version: "1.0.0 RC1"
+date-released: "2026-07-09"
+type: software
+authors:
+  - family-names: "Kim"
+    given-names: "Geonho"
+    alias: "fallingenie"
+repository-code: "https://github.com/fallingenie/CTC_Latte_WebUI"
+license: "GPL-3.0-only"
+keywords:
+  - climate
+  - education
+  - CMIP6
+  - curriculum
+  - "Data Literacy"
+abstract: |
+  수정/재배포 시에도 아래 논문과 데이터셋 DOI는 반드시 인용해주셔야 합니다.
+  Please be sure to cite the papers and dataset DOIs below even when modifying or redistributing it.
+
+  Required methodology citations:
+  - Brunner, L., Pendergrass, A. G., Lehner, F., Merrifield, A. L., Lorenz, R., & Knutti, R. (2020). Reduced global warming from CMIP6 projections when weighting models by performance and independence. Earth System Dynamics, 11, 995-1012. https://doi.org/10.5194/esd-11-995-2020
+  - Cannon, A. J., Sobie, S. R., & Murdock, T. Q. (2015). Bias correction of GCM precipitation by quantile mapping: How well do methods preserve changes in quantiles and extremes? Journal of Climate, 28(17), 6938-6959. https://doi.org/10.1175/JCLI-D-14-00754.1
+  - Shepard, D. (1968). A two-dimensional interpolation function for irregularly-spaced data. Proceedings of the 1968 23rd ACM National Conference, 517-524. https://doi.org/10.1145/800186.810616
+  - Gergel, D. R., Malevich, S. B., McCusker, K. E., Tenezakis, E., Delgado, M. T., Fish, M. A., & Kopp, R. E. (2024). Global Downscaled Projections for Climate Impacts Research (GDPCIR): Preserving quantile trends for modeling future climate impacts. Geoscientific Model Development, 17, 191-227. https://doi.org/10.5194/gmd-17-191-2024
+
+  Required CMIP6 / ScenarioMIP dataset DOI attribution:
+  - CanESM5: https://doi.org/10.22033/ESGF/CMIP6.1303, https://doi.org/10.22033/ESGF/CMIP6.1317
+  - EC-Earth3: https://doi.org/10.22033/ESGF/CMIP6.181, https://doi.org/10.22033/ESGF/CMIP6.251
+  - HadGEM3-GC31-LL: https://doi.org/10.22033/ESGF/CMIP6.419, https://doi.org/10.22033/ESGF/CMIP6.10845
+  - MIROC-ES2L: https://doi.org/10.22033/ESGF/CMIP6.902, https://doi.org/10.22033/ESGF/CMIP6.936
+  - MIROC6: https://doi.org/10.22033/ESGF/CMIP6.881, https://doi.org/10.22033/ESGF/CMIP6.898
+  - KIOST-ESM: https://doi.org/10.22033/ESGF/CMIP6.1922, https://doi.org/10.22033/ESGF/CMIP6.11241, https://doi.org/10.22033/ESGF/CMIP6.11249
+references:
+  - type: article
+    authors:
+      - family-names: "Brunner"
+        given-names: "L."
+      - family-names: "Pendergrass"
+        given-names: "A. G."
+      - family-names: "Lehner"
+        given-names: "F."
+      - family-names: "Merrifield"
+        given-names: "A. L."
+      - family-names: "Lorenz"
+        given-names: "R."
+      - family-names: "Knutti"
+        given-names: "R."
+    title: "Reduced global warming from CMIP6 projections when weighting models by performance and independence"
+    journal: "Earth System Dynamics"
+    volume: "11"
+    start: 995
+    end: 1012
+    year: 2020
+    doi: "10.5194/esd-11-995-2020"
+    url: "https://doi.org/10.5194/esd-11-995-2020"
+  - type: article
+    authors:
+      - family-names: "Cannon"
+        given-names: "A. J."
+      - family-names: "Sobie"
+        given-names: "S. R."
+      - family-names: "Murdock"
+        given-names: "T. Q."
+    title: "Bias Correction of GCM Precipitation by Quantile Mapping: How Well Do Methods Preserve Changes in Quantiles and Extremes?"
+    journal: "Journal of Climate"
+    volume: "28"
+    issue: "17"
+    start: 6938
+    end: 6959
+    year: 2015
+    doi: "10.1175/JCLI-D-14-00754.1"
+    url: "https://doi.org/10.1175/JCLI-D-14-00754.1"
+  - type: conference-paper
+    authors:
+      - family-names: "Shepard"
+        given-names: "D."
+    title: "A two-dimensional interpolation function for irregularly-spaced data"
+    collection-title: "Proceedings of the 1968 23rd ACM National Conference"
+    start: 517
+    end: 524
+    year: 1968
+    doi: "10.1145/800186.810616"
+    url: "https://doi.org/10.1145/800186.810616"
+  - type: article
+    authors:
+      - family-names: "Gergel"
+        given-names: "D. R."
+      - family-names: "Malevich"
+        given-names: "S. B."
+      - family-names: "McCusker"
+        given-names: "K. E."
+      - family-names: "Tenezakis"
+        given-names: "E."
+      - family-names: "Delgado"
+        given-names: "M. T."
+      - family-names: "Fish"
+        given-names: "M. A."
+      - family-names: "Kopp"
+        given-names: "R. E."
+    title: "Global Downscaled Projections for Climate Impacts Research (GDPCIR): Preserving quantile trends for modeling future climate impacts"
+    journal: "Geoscientific Model Development"
+    volume: "17"
+    issue: "1"
+    start: 191
+    end: 227
+    year: 2024
+    doi: "10.5194/gmd-17-191-2024"
+    url: "https://doi.org/10.5194/gmd-17-191-2024"
+  - type: dataset
+    authors:
+      - name: "Canadian Centre for Climate Modelling and Analysis"
+    title: "CanESM5 CMIP6 model output"
+    doi: "10.22033/ESGF/CMIP6.1303"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.1303"
+  - type: dataset
+    authors:
+      - name: "Canadian Centre for Climate Modelling and Analysis"
+    title: "CanESM5 ScenarioMIP model output"
+    doi: "10.22033/ESGF/CMIP6.1317"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.1317"
+  - type: dataset
+    authors:
+      - name: "EC-Earth Consortium"
+    title: "EC-Earth3 CMIP6 model output"
+    doi: "10.22033/ESGF/CMIP6.181"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.181"
+  - type: dataset
+    authors:
+      - name: "EC-Earth Consortium"
+    title: "EC-Earth3 ScenarioMIP model output"
+    doi: "10.22033/ESGF/CMIP6.251"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.251"
+  - type: dataset
+    authors:
+      - name: "Met Office Hadley Centre"
+    title: "HadGEM3-GC31-LL CMIP6 model output"
+    doi: "10.22033/ESGF/CMIP6.419"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.419"
+  - type: dataset
+    authors:
+      - name: "Met Office Hadley Centre"
+    title: "HadGEM3-GC31-LL ScenarioMIP model output"
+    doi: "10.22033/ESGF/CMIP6.10845"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.10845"
+  - type: dataset
+    authors:
+      - name: "MIROC"
+    title: "MIROC-ES2L CMIP6 model output"
+    doi: "10.22033/ESGF/CMIP6.902"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.902"
+  - type: dataset
+    authors:
+      - name: "MIROC"
+    title: "MIROC-ES2L ScenarioMIP model output"
+    doi: "10.22033/ESGF/CMIP6.936"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.936"
+  - type: dataset
+    authors:
+      - name: "MIROC"
+    title: "MIROC6 CMIP6 model output"
+    doi: "10.22033/ESGF/CMIP6.881"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.881"
+  - type: dataset
+    authors:
+      - name: "MIROC"
+    title: "MIROC6 ScenarioMIP model output"
+    doi: "10.22033/ESGF/CMIP6.898"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.898"
+  - type: dataset
+    authors:
+      - name: "Korea Institute of Ocean Science and Technology"
+    title: "KIOST-ESM CMIP6 model output"
+    doi: "10.22033/ESGF/CMIP6.1922"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.1922"
+  - type: dataset
+    authors:
+      - name: "Korea Institute of Ocean Science and Technology"
+    title: "KIOST-ESM ScenarioMIP model output"
+    doi: "10.22033/ESGF/CMIP6.11241"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.11241"
+  - type: dataset
+    authors:
+      - name: "Korea Institute of Ocean Science and Technology"
+    title: "KIOST-ESM SSP5-8.5 ScenarioMIP model output"
+    doi: "10.22033/ESGF/CMIP6.11249"
+    url: "https://doi.org/10.22033/ESGF/CMIP6.11249"

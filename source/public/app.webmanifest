@@ -1,0 +1,36 @@
+{
+  "name": "기후 타임캡슐 웹 앱",
+  "short_name": "기후 웹 앱",
+  "description": "학생, 교사, 일반 사용자가 미래 기후 자료를 지도와 카드로 확인하는 웹 앱",
+  "start_url": "./#/",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f8fb",
+  "theme_color": "#10213f",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "./favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "학생용 지도",
+      "short_name": "학생 지도",
+      "url": "./#/query"
+    },
+    {
+      "name": "교사용 수업",
+      "short_name": "교사용",
+      "url": "./#/teacher"
+    },
+    {
+      "name": "일반 요약",
+      "short_name": "일반 요약",
+      "url": "./#/public"
+    }
+  ]
+}

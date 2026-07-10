@@ -1,0 +1,21 @@
+{
+  "name": "ctc-latte-webui-public",
+  "private": false,
+  "version": "1.0.0-rc1",
+  "license": "GPL-3.0-only",
+  "packageManager": "pnpm@10.33.2",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config source/vite.config.js",
+    "build": "vite build --config source/vite.config.js",
+    "preview": "vite preview --config source/vite.config.js"
+  },
+  "dependencies": {
+    "lucide-react": "^0.562.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "vite": "^7.3.0"
+  }
+}
