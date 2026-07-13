@@ -4,11 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
-    <meta name="theme-color" content="#10213f" />
+    <meta name="theme-color" content="#0e3f34" />
     <meta name="description" content="학생, 교사, 일반 사용자가 미래 기후 자료를 지도와 카드로 확인하는 웹 앱" />
+    <script>
+      try {
+        const mode = localStorage.getItem("ctc:theme-mode") || "system";
+        const resolved = mode === "system" ? matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light" : mode;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.dataset.themeMode = mode;
+        document.documentElement.style.colorScheme = resolved;
+      } catch {}
+    </script>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="manifest" href="./app.webmanifest" />
-    <link rel="stylesheet" href="./public-app.css" />
+    <link rel="stylesheet" href="./public-app.css?v=20260713-roles3" />
     <title>기후 타임캡슐 웹 앱</title>
   </head>
   <body>

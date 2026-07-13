@@ -1,4 +1,4 @@
-const CACHE_NAME = "climate-web-shell-v8";
+const CACHE_NAME = "climate-web-shell-v11";
 const SHELL_INDEX = new URL("index.html", self.location.href).toString();
 const SHELL_ASSETS = [
   "./",

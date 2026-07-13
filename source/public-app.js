@@ -1,26 +1,44 @@
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 import { useRef, useState, useEffect, useLayoutEffect, useMemo, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { X, CalendarDays, Download, Table2, FileText, Image, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge } from "lucide-react";
+import { X, CalendarDays, Download, Table2, FileText, Image, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge, Mountain, Waves, ArrowRight, Sun, Moon, Monitor, BookOpen, BookmarkPlus, ClipboardCopy, Navigation, Plus, Trash2, NotebookPen, Target, Link, RefreshCw } from "lucide-react";
+import { requestSaveTarget, saveBlobToTarget } from "./browser-download.js";
+import {
+  buildPlainLanguageSummary,
+  buildStudentNotebookText,
+  buildTeacherActivityText,
+  calendarPeriodEnd,
+  compareMetricSnapshots,
+  createMetricSnapshot,
+  decodeLessonState,
+  encodeLessonState,
+  isCompleteDateValue,
+  mapScaleForZoom,
+  mapZoomAfterWheel,
+  normalizeMetadataOptions,
+  parseHashLocation,
+  resolveExportPercentiles,
+  sanitizeNote,
+  seriesPointX
+} from "./workbench-logic.js";
 async function exportClimateSeries(response, format) {
   const stem = climateExportFileStem(response);
+  const specifications = {
+    csv: { filename: `${stem}.csv`, mimeType: "text/csv", extension: ".csv", description: "기후 시계열 CSV" },
+    png: { filename: `${stem}.png`, mimeType: "image/png", extension: ".png", description: "기후 시계열 이미지" },
+    pdf: { filename: `${stem}.pdf`, mimeType: "application/pdf", extension: ".pdf", description: "기후 시계열 보고서" }
+  };
+  const specification = specifications[format] ?? specifications.pdf;
+  const target = await requestSaveTarget(specification);
+  if (target.kind === "cancelled") return saveBlobToTarget(target, new Blob());
+  let blob;
   if (format === "csv") {
-    const blob2 = new Blob([buildClimateCsv(response)], { type: "text/csv;charset=utf-8" });
-    const filename2 = `${stem}.csv`;
-    downloadBlob$1(filename2, blob2);
-    return filename2;
+    blob = new Blob([buildClimateCsv(response)], { type: "text/csv;charset=utf-8" });
+  } else {
+    const canvas = await buildClimateReportCanvas(response);
+    blob = format === "png" ? await canvasBlob(canvas, "image/png") : await canvasPdfBlob(canvas);
   }
-  const canvas = await buildClimateReportCanvas(response);
-  if (format === "png") {
-    const blob2 = await canvasBlob(canvas, "image/png");
-    const filename2 = `${stem}.png`;
-    downloadBlob$1(filename2, blob2);
-    return filename2;
-  }
-  const blob = await canvasPdfBlob(canvas);
-  const filename = `${stem}.pdf`;
-  downloadBlob$1(filename, blob);
-  return filename;
+  return saveBlobToTarget(target, blob);
 }
 function buildClimateCsv(response) {
   const header = [
@@ -32,6 +50,7 @@ function buildClimateCsv(response) {
     "metric_key",
     "metric_label",
     "unit",
+    "calculation_basis",
     "data_mode",
     "corrected_p10",
     "corrected_p50",
@@ -46,6 +65,7 @@ function buildClimateCsv(response) {
   const rows = [header];
   response.dates.forEach((date, dateIndex) => {
     response.metrics.forEach((metric) => {
+      const exportSeries = resolveExportPercentiles(metric, response.dataMode);
       rows.push([
         date,
         response.latitude.toFixed(6),
@@ -55,13 +75,14 @@ function buildClimateCsv(response) {
         metric.key,
         metric.label,
         metric.unit,
+        metric.key === "apparentTemperature" ? apparentTemperatureBasis(date).key : "",
         response.dataMode,
-        csvNumber(metric.corrected.p10[dateIndex]),
-        csvNumber(metric.corrected.p50[dateIndex]),
-        csvNumber(metric.corrected.p90[dateIndex]),
-        csvNumber(metric.raw?.p10[dateIndex]),
-        csvNumber(metric.raw?.p50[dateIndex]),
-        csvNumber(metric.raw?.p90[dateIndex]),
+        csvNumber(exportSeries.corrected?.p10[dateIndex]),
+        csvNumber(exportSeries.corrected?.p50[dateIndex]),
+        csvNumber(exportSeries.corrected?.p90[dateIndex]),
+        csvNumber(exportSeries.raw?.p10[dateIndex]),
+        csvNumber(exportSeries.raw?.p50[dateIndex]),
+        csvNumber(exportSeries.raw?.p90[dateIndex]),
         metric.coverage[dateIndex] ? "available" : "missing",
         String(metric.modelCounts[dateIndex] ?? 0),
         response.nearestDistanceKm === void 0 ? "" : response.nearestDistanceKm.toFixed(3)
@@ -84,7 +105,7 @@ async function buildClimateReportCanvas(response) {
   const width = 1600;
   const chartHeight = 230;
   const headerHeight = 390;
-  const footerHeight = 170;
+  const footerHeight = 220;
   const height = headerHeight + response.metrics.length * chartHeight + footerHeight;
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -154,7 +175,7 @@ function drawMetricChart(context, response, metric, left, top, width, height) {
   const values = valueSets.flatMap((items) => indexes.map((index) => items[index])).filter(isFiniteNumber$1);
   const [minimum, maximum] = paddedRange(values);
   const point = (indexPosition, value) => ({
-    x: plotLeft + (indexes.length <= 1 ? 0 : indexPosition / (indexes.length - 1)) * plotWidth,
+    x: seriesPointX(indexPosition, indexes.length, plotLeft, plotWidth),
     y: plotTop + plotHeight - (value - minimum) / (maximum - minimum) * plotHeight
   });
   context.strokeStyle = "#dde6f0";
@@ -210,6 +231,7 @@ function drawCanvasBand(context, indexes, lower, upper, point, fill) {
 function drawCanvasLine(context, indexes, values, point, stroke, width) {
   let hasPoint = false;
   let previousIndex;
+  const points = [];
   context.beginPath();
   indexes.forEach((index, position) => {
     const value = values[index];
@@ -221,6 +243,7 @@ function drawCanvasLine(context, indexes, values, point, stroke, width) {
     const uninterrupted = previousIndex !== void 0 && values.slice(previousIndex + 1, index + 1).every(isFiniteNumber$1);
     if (!uninterrupted) context.moveTo(next.x, next.y);
     else context.lineTo(next.x, next.y);
+    points.push(next);
     previousIndex = index;
     hasPoint = true;
   });
@@ -228,6 +251,12 @@ function drawCanvasLine(context, indexes, values, point, stroke, width) {
   context.strokeStyle = stroke;
   context.lineWidth = width;
   context.stroke();
+  if (points.length === 1) {
+    context.beginPath();
+    context.arc(points[0].x, points[0].y, Math.max(6, width * 1.75), 0, Math.PI * 2);
+    context.fillStyle = stroke;
+    context.fill();
+  }
 }
 function sampledIndexes(length, maximum) {
   if (length <= maximum) return Array.from({ length }, (_, index) => index);
@@ -316,18 +345,6 @@ ${xrefOffset}
   });
   return new Blob([output.buffer], { type: "application/pdf" });
 }
-function downloadBlob$1(filename, blob) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  window.setTimeout(() => {
-    link.remove();
-    URL.revokeObjectURL(url);
-  }, 2e3);
-}
 const configPath = "./runtime-config.json";
 const defaultReadPath = "/api/climate/query";
 const defaultTimeoutMs = 10 * 60 * 1e3;
@@ -391,8 +408,7 @@ const metricOptions = [
   { key: "tasmin", label: "최저기온", icon: ThermometerSnowflake },
   { key: "precipitation", label: "강수량", icon: CloudRain },
   { key: "wind", label: "풍속", icon: Wind },
-  { key: "heatIndex", label: "열지수", icon: ThermometerSun },
-  { key: "feelsLike", label: "체감기온", icon: ThermometerSun }
+  { key: "apparentTemperature", label: "월별 체감 지표", icon: CloudSun }
 ];
 const formatOptions = [
   { key: "csv", label: "CSV", detail: "전체 일별 수치", icon: Table2 },
@@ -402,6 +418,7 @@ const formatOptions = [
 function ClimateExportDialog({ context, onClose }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
+  const openerRef = useRef(null);
   const [metadata, setMetadata] = useState();
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
@@ -414,6 +431,7 @@ function ClimateExportDialog({ context, onClose }) {
   const [previewMetric, setPreviewMetric] = useState("tasmax");
   useEffect(() => {
     if (!context) return;
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     let active = true;
     setStartDate(context.date);
     setEndDate(context.date);
@@ -436,6 +454,8 @@ function ClimateExportDialog({ context, onClose }) {
     window.setTimeout(() => closeButtonRef.current?.focus(), 40);
     return () => {
       active = false;
+      openerRef.current?.focus();
+      openerRef.current = null;
     };
   }, [context]);
   useEffect(() => {
@@ -481,11 +501,11 @@ function ClimateExportDialog({ context, onClose }) {
       nextStart = formatDate(new Date(Date.UTC(selected.getUTCFullYear(), selected.getUTCMonth(), 1)));
       nextEnd = formatDate(new Date(Date.UTC(selected.getUTCFullYear(), selected.getUTCMonth() + 1, 0)));
     } else if (kind === "year") {
-      nextEnd = formatDate(addDays(selected, 364));
+      nextEnd = calendarPeriodEnd(context.date, 1);
     } else if (kind === "fiveYears") {
-      nextEnd = formatDate(addDays(selected, 365 * 5 - 1));
+      nextEnd = calendarPeriodEnd(context.date, 5);
     } else if (kind === "tenYears") {
-      nextEnd = formatDate(addDays(selected, 365 * 10 - 1));
+      nextEnd = calendarPeriodEnd(context.date, 10);
     } else if (kind === "full") {
       nextStart = bounds.dateStart;
       nextEnd = bounds.dateEnd;
@@ -513,6 +533,7 @@ function ClimateExportDialog({ context, onClose }) {
     setStatus("loading");
     setMessage(`${dayCount.toLocaleString("ko-KR")}일의 실제 기후자료를 불러오고 있습니다. 새로고침하지 마세요.`);
     try {
+      const requestMetrics = expandMetricKeys(selectedMetrics);
       const payload = await fetchPublicClimateSeries({
         latitude: context.latitude,
         longitude: context.longitude,
@@ -520,17 +541,18 @@ function ClimateExportDialog({ context, onClose }) {
         endDate,
         scenario: context.scenario,
         model: context.model,
-        metrics: selectedMetrics,
+        metrics: requestMetrics,
         includeRaw
       });
-      if (!isClimateSeriesResponse(payload, { startDate, endDate, selectedMetrics })) {
+      if (!isClimateSeriesResponse(payload, { startDate, endDate, selectedMetrics: requestMetrics })) {
         throw new Error("선택 조건과 기간 응답이 일치하지 않습니다.");
       }
-      setResponse(payload);
-      setPreviewMetric(payload.metrics[0]?.key ?? selectedMetrics[0]);
+      const displayPayload = collapseApparentTemperatureSeries(payload, selectedMetrics);
+      setResponse(displayPayload);
+      setPreviewMetric(displayPayload.metrics[0]?.key ?? selectedMetrics[0]);
       setStatus("ready");
       setMessage(
-        payload.coverage === "available" ? `${payload.dates.length.toLocaleString("ko-KR")}일 자료를 확인했습니다.` : payload.fallbackReason ?? "일부 날짜의 자료 제공 범위를 확인하세요."
+        displayPayload.coverage === "available" ? `${displayPayload.dates.length.toLocaleString("ko-KR")}일 자료를 확인했습니다.` : displayPayload.fallbackReason ?? "일부 날짜의 자료 제공 범위를 확인하세요."
       );
     } catch (error) {
       setResponse(void 0);
@@ -543,9 +565,15 @@ function ClimateExportDialog({ context, onClose }) {
     setStatus("exporting");
     setMessage(`${format.toUpperCase()} 파일을 만들고 있습니다.`);
     try {
-      const filename = await exportClimateSeries(response, format);
+      const result = await exportClimateSeries(response, format);
       setStatus("ready");
-      setMessage(`${filename} 파일을 저장했습니다.`);
+      if (result.outcome === "written") {
+        setMessage(`${result.filename} 파일을 저장했습니다.`);
+      } else if (result.outcome === "cancelled") {
+        setMessage("파일 저장을 취소했습니다.");
+      } else {
+        setMessage(`${result.filename} 다운로드를 요청했습니다. 브라우저의 다운로드 목록에서 파일을 확인하세요.`);
+      }
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof Error ? error.message : "파일을 만들지 못했습니다.");
@@ -777,7 +805,7 @@ function InteractiveSeriesChart({
           metric.label,
           " 기간 변화"
         ] }),
-        /* @__PURE__ */ jsx("span", { children: rawGrid ? "기후모델 원자료 p50과 p10~p90 범위" : "보정 후 p50과 p10~p90 범위" })
+        /* @__PURE__ */ jsx("span", { children: metric.key === "apparentTemperature" ? "월별 기준: 5~9월 열지수, 10~4월 체감기온" : rawGrid ? "기후모델 원자료 p50과 p10~p90 범위" : "보정 후 p50과 p10~p90 범위" })
       ] }),
       /* @__PURE__ */ jsxs("div", { className: "chart-legend", children: [
         /* @__PURE__ */ jsx("span", { className: "corrected", children: rawGrid ? "기후모델 원자료" : "보정 후" }),
@@ -802,6 +830,8 @@ function InteractiveSeriesChart({
           chart.rawBand ? /* @__PURE__ */ jsx("path", { className: "chart-band raw", d: chart.rawBand }) : null,
           chart.correctedLine ? /* @__PURE__ */ jsx("path", { className: "chart-line corrected", d: chart.correctedLine }) : null,
           chart.rawLine ? /* @__PURE__ */ jsx("path", { className: "chart-line raw", d: chart.rawLine }) : null,
+          chart.correctedPoint ? /* @__PURE__ */ jsx("circle", { className: "chart-point corrected", cx: chart.correctedPoint.x, cy: chart.correctedPoint.y, r: "5" }) : null,
+          chart.rawPoint ? /* @__PURE__ */ jsx("circle", { className: "chart-point raw", cx: chart.rawPoint.x, cy: chart.rawPoint.y, r: "4" }) : null,
           /* @__PURE__ */ jsx("text", { x: "4", y: "34", children: chart.maximum.toFixed(1) }),
           /* @__PURE__ */ jsx("text", { x: "4", y: "238", children: chart.minimum.toFixed(1) }),
           /* @__PURE__ */ jsx("text", { x: "48", y: "272", children: dates[0] }),
@@ -838,8 +868,8 @@ function buildChartGeometry(dates, metric) {
   const padding = Math.max((maximum - minimum) * 0.08, 0.5);
   minimum -= padding;
   maximum += padding;
-  const xForPosition = (position) => 48 + (indexes.length <= 1 ? 0 : position / (indexes.length - 1)) * 692;
-  const xForDate = (dateIndex) => 48 + (dates.length <= 1 ? 0 : dateIndex / (dates.length - 1)) * 692;
+  const xForPosition = (position) => seriesPointX(position, indexes.length, 48, 692);
+  const xForDate = (dateIndex) => seriesPointX(dateIndex, dates.length, 48, 692);
   const yForValue = (value) => 28 + 204 - (value - minimum) / (maximum - minimum) * 204;
   const line = (items) => {
     let path = "";
@@ -887,8 +917,10 @@ function buildChartGeometry(dates, metric) {
     minimum,
     maximum,
     xForDate,
+    correctedPoint: dates.length === 1 && isFiniteNumber(metric.corrected.p50[0]) ? { x: xForDate(0), y: yForValue(metric.corrected.p50[0]) } : void 0,
     correctedLine: line(metric.corrected.p50),
     correctedBand: band(metric.corrected.p10, metric.corrected.p90),
+    rawPoint: dates.length === 1 && isFiniteNumber(metric.raw?.p50[0]) ? { x: xForDate(0), y: yForValue(metric.raw.p50[0]) } : void 0,
     rawLine: metric.raw ? line(metric.raw.p50) : "",
     rawBand: metric.raw ? band(metric.raw.p10, metric.raw.p90) : ""
   };
@@ -897,6 +929,47 @@ function isClimateSeriesResponse(value, expected) {
   if (!value || typeof value !== "object") return false;
   const response = value;
   return response.publicSafe === true && ["bias-corrected", "raw-model-grid"].includes(response.dataMode) && response.dateStart === expected.startDate && response.dateEnd === expected.endDate && Array.isArray(response.dates) && Array.isArray(response.metrics) && expected.selectedMetrics.every((key) => response.metrics.some((metric) => metric.key === key));
+}
+function expandMetricKeys(metrics) {
+  return [...new Set(metrics.flatMap((key) => key === "apparentTemperature" ? ["heatIndex", "feelsLike"] : [key]))];
+}
+function apparentTemperatureBasis(date) {
+  const month = Number(String(date).slice(5, 7));
+  const usesHeatIndex = Number.isInteger(month) && month >= 5 && month <= 9;
+  return usesHeatIndex ? { key: "heat_index", metricKey: "heatIndex", label: "열지수" } : { key: "feels_like", metricKey: "feelsLike", label: "체감기온" };
+}
+function collapseApparentTemperatureSeries(response, selectedMetrics) {
+  if (!selectedMetrics.includes("apparentTemperature")) return response;
+  const heatIndex = response.metrics.find((metric) => metric.key === "heatIndex");
+  const feelsLike = response.metrics.find((metric) => metric.key === "feelsLike");
+  const pickMetric = (date) => apparentTemperatureBasis(date).metricKey === "heatIndex" ? heatIndex : feelsLike;
+  const pickValues = (group, band) => response.dates.map((date, index) => pickMetric(date)?.[group]?.[band]?.[index]);
+  const coverage = response.dates.map((date, index) => Boolean(pickMetric(date)?.coverage?.[index]));
+  const modelCounts = response.dates.map((date, index) => pickMetric(date)?.modelCounts?.[index] ?? 0);
+  const hasRaw = Boolean(heatIndex?.raw || feelsLike?.raw);
+  const apparentMetric = {
+    key: "apparentTemperature",
+    label: "월별 체감 지표",
+    unit: heatIndex?.unit ?? feelsLike?.unit ?? "도",
+    corrected: {
+      p10: pickValues("corrected", "p10"),
+      p50: pickValues("corrected", "p50"),
+      p90: pickValues("corrected", "p90")
+    },
+    ...hasRaw ? { raw: {
+      p10: pickValues("raw", "p10"),
+      p50: pickValues("raw", "p50"),
+      p90: pickValues("raw", "p90")
+    } } : {},
+    coverage,
+    modelCounts,
+    availableCount: coverage.filter(Boolean).length
+  };
+  const metrics = response.metrics.filter((metric) => !["heatIndex", "feelsLike"].includes(metric.key));
+  const comfortIndexes = ["heatIndex", "feelsLike"].map((key) => response.metrics.findIndex((metric) => metric.key === key)).filter((index) => index >= 0);
+  const insertAt = comfortIndexes.length > 0 ? Math.min(Math.min(...comfortIndexes), metrics.length) : metrics.length;
+  metrics.splice(insertAt, 0, apparentMetric);
+  return { ...response, metrics };
 }
 function sampleIndexes(length, maximum) {
   if (length <= maximum) return Array.from({ length }, (_, index) => index);
@@ -1038,13 +1111,7 @@ const queryPresets = [
     raw: false,
     mapTone: "heat",
     summary: "한여름 수업 예시입니다. 최고기온과 체감 위험을 먼저 봅니다.",
-    dataNote: "저장 자료 범위 안의 예시 좌표입니다. 수업용 화면에서는 출처 고지가 함께 붙습니다.",
-    metrics: [
-      { label: "최고기온", value: "34.2도", caption: "보정 중간값", tone: "hot" },
-      { label: "최저기온", value: "25.1도", caption: "보정 중간값", tone: "green" },
-      { label: "강수량", value: "7.8", caption: "밀리미터/일", tone: "blue" },
-      { label: "체감 위험", value: "높음", caption: "야외활동 주의", tone: "warn" }
-    ]
+    dataNote: "저장 자료 범위 안의 예시 좌표입니다. 실제 자료 응답이 확인된 경우에만 수치를 표시합니다."
   },
   {
     id: "nearSchool",
@@ -1059,13 +1126,7 @@ const queryPresets = [
     raw: false,
     mapTone: "school",
     summary: "학교 주변 비교 예시입니다. 가까운 관측소와 일교차를 함께 확인합니다.",
-    dataNote: "학교 주변 활동지에 바로 넣을 수 있도록 좌표와 날짜가 예시로 채워집니다.",
-    metrics: [
-      { label: "최고기온", value: "29.6도", caption: "보정 중간값", tone: "hot" },
-      { label: "최저기온", value: "20.8도", caption: "아침 비교", tone: "green" },
-      { label: "가까운 관측소", value: "1.8킬로미터", caption: "거리 보정 가능", tone: "green" },
-      { label: "자료 신뢰", value: "안정", caption: "범위 안 예시", tone: "neutral" }
-    ]
+    dataNote: "학교 주변 활동지에 사용할 조회 조건만 채웁니다. 수치는 실제 자료 응답에서 가져옵니다."
   },
   {
     id: "rainChange",
@@ -1080,13 +1141,7 @@ const queryPresets = [
     raw: false,
     mapTone: "rain",
     summary: "장마철 강수 변화 예시입니다. 강수량과 신뢰 상태를 먼저 봅니다.",
-    dataNote: "강수 수업 예시로, 같은 날짜의 기온 지표도 함께 비교할 수 있습니다.",
-    metrics: [
-      { label: "강수량", value: "18.4", caption: "밀리미터/일", tone: "blue" },
-      { label: "최고기온", value: "30.1도", caption: "보정 중간값", tone: "hot" },
-      { label: "최저기온", value: "24.6도", caption: "보정 중간값", tone: "green" },
-      { label: "자료 신뢰", value: "5/6", caption: "1개 모델 주의", tone: "warn" }
-    ]
+    dataNote: "강수 수업용 조회 조건입니다. 같은 날짜의 기온 지표도 실제 자료에서 함께 확인합니다."
   },
   {
     id: "overseas",
@@ -1101,13 +1156,7 @@ const queryPresets = [
     raw: true,
     mapTone: "global",
     summary: "국내 저장 범위 밖 예시입니다. 원본 모델 기준의 대체 조회 상태를 확인합니다.",
-    dataNote: "범위 밖 좌표라서 보정값 대신 대체 조회 안내와 신뢰 상태를 먼저 보여줍니다.",
-    metrics: [
-      { label: "최고기온", value: "11.8도", caption: "대체 조회", tone: "neutral" },
-      { label: "최저기온", value: "3.9도", caption: "대체 조회", tone: "neutral" },
-      { label: "강수량", value: "2.4", caption: "밀리미터/일", tone: "blue" },
-      { label: "자료 신뢰", value: "주의", caption: "범위 밖 예시", tone: "warn" }
-    ]
+    dataNote: "범위 밖 좌표는 raw CMIP6 응답이 확인된 경우에만 원자료 값을 표시합니다."
   },
   {
     id: "custom",
@@ -1122,17 +1171,11 @@ const queryPresets = [
     raw: false,
     mapTone: "custom",
     summary: "지도에서 직접 고른 위치입니다. 핀을 바꾸면 좌표가 즉시 갱신됩니다.",
-    dataNote: "클릭한 좌표를 기준으로 예시 조회 조건을 구성합니다.",
-    metrics: [
-      { label: "최고기온", value: "계산 예정", caption: "좌표 선택됨", tone: "neutral" },
-      { label: "최저기온", value: "계산 예정", caption: "좌표 선택됨", tone: "neutral" },
-      { label: "강수량", value: "계산 예정", caption: "좌표 선택됨", tone: "neutral" },
-      { label: "자료 신뢰", value: "확인 중", caption: "범위 확인 필요", tone: "warn" }
-    ]
+    dataNote: "클릭한 좌표를 기준으로 실제 자료 조회 조건을 구성합니다."
   }
 ];
 function routeFromHash() {
-  const raw = window.location.hash.replace(/^#/, "") || "/";
+  const raw = parseHashLocation(window.location.hash).path;
   return publicNavItems.some((item) => item.route === raw) ? raw : "/query";
 }
 function setRoute(route) {
@@ -1155,8 +1198,10 @@ function useHashRoute() {
   const [route, setCurrentRoute] = useState(() => routeFromHash());
   useEffect(() => {
     const onHashChange = () => {
+      const hashLocation = parseHashLocation(window.location.hash);
       const nextRoute = routeFromHash();
-      const canonicalHash = `#${nextRoute}`;
+      const query = hashLocation.params.toString();
+      const canonicalHash = `#${nextRoute}${query ? `?${query}` : ""}`;
       if (window.location.hash !== canonicalHash) {
         window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${canonicalHash}`);
       }
@@ -1170,8 +1215,9 @@ function useHashRoute() {
 }
 function App() {
   const route = useHashRoute();
+  const [themeMode, setThemeMode] = useThemeMode();
   const page = useMemo(() => renderRoute(route), [route]);
-  return /* @__PURE__ */ jsxs("div", { className: "app", children: [
+  return /* @__PURE__ */ jsxs("div", { className: `app route-${route.slice(1)}`, children: [
     /* @__PURE__ */ jsx("header", { className: "site-header", children: /* @__PURE__ */ jsxs("div", { className: "site-header-inner", children: [
       /* @__PURE__ */ jsxs("button", { className: "brand", onClick: () => setRoute("/query"), type: "button", "aria-label": "기후 타임캡슐 학생 탐색으로 이동", children: [
         /* @__PURE__ */ jsx("span", { className: "brand-mark", children: /* @__PURE__ */ jsx(CloudSun, { size: 23 }) }),
@@ -1184,9 +1230,12 @@ function App() {
         item.icon,
         /* @__PURE__ */ jsx("span", { children: item.label })
       ] }, item.route)) }),
-      /* @__PURE__ */ jsxs("button", { className: "header-example-button", onClick: openExamplePicker, type: "button", children: [
-        /* @__PURE__ */ jsx(Search, { size: 17 }),
-        "예시 보기"
+      /* @__PURE__ */ jsxs("div", { className: "header-actions", children: [
+        /* @__PURE__ */ jsx(ThemeControl, { mode: themeMode, onChange: setThemeMode }),
+        /* @__PURE__ */ jsxs("button", { className: "header-example-button", onClick: openExamplePicker, type: "button", children: [
+          /* @__PURE__ */ jsx(Search, { size: 17 }),
+          "예시 보기"
+        ] })
       ] })
     ] }) }),
     /* @__PURE__ */ jsxs("main", { className: "main", children: [
@@ -1194,6 +1243,49 @@ function App() {
       page
     ] })
   ] });
+}
+function useThemeMode() {
+  const [mode, setMode] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem("ctc:theme-mode");
+      return ["system", "light", "dark"].includes(saved) ? saved : "system";
+    } catch {
+      return "system";
+    }
+  });
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      const resolved = mode === "system" ? media.matches ? "dark" : "light" : mode;
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.dataset.themeMode = mode;
+      document.documentElement.style.colorScheme = resolved;
+    };
+    try {
+      window.localStorage.setItem("ctc:theme-mode", mode);
+    } catch {
+    }
+    applyTheme();
+    media.addEventListener?.("change", applyTheme);
+    return () => media.removeEventListener?.("change", applyTheme);
+  }, [mode]);
+  return [mode, setMode];
+}
+function ThemeControl({ mode, onChange }) {
+  const options = [
+    { key: "system", label: "시스템 설정 따르기", icon: Monitor },
+    { key: "light", label: "밝게 보기", icon: Sun },
+    { key: "dark", label: "어둡게 보기", icon: Moon }
+  ];
+  return /* @__PURE__ */ jsx("div", { className: "theme-control", role: "group", "aria-label": "화면 테마", children: options.map(({ key, label, icon: Icon }) => /* @__PURE__ */ jsx("button", {
+    "aria-label": label,
+    "aria-pressed": mode === key,
+    className: mode === key ? "active" : "",
+    onClick: () => onChange(key),
+    title: label,
+    type: "button",
+    children: /* @__PURE__ */ jsx(Icon, { size: 16 })
+  }, key)) });
 }
 function TopBar({ route }) {
   const meta = routeTitles[route];
@@ -1215,28 +1307,65 @@ function renderRoute(route) {
 }
 function QueryPage({ audience }) {
   const initialPreset = queryPresets[0];
-  const [selectedPresetId, setSelectedPresetId] = useState(initialPreset.id);
+  const sharedLessonState = useMemo(() => {
+    const encoded = parseHashLocation(window.location.hash).params.get("lesson");
+    return encoded ? decodeLessonState(encoded) : undefined;
+  }, []);
+  const [selectedPresetId, setSelectedPresetId] = useState(sharedLessonState ? "custom" : initialPreset.id);
   const activePreset = queryPresets.find((preset) => preset.id === selectedPresetId) ?? queryPresets[0];
   const presetGridRef = useRef(null);
-  const [model, setModel] = useState(initialPreset.model);
+  const [model, setModel] = useState(sharedLessonState?.model ?? initialPreset.model);
   const [raw, setRaw] = useState(initialPreset.raw);
-  const [date, setDate] = useState(initialPreset.date);
-  const [scenario, setScenario] = useState(initialPreset.scenario);
+  const [date, setDate] = useState(sharedLessonState?.date ?? initialPreset.date);
+  const [scenario, setScenario] = useState(sharedLessonState?.scenario ?? initialPreset.scenario);
   const [coordinates, setCoordinates] = useState({
-    latitude: initialPreset.latitude,
-    longitude: initialPreset.longitude
+    latitude: sharedLessonState?.latitude ?? initialPreset.latitude,
+    longitude: sharedLessonState?.longitude ?? initialPreset.longitude
   });
-  const [latitudeInput, setLatitudeInput] = useState(initialPreset.latitude.toFixed(4));
-  const [longitudeInput, setLongitudeInput] = useState(initialPreset.longitude.toFixed(4));
+  const [latitudeInput, setLatitudeInput] = useState((sharedLessonState?.latitude ?? initialPreset.latitude).toFixed(4));
+  const [longitudeInput, setLongitudeInput] = useState((sharedLessonState?.longitude ?? initialPreset.longitude).toFixed(4));
   const [exportContext, setExportContext] = useState(null);
-  const [queryMessage, setQueryMessage] = useState("예시를 고르거나 지도를 눌러 좌표를 지정하세요.");
+  const [metadata, setMetadata] = useState();
+  const [learningFocus, setLearningFocus] = useState(sharedLessonState?.focus ?? "heat");
+  const [studentNote, setStudentNote] = useState("");
+  const [comparisonBaseline, setComparisonBaseline] = useState();
+  const [queryMessage, setQueryMessage] = useState(sharedLessonState ? sharedLessonMessage(sharedLessonState) : "예시를 고르거나 지도를 눌러 좌표를 지정하세요.");
+  const availableModels = metadata?.models?.length ? metadata.models : cmip6ModelOptions;
   const remoteState = useRemoteMetricResponse({ coordinate: coordinates, date, scenario, model });
   const usesRawModelGrid = remoteState.response?.dataMode === "raw-model-grid";
   const metricsForSelection = useMemo(
-    () => deriveClimateMetrics({ raw, remoteState }),
-    [raw, remoteState]
+    () => deriveClimateMetrics({ date, raw, remoteState }),
+    [date, raw, remoteState]
   );
   const hasExportableMetrics = metricsForSelection.some((metric) => metric.available !== false && Number.isFinite(metric.numericValue));
+  const currentSnapshot = useMemo(() => createMetricSnapshot(metricsForSelection, {
+    date,
+    latitude: coordinates.latitude,
+    longitude: coordinates.longitude,
+    scenario,
+    model,
+    label: activePreset.label.replace(/^[A-D]\s+/u, "")
+  }), [metricsForSelection, date, coordinates.latitude, coordinates.longitude, scenario, model, activePreset.label]);
+  const comparisonRows = useMemo(
+    () => compareMetricSnapshots(comparisonBaseline, currentSnapshot),
+    [comparisonBaseline, currentSnapshot]
+  );
+  useEffect(() => {
+    let active = true;
+    fetchPublicClimateMetadata().then((nextMetadata) => {
+      if (!active || !nextMetadata.publicSafe || !nextMetadata.ready) return;
+      setMetadata(nextMetadata);
+      if (Array.isArray(nextMetadata.models) && nextMetadata.models.length > 0) {
+        setModel((currentModel) => nextMetadata.models.includes(currentModel) ? currentModel : nextMetadata.models[0]);
+      }
+      if (nextMetadata.dateStart && nextMetadata.dateEnd) {
+        setDate((currentDate) => clipPeriod(currentDate, currentDate, nextMetadata.dateStart, nextMetadata.dateEnd).start);
+      }
+    }).catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
   useEffect(() => {
     if (remoteState.status !== "loading") return;
     const preventRefresh = (event) => {
@@ -1270,6 +1399,22 @@ function QueryPage({ audience }) {
         window.sessionStorage.removeItem("ctc:pending-coordinate");
       }
     };
+    const applySharedLesson = () => {
+      const encodedLesson = parseHashLocation(window.location.hash).params.get("lesson");
+      if (!encodedLesson) return;
+      const shared = decodeLessonState(encodedLesson);
+      if (!shared) {
+        setQueryMessage("공유된 수업 조건을 읽지 못했습니다. 교사에게 새 링크를 요청하거나 직접 조건을 선택하세요.");
+        return;
+      }
+      setSelectedPresetId("custom");
+      setDate(shared.date);
+      setScenario(shared.scenario);
+      setModel(shared.model);
+      setLearningFocus(shared.focus);
+      setCoordinates({ latitude: shared.latitude, longitude: shared.longitude });
+      setQueryMessage(sharedLessonMessage(shared));
+    };
     const showExamples = () => {
       const preset = queryPresets[0];
       setSelectedPresetId(preset.id);
@@ -1284,6 +1429,7 @@ function QueryPage({ audience }) {
         presetGridRef.current?.querySelector("button")?.focus();
       }, 80);
     };
+    applySharedLesson();
     applyPendingCoordinate();
     window.addEventListener("ctc:apply-coordinate", applyPendingCoordinate);
     window.addEventListener("ctc:show-examples", showExamples);
@@ -1293,10 +1439,12 @@ function QueryPage({ audience }) {
     };
   }, []);
   const selectPreset = (preset) => {
+    const nextDate = metadata?.dateStart && metadata?.dateEnd ? clipPeriod(preset.date, preset.date, metadata.dateStart, metadata.dateEnd).start : preset.date;
+    const nextModel = availableModels.includes(preset.model) ? preset.model : availableModels[0] ?? cmip6ModelOptions[0];
     setSelectedPresetId(preset.id);
-    setDate(preset.date);
+    setDate(nextDate);
     setScenario(preset.scenario);
-    setModel(preset.model);
+    setModel(nextModel);
     setRaw(preset.raw);
     setCoordinates({ latitude: preset.latitude, longitude: preset.longitude });
     setQueryMessage(`${preset.label} 예시가 적용됐습니다. 필요하면 지도에서 지점을 다시 고르세요.`);
@@ -1345,6 +1493,26 @@ function QueryPage({ audience }) {
       includeRaw: raw && !usesRawModelGrid
     });
   };
+  const saveComparisonBaseline = () => {
+    if (!currentSnapshot) return;
+    setComparisonBaseline(currentSnapshot);
+    setQueryMessage("현재 실제 자료를 비교 기준으로 저장했습니다. 위치나 날짜를 바꾸면 차이를 확인할 수 있습니다.");
+  };
+  const saveStudentNotebook = async () => {
+    if (!currentSnapshot) return;
+    const focus = studentFocusOptions.find((option) => option.key === learningFocus) ?? studentFocusOptions[0];
+    try {
+      const result = await saveTextFile("climate-exploration-note.txt", buildStudentNotebookText({
+        baseline: comparisonBaseline ?? currentSnapshot,
+        comparison: comparisonBaseline ? currentSnapshot : undefined,
+        focusLabel: focus.label,
+        note: studentNote
+      }));
+      setQueryMessage(describeSaveResult(result, "탐구 기록"));
+    } catch (error) {
+      setQueryMessage(error instanceof Error ? error.message : "탐구 기록 파일을 만들지 못했습니다.");
+    }
+  };
   return /* @__PURE__ */ jsxs(Fragment, { children: [
     /* @__PURE__ */ jsxs("div", { className: "query-layout", children: [
       /* @__PURE__ */ jsxs("section", { className: "query-panel", children: [
@@ -1352,6 +1520,7 @@ function QueryPage({ audience }) {
         /* @__PURE__ */ jsx("div", { className: "preset-grid", ref: presetGridRef, children: queryPresets.map((preset) => /* @__PURE__ */ jsxs(
           "button",
           {
+            "aria-pressed": selectedPresetId === preset.id,
             className: selectedPresetId === preset.id ? "active" : preset.id === "custom" ? "custom-preset" : "",
             onClick: () => selectPreset(preset),
             type: "button",
@@ -1363,18 +1532,18 @@ function QueryPage({ audience }) {
           },
           preset.id
         )) }),
-        /* @__PURE__ */ jsx(DateField, { label: "날짜", value: date, onChange: setDate }),
+        /* @__PURE__ */ jsx(DateField, { label: "날짜", min: metadata?.dateStart, max: metadata?.dateEnd, value: date, onChange: setDate }),
         /* @__PURE__ */ jsxs("div", { className: "field-pair", children: [
           /* @__PURE__ */ jsx(CoordinateInput, { label: "위도", max: mercatorLatitudeLimit, min: -mercatorLatitudeLimit, onChange: setLatitudeInput, value: latitudeInput }),
           /* @__PURE__ */ jsx(CoordinateInput, { label: "경도", max: 180, min: -180, onChange: setLongitudeInput, value: longitudeInput })
         ] }),
         /* @__PURE__ */ jsxs("label", { className: "select-field", children: [
           "시나리오",
-          /* @__PURE__ */ jsx("select", { value: scenario, onChange: (event) => setScenario(event.target.value), children: /* @__PURE__ */ jsx("option", { children: "고배출 경로" }) })
+          /* @__PURE__ */ jsx("select", { value: scenario, onChange: (event) => setScenario(event.target.value), children: /* @__PURE__ */ jsx("option", { value: "고배출 경로", children: "고배출 경로 · SSP5-8.5" }) })
         ] }),
         /* @__PURE__ */ jsxs("label", { className: "select-field", children: [
           "모델",
-          /* @__PURE__ */ jsx("select", { value: model, onChange: (event) => setModel(event.target.value), children: cmip6ModelOptions.map((modelOption) => /* @__PURE__ */ jsx("option", { children: modelOption }, modelOption)) })
+          /* @__PURE__ */ jsx("select", { value: model, onChange: (event) => setModel(event.target.value), children: availableModels.map((modelOption) => /* @__PURE__ */ jsx("option", { children: modelOption }, modelOption)) })
         ] }),
         /* @__PURE__ */ jsxs("label", { className: `toggle-row ${usesRawModelGrid ? "disabled" : ""}`, children: [
           /* @__PURE__ */ jsx("input", { disabled: usesRawModelGrid, type: "checkbox", checked: usesRawModelGrid ? false : raw, onChange: (event) => setRaw(event.target.checked) }),
@@ -1409,6 +1578,17 @@ function QueryPage({ audience }) {
         ] }),
         /* @__PURE__ */ jsx("div", { className: `mini-status ${remoteState.status === "ready" ? "ok" : "warn"}`, "aria-live": "polite", children: remoteState.message }),
         /* @__PURE__ */ jsx(MetricGrid, { items: metricsForSelection, onExportMetric: exportMetric }),
+        /* @__PURE__ */ jsx(StudentWorkbench, {
+          baseline: comparisonBaseline,
+          comparisonRows,
+          currentSnapshot,
+          focus: learningFocus,
+          note: studentNote,
+          onFocusChange: setLearningFocus,
+          onNoteChange: (value) => setStudentNote(sanitizeNote(value)),
+          onSaveBaseline: saveComparisonBaseline,
+          onSaveNotebook: saveStudentNotebook
+        }),
         /* @__PURE__ */ jsx(NoticeCard, { title: "선택한 예시", body: activePreset.summary }),
         /* @__PURE__ */ jsx(NoticeCard, { title: "선택 조건", body: `${activePreset.dataNote} 현재 좌표는 위도 ${coordinates.latitude.toFixed(4)}, 경도 ${coordinates.longitude.toFixed(4)}입니다.` })
       ] })
@@ -1417,7 +1597,71 @@ function QueryPage({ audience }) {
     remoteState.status === "loading" ? /* @__PURE__ */ jsx(ClimateLoadingOverlay, {}) : null
   ] });
 }
+const studentFocusOptions = [
+  { key: "heat", label: "더워지는 날", icon: ThermometerSun, prompt: "최고기온과 월별 체감 지표가 함께 어떻게 달라지는지 살펴보세요." },
+  { key: "rain", label: "비의 변화", icon: CloudRain, prompt: "장소나 날짜를 바꾸고 하루 강수량의 차이를 비교해 보세요." },
+  { key: "wind", label: "바람과 체감", icon: Wind, prompt: "풍속과 체감기온 또는 열지수가 같은 방향으로 변하는지 확인해 보세요." }
+];
+function sharedLessonMessage(shared) {
+  return shared.source === "public" ? "일반 요약에서 선택한 조건을 자세히 열었습니다. 기준을 저장한 뒤 다른 위치나 날짜와 비교해 보세요." : "교사가 공유한 수업 조건을 열었습니다. 기준을 저장한 뒤 다른 위치나 날짜와 비교해 보세요.";
+}
+function StudentWorkbench({ baseline, comparisonRows, currentSnapshot, focus, note, onFocusChange, onNoteChange, onSaveBaseline, onSaveNotebook }) {
+  const selectedFocus = studentFocusOptions.find((option) => option.key === focus) ?? studentFocusOptions[0];
+  return /* @__PURE__ */ jsxs("section", { className: "student-workbench", children: [
+    /* @__PURE__ */ jsxs("div", { className: "workbench-heading", children: [
+      /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(BookOpen, { size: 18 }) }),
+      /* @__PURE__ */ jsxs("div", { children: [
+        /* @__PURE__ */ jsx("h3", { children: "나의 기후 탐구" }),
+        /* @__PURE__ */ jsx("p", { children: "실제 자료 두 조건을 비교하고 발견한 내용을 기록합니다." })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsx("div", { className: "student-focus-options", role: "group", "aria-label": "탐구 주제", children: studentFocusOptions.map(({ key, label, icon: Icon }) => /* @__PURE__ */ jsxs("button", { "aria-pressed": focus === key, className: focus === key ? "active" : "", onClick: () => onFocusChange(key), type: "button", children: [
+      /* @__PURE__ */ jsx(Icon, { size: 16 }),
+      label
+    ] }, key)) }),
+    /* @__PURE__ */ jsxs("div", { className: "student-prompt", children: [
+      /* @__PURE__ */ jsx(Target, { size: 17 }),
+      /* @__PURE__ */ jsx("span", { children: selectedFocus.prompt })
+    ] }),
+    /* @__PURE__ */ jsxs("div", { className: "student-comparison", children: [
+      /* @__PURE__ */ jsxs("div", { className: "comparison-toolbar", children: [
+        /* @__PURE__ */ jsxs("div", { children: [
+          /* @__PURE__ */ jsx("strong", { children: baseline ? "비교 기준 저장됨" : "첫 조건을 기준으로 저장하세요" }),
+          /* @__PURE__ */ jsx("span", { children: baseline ? `${baseline.label} · ${baseline.date}` : "자료가 확인되면 기준 저장 버튼이 활성화됩니다." })
+        ] }),
+        /* @__PURE__ */ jsxs("button", { disabled: !currentSnapshot, onClick: onSaveBaseline, type: "button", children: [
+          /* @__PURE__ */ jsx(BookmarkPlus, { size: 16 }),
+          baseline ? "현재 조건으로 다시 저장" : "비교 기준 저장"
+        ] })
+      ] }),
+      baseline && comparisonRows.length > 0 ? /* @__PURE__ */ jsx("div", { className: "comparison-table", children: comparisonRows.map((row) => /* @__PURE__ */ jsxs("div", { children: [
+        /* @__PURE__ */ jsx("strong", { children: row.label }),
+        /* @__PURE__ */ jsxs("span", { children: [formatWorkbenchNumber(row.previous), " → ", formatWorkbenchNumber(row.current), " ", row.unit] }),
+        /* @__PURE__ */ jsx("b", { className: row.delta > 0 ? "up" : row.delta < 0 ? "down" : "same", children: `${row.delta > 0 ? "+" : ""}${formatWorkbenchNumber(row.delta)}` })
+      ] }, row.key)) }) : null
+    ] }),
+    /* @__PURE__ */ jsxs("label", { className: "student-note-field", children: [
+      /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx(NotebookPen, { size: 16 }), "나의 발견"] }),
+      /* @__PURE__ */ jsx("textarea", { maxLength: 2000, onChange: (event) => onNoteChange(event.target.value), placeholder: "두 조건에서 어떤 값이 달라졌는지 적어 보세요.", value: note })
+    ] }),
+    /* @__PURE__ */ jsxs("button", { className: "student-save-action", disabled: !currentSnapshot, onClick: onSaveNotebook, type: "button", children: [
+      /* @__PURE__ */ jsx(Download, { size: 16 }),
+      "탐구 기록 저장"
+    ] })
+  ] });
+}
+function formatWorkbenchNumber(value) {
+  return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
+}
 function ClimateLoadingOverlay() {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1e3));
+    }, 1e3);
+    return () => window.clearInterval(timer);
+  }, []);
   return /* @__PURE__ */ jsx("div", { className: "climate-loading-backdrop", role: "presentation", children: /* @__PURE__ */ jsxs(
     "section",
     {
@@ -1433,73 +1677,300 @@ function ClimateLoadingOverlay() {
           /* @__PURE__ */ jsx("h2", { id: "climate-loading-title", children: "선택 좌표의 자료를 확인하고 있습니다" }),
           /* @__PURE__ */ jsx("p", { id: "climate-loading-description", children: "원본 기후모델 격자를 읽는 위치는 시간이 더 걸릴 수 있습니다. 조회가 끝날 때까지 새로고침하거나 창을 닫지 마세요." })
         ] }),
-        /* @__PURE__ */ jsx("div", { "aria-label": "기후자료 불러오는 중", "aria-valuetext": "진행 중", className: "climate-loading-progress", role: "progressbar", children: /* @__PURE__ */ jsx("span", {}) }),
-        /* @__PURE__ */ jsx("small", { children: "자료를 찾으면 결과 카드가 자동으로 바뀝니다." })
+        /* @__PURE__ */ jsx("div", { "aria-label": "기후자료 불러오는 중", "aria-valuetext": `조회 중 · ${elapsedSeconds}초 경과`, className: "climate-loading-progress", role: "progressbar", children: /* @__PURE__ */ jsx("span", {}) }),
+        /* @__PURE__ */ jsxs("div", { className: "loading-meta", children: [
+          /* @__PURE__ */ jsxs("strong", { children: [elapsedSeconds, "초 경과"] }),
+          /* @__PURE__ */ jsx("span", { children: elapsedSeconds < 3 ? "좌표와 날짜 확인 중" : elapsedSeconds < 12 ? "기후모델 격자 읽는 중" : "자료를 찾고 결과를 정리하는 중" })
+        ] }),
+        /* @__PURE__ */ jsx("small", { children: "완료되면 이 창이 닫히고 결과가 자동으로 바뀝니다." })
       ]
     }
   ) });
 }
 function TeacherPage() {
   const [started, setStarted] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const activeStudents = started ? "18명 진행" : "준비됨";
-  const saveTeacherPack = () => {
-    setSaved(true);
-    downloadTextFile(
-      "climate-class-activity.txt",
-      [
-        "기후 타임캡슐 수업 활동",
-        "활동: 우리 지역 2050년 여름",
-        "비교 지점: 학교 / 해안 / 산지",
-        "학생 화면: 학생 탐색 탭에서 예시와 지도를 사용",
-        "저장 상태: 수업 요약 생성"
-      ].join("\n")
-    );
+  const [saveOutcome, setSaveOutcome] = useState("idle");
+  const [lessonTitle, setLessonTitle] = useState("우리 지역 2050년 여름");
+  const [lessonObjective, setLessonObjective] = useState("장소에 따라 미래 기온, 강수량, 바람과 월별 체감 지표가 어떻게 달라지는지 설명한다.");
+  const [lessonLocation, setLessonLocation] = useState({ id: "school", label: "학교", latitude: 37.57, longitude: 126.98, icon: School });
+  const [lessonDate, setLessonDate] = useState("2050-08-01");
+  const [lessonScenario, setLessonScenario] = useState("고배출 경로");
+  const [lessonModel, setLessonModel] = useState(cmip6ModelOptions[0]);
+  const [metadata, setMetadata] = useState();
+  const [comparisonPoints, setComparisonPoints] = useState([]);
+  const [teacherMessage, setTeacherMessage] = useState("실제 자료를 확인한 뒤 수업 활동을 시작하세요.");
+  const [exportContext, setExportContext] = useState(null);
+  const lessonLocations = [
+    { id: "school", label: "학교", detail: "서울 도심", latitude: 37.57, longitude: 126.98, icon: School },
+    { id: "coast", label: "해안", detail: "부산 해안", latitude: 35.18, longitude: 129.08, icon: Waves },
+    { id: "mountain", label: "산지", detail: "대관령", latitude: 37.68, longitude: 128.72, icon: Mountain }
+  ];
+  const availableModels = normalizeMetadataOptions(metadata, "models", cmip6ModelOptions);
+  const availableScenarios = normalizeMetadataOptions(metadata, "scenarios", ["고배출 경로"]);
+  const remoteState = useRemoteMetricResponse({
+    coordinate: { latitude: lessonLocation.latitude, longitude: lessonLocation.longitude },
+    date: lessonDate,
+    scenario: lessonScenario,
+    model: lessonModel
+  });
+  const lessonMetrics = useMemo(
+    () => deriveClimateMetrics({ date: lessonDate, raw: false, remoteState }),
+    [lessonDate, remoteState]
+  );
+  const currentSnapshot = useMemo(() => createMetricSnapshot(lessonMetrics, {
+    date: lessonDate,
+    latitude: lessonLocation.latitude,
+    longitude: lessonLocation.longitude,
+    scenario: lessonScenario,
+    model: lessonModel,
+    label: lessonLocation.label
+  }), [lessonMetrics, lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonLocation.label, lessonScenario, lessonModel]);
+  const lessonToken = useMemo(() => encodeLessonState({
+    source: "teacher",
+    date: lessonDate,
+    latitude: lessonLocation.latitude,
+    longitude: lessonLocation.longitude,
+    scenario: lessonScenario,
+    model: lessonModel,
+    focus: "heat"
+  }), [lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonScenario, lessonModel]);
+  const studentLink = useMemo(() => {
+    const url = new URL(window.location.href);
+    url.search = "";
+    url.hash = `/query?lesson=${lessonToken}`;
+    return url.toString();
+  }, [lessonToken]);
+  useEffect(() => {
+    let active = true;
+    fetchPublicClimateMetadata().then((nextMetadata) => {
+      if (!active || !nextMetadata.publicSafe || !nextMetadata.ready) return;
+      setMetadata(nextMetadata);
+      const models = normalizeMetadataOptions(nextMetadata, "models", cmip6ModelOptions);
+      const scenarios = normalizeMetadataOptions(nextMetadata, "scenarios", ["고배출 경로"]);
+      setLessonModel((current) => models.includes(current) ? current : models[0]);
+      setLessonScenario((current) => scenarios.includes(current) ? current : scenarios[0]);
+      if (nextMetadata.dateStart && nextMetadata.dateEnd) {
+        setLessonDate((current) => clipPeriod(current, current, nextMetadata.dateStart, nextMetadata.dateEnd).start);
+      }
+    }).catch(() => {
+      if (active) setTeacherMessage("자료 제공 범위를 확인하지 못했습니다. 현재 선택 조건으로 조회를 계속합니다.");
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    setStarted(false);
+    setSaveOutcome("idle");
+  }, [lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonScenario, lessonModel]);
+  const selectLessonLocation = (location) => {
+    setLessonLocation(location);
+    setTeacherMessage(`${location.label} 위치의 실제 자료를 조회합니다.`);
   };
-  return /* @__PURE__ */ jsxs("div", { className: "page-grid", children: [
-    /* @__PURE__ */ jsx("section", { className: "span-12", children: /* @__PURE__ */ jsxs("div", { className: "teacher-stats", children: [
-      /* @__PURE__ */ jsx(Stat, { label: "수업 단계", value: started ? "활동 중" : "준비", sub: started ? "좌표 비교 시작" : "조건 확인" }),
-      /* @__PURE__ */ jsx(Stat, { label: "학생 참여", value: activeStudents, sub: "오류 없음" }),
-      /* @__PURE__ */ jsx(Stat, { label: "지도 활동", value: started ? "열림" : "대기", sub: "학생 탐색과 연결" }),
-      /* @__PURE__ */ jsx(Stat, { label: "저장", value: saved ? "완료" : "대기", sub: "수업 요약 파일" })
-    ] }) }),
-    /* @__PURE__ */ jsx("section", { className: "span-4", children: /* @__PURE__ */ jsxs(Panel, { title: "수업 조건", icon: /* @__PURE__ */ jsx(GraduationCap, { size: 19 }), children: [
-      /* @__PURE__ */ jsx(Field, { label: "학급 활동", value: "우리 지역 2050년 여름" }),
-      /* @__PURE__ */ jsx(Field, { label: "비교 지점", value: "학교 / 해안 / 산지" }),
-      /* @__PURE__ */ jsxs("button", { className: "primary-action wide", onClick: () => setStarted(true), type: "button", children: [
-        /* @__PURE__ */ jsx(PlayCircle, { size: 18 }),
-        started ? "활동 진행 중" : "활동 시작"
-      ] }),
-      /* @__PURE__ */ jsxs("div", { className: "teacher-actions", children: [
-        /* @__PURE__ */ jsx("button", { type: "button", onClick: () => openQueryWithCoordinate({ latitude: 37.57, longitude: 126.98 }), children: "학생 화면 열기" }),
-        /* @__PURE__ */ jsx("button", { type: "button", onClick: saveTeacherPack, children: "수업자료 저장" })
-      ] }),
-      /* @__PURE__ */ jsx("div", { className: started ? "mini-status ok" : "mini-status warn", children: started ? "학생 탐색 화면과 같은 예시 흐름으로 활동을 진행합니다." : "활동 시작을 누르면 진행 상태가 바뀝니다." })
-    ] }) }),
-    /* @__PURE__ */ jsx("section", { className: "span-5", children: /* @__PURE__ */ jsx(MapPanel, { compact: true, latitude: 37.57, longitude: 126.98, mapTone: "school" }) }),
-    /* @__PURE__ */ jsx("section", { className: "span-3", children: /* @__PURE__ */ jsx(Panel, { title: "진행 상태", icon: /* @__PURE__ */ jsx(Activity, { size: 19 }), children: /* @__PURE__ */ jsx("div", { className: "timeline", children: ["좌표 선택", "기후값 조회", "수업자료 저장", "출처 검증"].map((step, index) => /* @__PURE__ */ jsxs("div", { className: started && index < (saved ? 4 : 2) ? "timeline-row done" : "timeline-row", children: [
-      /* @__PURE__ */ jsx("span", {}),
+  const selectTeacherMapCoordinate = (coordinate) => {
+    setLessonLocation({ id: "custom", label: "직접 선택", detail: "지도에서 선택", ...coordinate, icon: LocateFixed });
+    setTeacherMessage("지도에서 고른 위치의 실제 자료를 조회합니다.");
+  };
+  const addComparisonPoint = () => {
+    if (!currentSnapshot) return;
+    setComparisonPoints((current) => {
+      const withoutDuplicate = current.filter((item) => item.id !== currentSnapshot.id);
+      if (withoutDuplicate.length >= 3) {
+        setTeacherMessage("비교 지점은 세 곳까지 저장할 수 있습니다. 기존 지점을 삭제한 뒤 추가하세요.");
+        return current;
+      }
+      setTeacherMessage(`${currentSnapshot.label}의 실제 자료를 수업 비교 목록에 추가했습니다.`);
+      return [...withoutDuplicate, currentSnapshot];
+    });
+  };
+  const startTeacherActivity = () => {
+    if (!currentSnapshot) return;
+    setStarted(true);
+    setTeacherMessage(`${lessonLocation.label} 지점의 실제 자료로 비교 활동을 시작했습니다.`);
+  };
+  const copyStudentLink = async () => {
+    const copied = await copyTextToClipboard(studentLink);
+    setTeacherMessage(copied ? "현재 수업 조건이 담긴 학생용 링크를 복사했습니다." : "링크를 복사하지 못했습니다. 학생 화면 열기를 사용하세요.");
+  };
+  const openStudentLesson = () => {
+    window.location.hash = `/query?lesson=${lessonToken}`;
+  };
+  const saveTeacherPack = async () => {
+    if (!currentSnapshot) return;
+    const snapshots = comparisonPoints.length > 0 ? comparisonPoints : [currentSnapshot];
+    try {
+      const result = await saveTextFile(
+        "climate-class-activity.txt",
+        buildTeacherActivityText({ lessonTitle, objective: lessonObjective, snapshots, studentLink })
+      );
+      setSaveOutcome(result.outcome);
+      setTeacherMessage(describeSaveResult(result, "수업 활동지"));
+    } catch (error) {
+      setSaveOutcome("idle");
+      setTeacherMessage(error instanceof Error ? error.message : "수업 활동지 파일을 만들지 못했습니다.");
+    }
+  };
+  const exportTeacherData = () => {
+    if (!currentSnapshot) return;
+    setExportContext({
+      date: lessonDate,
+      latitude: lessonLocation.latitude,
+      longitude: lessonLocation.longitude,
+      scenario: lessonScenario,
+      model: lessonModel,
+      initialMetrics: currentSnapshot.values.map((metric) => metric.key),
+      includeRaw: false
+    });
+  };
+  const journey = [
+    { label: "장소 고르기", detail: lessonLocation.label, done: true },
+    { label: "미래 날짜", detail: lessonDate, done: true },
+    { label: "실제 자료 확인", detail: currentSnapshot ? "값 확인 완료" : "조회 필요", done: Boolean(currentSnapshot) },
+    { label: "수업자료 저장", detail: saveOutcome === "written" ? "저장 완료" : saveOutcome === "requested" ? "다운로드 요청" : "활동지와 자료", done: ["written", "requested"].includes(saveOutcome) }
+  ];
+  return /* @__PURE__ */ jsxs(Fragment, { children: [
+    /* @__PURE__ */ jsxs("div", { className: "teacher-page", children: [
+    /* @__PURE__ */ jsx("section", { className: "teacher-journey", "aria-label": "수업 진행 단계", children: journey.map((step, index) => /* @__PURE__ */ jsxs("div", { className: step.done ? "lesson-step done" : "lesson-step", children: [
+      /* @__PURE__ */ jsx("span", { children: step.done ? /* @__PURE__ */ jsx(Check, { size: 14 }) : index + 1 }),
       /* @__PURE__ */ jsxs("div", { children: [
-        /* @__PURE__ */ jsx("strong", { children: step }),
-        /* @__PURE__ */ jsx("p", { children: started && index < (saved ? 4 : 2) ? "완료" : "대기" })
+        /* @__PURE__ */ jsx("strong", { children: step.label }),
+        /* @__PURE__ */ jsx("small", { children: step.detail })
       ] })
-    ] }, step)) }) }) })
+    ] }, step.label)) }),
+    /* @__PURE__ */ jsxs("div", { className: "teacher-layout", children: [
+      /* @__PURE__ */ jsxs("section", { className: "teacher-map-column", children: [
+        /* @__PURE__ */ jsx(MapPanel, { compact: false, date: lessonDate, latitude: lessonLocation.latitude, longitude: lessonLocation.longitude, mapTone: lessonLocation.id === "coast" ? "rain" : "school", rawModelGrid: remoteState.response?.dataMode === "raw-model-grid", onCoordinateChange: selectTeacherMapCoordinate }),
+        /* @__PURE__ */ jsxs("div", { className: "teacher-map-note", children: [
+          /* @__PURE__ */ jsx("span", { className: "teacher-note-icon", children: /* @__PURE__ */ jsx(lessonLocation.icon, { size: 18 }) }),
+          /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsxs("strong", { children: [lessonLocation.label, " 수업 지점"] }),
+            /* @__PURE__ */ jsxs("p", { children: ["위도 ", lessonLocation.latitude.toFixed(4), ", 경도 ", lessonLocation.longitude.toFixed(4), " · 지도를 눌러 직접 바꿀 수 있습니다."] })
+          ] })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxs("aside", { className: "teacher-control-panel", children: [
+        /* @__PURE__ */ jsxs("div", { className: "teacher-panel-title", children: [
+          /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(GraduationCap, { size: 19 }) }),
+          /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsx("h2", { children: "수업 조건" }),
+            /* @__PURE__ */ jsx("p", { children: "비교할 장소를 고르고 활동을 시작하세요." })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxs("label", { className: "teacher-text-field", children: [
+          "수업명",
+          /* @__PURE__ */ jsx("input", { maxLength: 120, onChange: (event) => setLessonTitle(event.target.value), value: lessonTitle })
+        ] }),
+        /* @__PURE__ */ jsxs("label", { className: "teacher-text-field", children: [
+          "학습 목표",
+          /* @__PURE__ */ jsx("textarea", { maxLength: 300, onChange: (event) => setLessonObjective(event.target.value), value: lessonObjective })
+        ] }),
+        /* @__PURE__ */ jsx("div", { className: "lesson-location-options", children: lessonLocations.map((location) => {
+          const LocationIcon = location.icon;
+          return /* @__PURE__ */ jsxs("button", { "aria-pressed": lessonLocation.id === location.id, className: lessonLocation.id === location.id ? "active" : "", onClick: () => selectLessonLocation(location), type: "button", children: [
+            /* @__PURE__ */ jsx(LocationIcon, { size: 18 }),
+            /* @__PURE__ */ jsxs("span", { children: [
+              /* @__PURE__ */ jsx("strong", { children: location.label }),
+              /* @__PURE__ */ jsx("small", { children: location.detail })
+            ] }),
+            lessonLocation.id === location.id ? /* @__PURE__ */ jsx(Check, { size: 16 }) : null
+          ] }, location.id);
+        }) }),
+        /* @__PURE__ */ jsx(DateField, { label: "미래 날짜", min: metadata?.dateStart, max: metadata?.dateEnd, onChange: setLessonDate, value: lessonDate }),
+        /* @__PURE__ */ jsxs("div", { className: "teacher-select-grid", children: [
+          /* @__PURE__ */ jsxs("label", { className: "select-field", children: [
+            "시나리오",
+            /* @__PURE__ */ jsx("select", { onChange: (event) => setLessonScenario(event.target.value), value: lessonScenario, children: availableScenarios.map((option) => /* @__PURE__ */ jsx("option", { children: option }, option)) })
+          ] }),
+          /* @__PURE__ */ jsxs("label", { className: "select-field", children: [
+            "모델",
+            /* @__PURE__ */ jsx("select", { onChange: (event) => setLessonModel(event.target.value), value: lessonModel, children: availableModels.map((option) => /* @__PURE__ */ jsx("option", { children: option }, option)) })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxs("div", { className: "teacher-condition-grid", children: [
+          /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "자료 상태" }), /* @__PURE__ */ jsx("strong", { children: remoteState.status === "ready" ? "확인 완료" : remoteState.status === "partial" ? "부분 자료" : "확인 중" })] }),
+          /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "비교 목록" }), /* @__PURE__ */ jsxs("strong", { children: [comparisonPoints.length, "/3 지점"] })] })
+        ] }),
+        /* @__PURE__ */ jsxs("button", { className: "teacher-start-action", disabled: !currentSnapshot, onClick: startTeacherActivity, type: "button", children: [
+          /* @__PURE__ */ jsx(PlayCircle, { size: 18 }),
+          /* @__PURE__ */ jsx("span", { children: started ? "활동 진행 중" : "이 조건으로 활동 시작" }),
+          /* @__PURE__ */ jsx(ArrowRight, { size: 17 })
+        ] }),
+        /* @__PURE__ */ jsxs("div", { className: "teacher-actions", children: [
+          /* @__PURE__ */ jsxs("button", { disabled: !currentSnapshot, type: "button", onClick: addComparisonPoint, children: [/* @__PURE__ */ jsx(Plus, { size: 16 }), "비교 지점 추가"] }),
+          /* @__PURE__ */ jsxs("button", { type: "button", onClick: copyStudentLink, children: [/* @__PURE__ */ jsx(ClipboardCopy, { size: 16 }), "학생 링크 복사"] }),
+          /* @__PURE__ */ jsxs("button", { type: "button", onClick: openStudentLesson, children: [/* @__PURE__ */ jsx(Link, { size: 16 }), "학생 화면 열기"] }),
+          /* @__PURE__ */ jsxs("button", { type: "button", disabled: !currentSnapshot, onClick: exportTeacherData, children: [/* @__PURE__ */ jsx(HardDriveDownload, { size: 16 }), "자료 내보내기"] }),
+          /* @__PURE__ */ jsxs("button", { type: "button", disabled: !started || !currentSnapshot, onClick: saveTeacherPack, children: [/* @__PURE__ */ jsx(Download, { size: 16 }), "수업 활동지 저장"] })
+        ] }),
+        /* @__PURE__ */ jsx("div", { className: currentSnapshot ? "mini-status ok" : "mini-status warn", "aria-live": "polite", children: currentSnapshot ? teacherMessage : remoteState.message })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxs("section", { className: "teacher-data-workbench", children: [
+      /* @__PURE__ */ jsxs("div", { className: "panel-heading-row", children: [
+        /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("h2", { children: "수업에 사용할 실제 기후자료" }), /* @__PURE__ */ jsx("p", { children: "현재 좌표·날짜·시나리오·모델 응답에서 확인된 값만 표시합니다." })] }),
+        /* @__PURE__ */ jsxs("button", { className: "secondary-action", disabled: !currentSnapshot, onClick: addComparisonPoint, type: "button", children: [/* @__PURE__ */ jsx(BookmarkPlus, { size: 16 }), "비교 목록에 저장"] })
+      ] }),
+      /* @__PURE__ */ jsx(MetricGrid, { items: lessonMetrics }),
+      comparisonPoints.length > 0 ? /* @__PURE__ */ jsx("div", { className: "teacher-comparison-list", children: comparisonPoints.map((point) => /* @__PURE__ */ jsxs("article", { children: [
+        /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: point.label }), /* @__PURE__ */ jsxs("span", { children: [point.date, " · ", point.latitude.toFixed(4), ", ", point.longitude.toFixed(4)] })] }),
+        /* @__PURE__ */ jsx("button", { "aria-label": `${point.label} 비교 지점 삭제`, onClick: () => setComparisonPoints((current) => current.filter((item) => item.id !== point.id)), type: "button", children: /* @__PURE__ */ jsx(Trash2, { size: 16 }) })
+      ] }, point.id)) }) : /* @__PURE__ */ jsx("p", { className: "teacher-empty-comparison", children: "서로 다른 위치나 날짜의 실제 자료를 최대 세 곳까지 저장해 수업 활동지에 포함할 수 있습니다." })
+    ] }),
+    /* @__PURE__ */ jsxs("section", { className: "teacher-summary", children: [
+      /* @__PURE__ */ jsx(Stat, { label: "활동 상태", value: started ? "진행 중" : "준비", sub: started ? "기후값 비교 가능" : "조건 선택" }),
+      /* @__PURE__ */ jsx(Stat, { label: "선택 지점", value: lessonLocation.label, sub: lessonLocation.detail ?? "지도에서 선택" }),
+      /* @__PURE__ */ jsx(Stat, { label: "월별 체감 기준", value: apparentTemperatureBasis(lessonDate).label, sub: `${Number(lessonDate.slice(5, 7))}월 조회` }),
+      /* @__PURE__ */ jsx(Stat, { label: "수업자료", value: saveOutcome === "written" ? "저장 완료" : saveOutcome === "requested" ? "다운로드 요청" : "대기", sub: "실제 수치와 조건 포함" })
+    ] })
+    ] }),
+    /* @__PURE__ */ jsx(ClimateExportDialog, { context: exportContext, onClose: () => setExportContext(null) }),
+    remoteState.status === "loading" ? /* @__PURE__ */ jsx(ClimateLoadingOverlay, {}) : null
   ] });
 }
 function PublicPage() {
   const [coordinates, setCoordinates] = useState({ latitude: 36.35, longitude: 127.38 });
   const [message, setMessage] = useState("지도를 누르거나 학생 탐색에서 자세한 조건을 바꿀 수 있습니다.");
   const [exportContext, setExportContext] = useState(null);
-  const publicDate = "2050-08-01";
-  const publicScenario = "고배출 경로";
-  const publicModel = cmip6ModelOptions[0];
+  const [metadata, setMetadata] = useState();
+  const [publicDate, setPublicDate] = useState("2050-08-01");
+  const [publicScenario, setPublicScenario] = useState("고배출 경로");
+  const [publicModel, setPublicModel] = useState(cmip6ModelOptions[0]);
+  const [locating, setLocating] = useState(false);
+  const availableScenarios = normalizeMetadataOptions(metadata, "scenarios", ["고배출 경로"]);
+  const availableModels = normalizeMetadataOptions(metadata, "models", cmip6ModelOptions);
   const remoteState = useRemoteMetricResponse({ coordinate: coordinates, date: publicDate, scenario: publicScenario, model: publicModel });
   const usesRawModelGrid = remoteState.response?.dataMode === "raw-model-grid";
   const publicMetrics = useMemo(
-    () => simplifyPublicMetrics(deriveClimateMetrics({ raw: false, remoteState })),
+    () => simplifyPublicMetrics(deriveClimateMetrics({ date: publicDate, raw: false, remoteState })),
     [remoteState]
   );
   const hasPublicMetrics = publicMetrics.some((metric) => metric.available !== false && Number.isFinite(metric.numericValue));
+  const plainLanguageSummary = buildPlainLanguageSummary(publicMetrics, publicDate);
+  const dateYear = Number(publicDate.slice(0, 4));
+  const dateMonthDay = publicDate.slice(4);
+  const decadeOptions = [2040, 2050, 2070, 2090].filter((year) => {
+    const candidate = `${year}${dateMonthDay}`;
+    return (!metadata?.dateStart || candidate >= metadata.dateStart) && (!metadata?.dateEnd || candidate <= metadata.dateEnd);
+  });
+  useEffect(() => {
+    let active = true;
+    fetchPublicClimateMetadata().then((nextMetadata) => {
+      if (!active || !nextMetadata.publicSafe || !nextMetadata.ready) return;
+      setMetadata(nextMetadata);
+      const models = normalizeMetadataOptions(nextMetadata, "models", cmip6ModelOptions);
+      const scenarios = normalizeMetadataOptions(nextMetadata, "scenarios", ["고배출 경로"]);
+      setPublicModel(models.includes("전체 앙상블") ? "전체 앙상블" : models[0]);
+      setPublicScenario((current) => scenarios.includes(current) ? current : scenarios[0]);
+      if (nextMetadata.dateStart && nextMetadata.dateEnd) {
+        setPublicDate((current) => clipPeriod(current, current, nextMetadata.dateStart, nextMetadata.dateEnd).start);
+      }
+    }).catch(() => {
+      if (active) setMessage("자료 제공 기간을 확인하지 못했습니다. 현재 선택 날짜로 조회를 계속합니다.");
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
   useEffect(() => {
     if (remoteState.status !== "loading") return;
     const preventRefresh = (event) => {
@@ -1509,6 +1980,40 @@ function PublicPage() {
     window.addEventListener("beforeunload", preventRefresh);
     return () => window.removeEventListener("beforeunload", preventRefresh);
   }, [remoteState.status]);
+  const moveToCurrentLocation = () => {
+    if (!navigator.geolocation) {
+      setMessage("이 브라우저에서는 현재 위치 기능을 사용할 수 없습니다. 지도에서 직접 위치를 선택하세요.");
+      return;
+    }
+    setLocating(true);
+    setMessage("브라우저에서 현재 위치를 확인하고 있습니다.");
+    navigator.geolocation.getCurrentPosition((position) => {
+      setCoordinates({ latitude: clamp(position.coords.latitude, -mercatorLatitudeLimit, mercatorLatitudeLimit), longitude: normalizeLongitude(position.coords.longitude) });
+      setLocating(false);
+      setMessage("현재 위치로 이동했습니다. 실제 기후자료를 다시 조회합니다.");
+    }, () => {
+      setLocating(false);
+      setMessage("현재 위치 권한을 사용할 수 없습니다. 지도에서 직접 위치를 선택하세요.");
+    }, { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 });
+  };
+  const changePublicYear = (year) => {
+    const candidate = `${year}${dateMonthDay}`;
+    const clipped = metadata?.dateStart && metadata?.dateEnd ? clipPeriod(candidate, candidate, metadata.dateStart, metadata.dateEnd).start : candidate;
+    setPublicDate(clipped);
+    setMessage(`${year}년의 실제 기후자료를 조회합니다.`);
+  };
+  const openPublicDetail = () => {
+    const token = encodeLessonState({
+      source: "public",
+      date: publicDate,
+      latitude: coordinates.latitude,
+      longitude: coordinates.longitude,
+      scenario: publicScenario,
+      model: publicModel,
+      focus: "heat"
+    });
+    window.location.hash = `/query?lesson=${token}`;
+  };
   const exportPublicMetric = (metric) => {
     if (!metric.key) return;
     setExportContext({
@@ -1547,49 +2052,76 @@ function PublicPage() {
     setMessage("기간과 출력 형식을 고를 수 있는 내보내기 창을 열었습니다.");
   };
   return /* @__PURE__ */ jsxs(Fragment, { children: [
-    /* @__PURE__ */ jsxs("div", { className: "page-grid public-grid", children: [
-      /* @__PURE__ */ jsx("section", { className: "span-7", children: /* @__PURE__ */ jsx(
-        MapPanel,
-        {
-          compact: false,
-          latitude: coordinates.latitude,
-          longitude: coordinates.longitude,
-          mapTone: "heat",
-          rawModelGrid: usesRawModelGrid,
-          onCoordinateChange: (nextCoordinate) => {
-            setCoordinates(nextCoordinate);
-            setMessage("지도에서 선택한 위치로 요약을 갱신했습니다.");
-          }
+    /* @__PURE__ */ jsxs("div", { className: "public-page", children: [
+      /* @__PURE__ */ jsxs("section", { className: "public-command-bar", children: [
+        /* @__PURE__ */ jsxs("div", { className: "public-location", children: [
+          /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(MapPin, { size: 19 }) }),
+          /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsx("small", { children: "선택한 위치" }),
+            /* @__PURE__ */ jsxs("strong", { children: [coordinates.latitude.toFixed(4), ", ", coordinates.longitude.toFixed(4)] })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxs("div", { className: "public-condition-strip", children: [
+          /* @__PURE__ */ jsxs("div", { className: "public-date-control", children: [/* @__PURE__ */ jsx(CalendarDays, { size: 15 }), /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx("small", { children: "미래 날짜" }), /* @__PURE__ */ jsx(ConfirmedDateInput, { compact: true, label: "미래 날짜", max: metadata?.dateEnd, min: metadata?.dateStart, onConfirm: (nextDate) => {
+            setPublicDate(nextDate);
+            setMessage(`${nextDate}의 실제 기후자료를 조회합니다.`);
+          }, showPickerButton: false, value: publicDate })] })] }),
+          /* @__PURE__ */ jsxs("label", { className: "public-scenario-control", children: [/* @__PURE__ */ jsx(Globe2, { size: 15 }), /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx("small", { children: "시나리오" }), /* @__PURE__ */ jsx("select", { onChange: (event) => setPublicScenario(event.target.value), value: publicScenario, children: availableScenarios.map((option) => /* @__PURE__ */ jsx("option", { children: option }, option)) })] })] }),
+          /* @__PURE__ */ jsxs("label", { className: "public-model-control", children: [/* @__PURE__ */ jsx(Activity, { size: 15 }), /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx("small", { children: "CMIP6 모델" }), /* @__PURE__ */ jsx("select", { "aria-label": "CMIP6 모델", onChange: (event) => {
+            setPublicModel(event.target.value);
+            setMessage(`${event.target.value} 모델의 실제 기후자료를 조회합니다.`);
+          }, value: publicModel, children: availableModels.map((option) => /* @__PURE__ */ jsx("option", { children: option === "전체 앙상블" ? "전체 앙상블 · 여러 모델" : option }, option)) })] })] })
+        ] }),
+        /* @__PURE__ */ jsxs("div", { className: "public-command-actions", children: [
+          /* @__PURE__ */ jsxs("button", { type: "button", onClick: openPublicDetail, children: [/* @__PURE__ */ jsx(Search, { size: 16 }), "자세히 보기"] }),
+          /* @__PURE__ */ jsxs("button", { disabled: locating, type: "button", onClick: moveToCurrentLocation, children: [locating ? /* @__PURE__ */ jsx(LoaderCircle, { className: "spin", size: 16 }) : /* @__PURE__ */ jsx(Navigation, { size: 16 }), locating ? "위치 확인 중" : "내 위치"] }),
+          /* @__PURE__ */ jsxs("button", { type: "button", onClick: () => {
+            setCoordinates({ latitude: 37.57, longitude: 126.98 });
+            setMessage("학교 주변 예시로 위치와 요약을 바꿨습니다.");
+          }, children: [/* @__PURE__ */ jsx(School, { size: 16 }), "학교 예시"] })
+        ] })
+      ] }),
+      decadeOptions.length > 1 ? /* @__PURE__ */ jsxs("section", { className: "public-decade-picker", children: [
+        /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx(RefreshCw, { size: 15 }), "시기 바꾸기"] }),
+        /* @__PURE__ */ jsx("div", { role: "group", "aria-label": "조회 연도", children: decadeOptions.map((year) => /* @__PURE__ */ jsxs("button", { "aria-pressed": dateYear === year, className: dateYear === year ? "active" : "", onClick: () => changePublicYear(year), type: "button", children: [year, "년"] }, year)) })
+      ] }) : null,
+      /* @__PURE__ */ jsx("section", { className: "public-map-stage", children: /* @__PURE__ */ jsx(MapPanel, {
+        compact: false,
+        date: publicDate,
+        latitude: coordinates.latitude,
+        longitude: coordinates.longitude,
+        mapTone: "global",
+        rawModelGrid: usesRawModelGrid,
+        onCoordinateChange: (nextCoordinate) => {
+          setCoordinates(nextCoordinate);
+          setMessage("지도에서 선택한 위치로 요약을 갱신했습니다.");
         }
-      ) }),
-      /* @__PURE__ */ jsx("section", { className: "span-5", "data-query-state": remoteState.status, children: /* @__PURE__ */ jsxs(Panel, { title: "오늘 선택한 곳의 미래", icon: /* @__PURE__ */ jsx(CloudSun, { size: 19 }), children: [
-        /* @__PURE__ */ jsxs("button", { className: "secondary-action wide", disabled: !hasPublicMetrics, onClick: exportPublicMetrics, type: "button", children: [
-          /* @__PURE__ */ jsx(HardDriveDownload, { size: 16 }),
-          "전체 자료 내보내기"
+      }) }),
+      /* @__PURE__ */ jsxs("section", { className: "public-results-strip", "data-query-state": remoteState.status, children: [
+        /* @__PURE__ */ jsxs("div", { className: "public-results-head", children: [
+          /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsx("span", { children: "선택한 곳의 미래" }),
+            /* @__PURE__ */ jsx("h2", { children: `${Number(publicDate.slice(0, 4))}년 ${Number(publicDate.slice(5, 7))}월 ${Number(publicDate.slice(8, 10))}일의 기후` })
+          ] }),
+          /* @__PURE__ */ jsxs("button", { className: "public-export-action", disabled: !hasPublicMetrics, onClick: exportPublicMetrics, type: "button", children: [
+            /* @__PURE__ */ jsx(HardDriveDownload, { size: 16 }),
+            "기간 자료 내보내기"
+          ] })
         ] }),
         /* @__PURE__ */ jsx("div", { className: `mini-status ${remoteState.status === "ready" ? "ok" : "warn"}`, "aria-live": "polite", children: remoteState.message }),
-        /* @__PURE__ */ jsx(MetricGrid, { items: publicMetrics, onExportMetric: exportPublicMetric }),
-        /* @__PURE__ */ jsx(NoticeCard, { title: "선택 위치", body: `위도 ${coordinates.latitude.toFixed(4)}, 경도 ${coordinates.longitude.toFixed(4)} 기준 요약입니다.` }),
-        /* @__PURE__ */ jsx(NoticeCard, { title: "화면 상태", body: message }),
-        /* @__PURE__ */ jsxs("div", { className: "teacher-actions", children: [
-          /* @__PURE__ */ jsx("button", { type: "button", onClick: () => openQueryWithCoordinate(coordinates), children: "자세히 바꾸기" }),
-          /* @__PURE__ */ jsx(
-            "button",
-            {
-              type: "button",
-              onClick: () => {
-                setCoordinates({ latitude: 37.57, longitude: 126.98 });
-                setMessage("학교 주변 예시로 좌표와 요약값을 바꿨습니다.");
-              },
-              children: "학교 주변 예시"
-            }
-          )
+        /* @__PURE__ */ jsxs("div", { className: "public-plain-summary", children: [
+          /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(CloudSun, { size: 18 }) }),
+          /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: "쉽게 읽기" }), /* @__PURE__ */ jsx("p", { children: plainLanguageSummary })] })
         ] }),
-        /* @__PURE__ */ jsxs("button", { className: "primary-action wide", disabled: !hasPublicMetrics, onClick: savePublicSummary, type: "button", children: [
-          /* @__PURE__ */ jsx(HardDriveDownload, { size: 18 }),
-          "결과 이미지 저장"
+        /* @__PURE__ */ jsx(MetricGrid, { items: publicMetrics, onExportMetric: exportPublicMetric }),
+        /* @__PURE__ */ jsxs("div", { className: "public-results-footer", children: [
+          /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsx("strong", { children: "현재 화면" }),
+            /* @__PURE__ */ jsx("span", { children: message })
+          ] }),
+          /* @__PURE__ */ jsxs("button", { disabled: !hasPublicMetrics, onClick: savePublicSummary, type: "button", children: [/* @__PURE__ */ jsx(Image, { size: 16 }), "결과 이미지 저장"] })
         ] })
-      ] }) })
+      ] })
     ] }),
     /* @__PURE__ */ jsx(ClimateExportDialog, { context: exportContext, onClose: () => setExportContext(null) }),
     remoteState.status === "loading" ? /* @__PURE__ */ jsx(ClimateLoadingOverlay, {}) : null
@@ -1624,9 +2156,9 @@ function useRemoteMetricResponse({
         } else {
           setState({ response, status: "missing", message: response.fallbackReason ?? "선택 조건의 자료가 없습니다." });
         }
-      }).catch(() => {
+      }).catch((error) => {
         if (active) {
-          setState({ status: "error", message: "기후자료 연결을 확인할 수 없습니다. 잠시 후 다시 시도하세요." });
+          setState({ status: "error", message: error instanceof Error ? error.message : "기후자료 연결을 확인할 수 없습니다. 잠시 후 다시 시도하세요." });
         }
       });
     }, 280);
@@ -1658,17 +2190,17 @@ function responseIfRequestMatches(response, request) {
   const validation = validateRemoteChunkResponse(response, request);
   return validation.status === "ready" ? response : void 0;
 }
-function deriveClimateMetrics({ raw, remoteState }) {
-  const remoteMetrics = deriveRemoteMetrics({ raw, remoteResponse: remoteState.response });
-  if (remoteMetrics.length >= 6) return remoteMetrics;
+function deriveClimateMetrics({ date, raw, remoteState }) {
+  const remoteMetrics = deriveRemoteMetrics({ date, raw, remoteResponse: remoteState.response });
+  if (remoteMetrics.length >= 5) return remoteMetrics;
   const waiting = remoteState.status === "loading";
+  const comfortLabel = apparentTemperatureBasis(date).label;
   return [
     ["tasmax", "최고기온", "도"],
     ["tasmin", "최저기온", "도"],
     ["precipitation", "강수량", "밀리미터/일"],
     ["wind", "풍속", "미터/초"],
-    ["heatIndex", "열지수", "도"],
-    ["feelsLike", "체감기온", "도"]
+    ["apparentTemperature", comfortLabel, "도"]
   ].map(([key, label, unit]) => ({
     key,
     label,
@@ -1685,8 +2217,7 @@ function simplifyPublicMetrics(items) {
     tasmin: "하루 중 가장 낮은 기온",
     precipitation: "하루 동안 내리는 비",
     wind: "하루 평균 바람",
-    heatIndex: "고온과 습도를 반영한 열 스트레스",
-    feelsLike: "더위·추위·바람을 반영한 대표 체감기온"
+    apparentTemperature: "월에 따라 열지수 또는 체감기온 적용"
   };
   return items.map((metric) => ({
     ...metric,
@@ -1694,11 +2225,12 @@ function simplifyPublicMetrics(items) {
   }));
 }
 function deriveRemoteMetrics({
+  date,
   raw,
   remoteResponse
 }) {
   if (!remoteResponse || !remoteResponse.publicSafe) return [];
-  return remoteResponse.values.map((metric) => ({
+  const metrics = remoteResponse.values.map((metric) => ({
     key: metric.key,
     label: metric.label,
     value: metric.value,
@@ -1709,6 +2241,18 @@ function deriveRemoteMetrics({
     available: metric.available !== false && metric.numericValue !== void 0,
     ...raw && metric.rawValue !== void 0 ? { rawValue: metric.rawValue, rawNumericValue: metric.rawNumericValue } : {}
   }));
+  const basis = apparentTemperatureBasis(date);
+  const apparentMetric = metrics.find((metric) => metric.key === basis.metricKey);
+  const publicMetrics = metrics.filter((metric) => !["heatIndex", "feelsLike"].includes(metric.key));
+  if (apparentMetric) {
+    publicMetrics.push({
+      ...apparentMetric,
+      key: "apparentTemperature",
+      label: basis.label,
+      caption: `${Number(String(date).slice(5, 7))}월 기준 · ${apparentMetric.caption}`
+    });
+  }
+  return publicMetrics;
 }
 function MetricGrid({ items, onExportMetric }) {
   return /* @__PURE__ */ jsx("div", { className: "metric-grid", children: items.map((metric) => {
@@ -1757,8 +2301,8 @@ function metricIcon(metric) {
   if (metric.label.includes("최저")) return /* @__PURE__ */ jsx(ThermometerSnowflake, { size: 20 });
   if (metric.label.includes("강수")) return /* @__PURE__ */ jsx(CloudRain, { size: 20 });
   if (metric.label.includes("풍속")) return /* @__PURE__ */ jsx(Wind, { size: 20 });
-  if (metric.label.includes("열지수")) return /* @__PURE__ */ jsx(ThermometerSun, { size: 20 });
-  if (metric.label.includes("체감")) return /* @__PURE__ */ jsx(ThermometerSun, { size: 20 });
+  if (metric.label.includes("열지수")) return /* @__PURE__ */ jsx(Gauge, { size: 20 });
+  if (metric.label.includes("체감")) return /* @__PURE__ */ jsx(CloudSun, { size: 20 });
   if (metric.label.includes("습도")) return /* @__PURE__ */ jsx(Droplets, { size: 20 });
   if (metric.tone === "warn") return /* @__PURE__ */ jsx(TriangleAlert, { size: 20 });
   if (metric.tone === "hot") return /* @__PURE__ */ jsx(ThermometerSun, { size: 20 });
@@ -1800,6 +2344,17 @@ function MapPanel({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  useEffect(() => {
+    const element = mapElementRef.current;
+    if (!element || !onCoordinateChange) return;
+    const handleWheel = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setZoom((currentZoom) => mapZoomAfterWheel(currentZoom, event.deltaY));
+    };
+    element.addEventListener("wheel", handleWheel, { passive: false });
+    return () => element.removeEventListener("wheel", handleWheel);
+  }, [onCoordinateChange]);
   const viewport = useMemo(
     () => buildMapViewport({
       latitude: mapCenter.latitude,
@@ -1811,6 +2366,7 @@ function MapPanel({
     [mapCenter.latitude, mapCenter.longitude, mapSize.height, mapSize.width, zoom]
   );
   const markerPosition = coordinateToMapPosition({ latitude, longitude }, viewport);
+  const mapScale = mapScaleForZoom(mapCenter.latitude, zoom);
   const selectCoordinateFromEvent = (event) => {
     if (!onCoordinateChange) return;
     if (suppressClickRef.current) {
@@ -1822,11 +2378,6 @@ function MapPanel({
     const y = clamp(event.clientY - rect.top, 0, rect.height);
     onCoordinateChange(mapPositionToCoordinate(x, y, viewport));
   };
-  const zoomMap = (event) => {
-    if (!onCoordinateChange) return;
-    event.preventDefault();
-    setZoom((currentZoom) => clamp(currentZoom + (event.deltaY < 0 ? 1 : -1), 2, 10));
-  };
   const changeZoom = (direction) => {
     setZoom((currentZoom) => clamp(currentZoom + direction, 2, 10));
   };
@@ -1835,15 +2386,17 @@ function MapPanel({
   };
   const startDrag = (event) => {
     if (!onCoordinateChange) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
     event.preventDefault();
+    event.currentTarget.focus();
     try {
       event.currentTarget.setPointerCapture(event.pointerId);
     } catch {
     }
-    dragRef.current = { x: event.clientX, y: event.clientY, center: mapCenter, current: mapCenter, moved: false };
+    dragRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, center: mapCenter, current: mapCenter, moved: false };
   };
   const dragMap = (event) => {
-    if (!onCoordinateChange || !dragRef.current) return;
+    if (!onCoordinateChange || !dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
     event.preventDefault();
     const dx = (event.clientX - dragRef.current.x) / mapTileSize;
     const dy = (event.clientY - dragRef.current.y) / mapTileSize;
@@ -1859,7 +2412,7 @@ function MapPanel({
     setMapCenter(draggedCenter);
   };
   const endDrag = (event) => {
-    if (!onCoordinateChange || !dragRef.current) return;
+    if (!onCoordinateChange || !dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
     event.preventDefault();
     try {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -1872,11 +2425,36 @@ function MapPanel({
     dragRef.current = null;
     if (wasMoved) {
       suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
       onCoordinateChange(draggedCenter);
     }
   };
+  const cancelDrag = (event) => {
+    if (!dragRef.current || dragRef.current.pointerId !== event.pointerId) return;
+    const originalCenter = dragRef.current.center;
+    dragRef.current = null;
+    suppressClickRef.current = false;
+    setMapCenter(originalCenter);
+  };
   const selectCoordinateFromKeyboard = (event) => {
     if (!onCoordinateChange) return;
+    if (event.key === "+" || event.key === "=") {
+      event.preventDefault();
+      changeZoom(1);
+      return;
+    }
+    if (event.key === "-" || event.key === "_") {
+      event.preventDefault();
+      changeZoom(-1);
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      resetMapCenter();
+      return;
+    }
     const step = Math.max(0.01, 30 / 2 ** zoom);
     const movements = {
       ArrowUp: { latitude: step, longitude: 0 },
@@ -1921,13 +2499,14 @@ function MapPanel({
         role: onCoordinateChange ? "button" : void 0,
         tabIndex: onCoordinateChange ? 0 : void 0,
         "aria-label": onCoordinateChange ? "지도에서 좌표 선택" : "OpenStreetMap 기반 기후 조회 지도",
+        "aria-keyshortcuts": onCoordinateChange ? "ArrowUp ArrowDown ArrowLeft ArrowRight Plus Minus Home Enter Space" : void 0,
         onClick: selectCoordinateFromEvent,
         onKeyDown: selectCoordinateFromKeyboard,
-        onWheel: zoomMap,
         onPointerDown: startDrag,
         onPointerMove: dragMap,
         onPointerUp: endDrag,
-        onPointerCancel: endDrag,
+        onPointerCancel: cancelDrag,
+        onLostPointerCapture: endDrag,
         children: viewport.tiles.map((tile) => /* @__PURE__ */ jsx(
           "img",
           {
@@ -1942,19 +2521,17 @@ function MapPanel({
       }
     ),
     /* @__PURE__ */ jsx(
-      "button",
+      "div",
       {
         className: "map-marker",
-        "aria-label": `선택 좌표 ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
-        onClick: () => onCoordinateChange?.({ latitude, longitude }),
+        "aria-hidden": "true",
         style: { left: markerPosition.x, top: markerPosition.y },
-        type: "button",
         children: /* @__PURE__ */ jsx(LocateFixed, { size: 20 })
       }
     ),
     /* @__PURE__ */ jsxs("div", { className: "map-scale", "aria-hidden": "true", children: [
-      /* @__PURE__ */ jsx("span", {}),
-      /* @__PURE__ */ jsx("b", { children: "50 km" })
+      /* @__PURE__ */ jsx("span", { style: { width: mapScale.width } }),
+      /* @__PURE__ */ jsx("b", { children: mapScale.label })
     ] }),
     /* @__PURE__ */ jsx("div", { className: "map-attribution", children: "지도 데이터: OpenStreetMap 기여자" }),
     /* @__PURE__ */ jsxs("div", { className: "map-status", children: [
@@ -2052,21 +2629,41 @@ function wrapTileX(tileX, dimension) {
 function normalizeLongitude(longitude) {
   return ((longitude + 180) % 360 + 360) % 360 - 180;
 }
-function downloadTextFile(filename, text) {
-  downloadBlob(filename, text, "text/plain;charset=utf-8");
+async function saveTextFile(filename, text) {
+  const target = await requestSaveTarget({
+    filename,
+    mimeType: "text/plain",
+    extension: ".txt",
+    description: "기후 학습 활동 문서"
+  });
+  if (target.kind === "cancelled") return saveBlobToTarget(target, new Blob());
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  return saveBlobToTarget(target, blob);
 }
-function downloadBlob(filename, content, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  window.setTimeout(() => {
-    link.remove();
-    URL.revokeObjectURL(url);
-  }, 2e3);
+function describeSaveResult(result, label) {
+  if (result.outcome === "written") return `${label} 파일을 저장했습니다.`;
+  if (result.outcome === "cancelled") return `${label} 저장을 취소했습니다.`;
+  return `${label} 다운로드를 요청했습니다. 브라우저의 다운로드 목록에서 파일을 확인하세요.`;
+}
+async function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand("copy");
+    field.remove();
+    return copied;
+  } catch {
+    return false;
+  }
 }
 function Panel({ title, icon, children }) {
   return /* @__PURE__ */ jsxs("section", { className: "panel", children: [
@@ -2106,10 +2703,22 @@ function CoordinateInput({
     )
   ] });
 }
-function DateField({ label, value, onChange }) {
+function ConfirmedDateInput({ compact = false, label, min = "2035-01-01", max = "2099-12-31", value, onConfirm, showPickerButton = true }) {
   const inputRef = useRef(null);
-  const updateValue = (nextValue) => {
-    if (nextValue) onChange(nextValue);
+  const [draftValue, setDraftValue] = useState(value);
+  const [errorMessage, setErrorMessage] = useState("");
+  useEffect(() => {
+    setDraftValue(value);
+    setErrorMessage("");
+  }, [value]);
+  const confirmValue = () => {
+    if (!isCompleteDateValue(draftValue, { min, max })) {
+      setErrorMessage("연도, 월, 일을 모두 선택한 뒤 확인을 누르세요.");
+      inputRef.current?.focus();
+      return;
+    }
+    setErrorMessage("");
+    onConfirm(draftValue);
   };
   const openCalendar = () => {
     const input = inputRef.current;
@@ -2121,10 +2730,9 @@ function DateField({ label, value, onChange }) {
       input.click();
     }
   };
-  return /* @__PURE__ */ jsxs("label", { className: "field date-field", children: [
-    /* @__PURE__ */ jsx("span", { children: label }),
-    /* @__PURE__ */ jsxs("div", { className: "date-input-wrap", children: [
-      /* @__PURE__ */ jsx(
+  return /* @__PURE__ */ jsxs(Fragment, { children: [
+    /* @__PURE__ */ jsxs("div", { className: `date-input-wrap${showPickerButton ? "" : " without-picker"}${errorMessage ? " invalid" : ""}${compact ? " compact" : ""}`, children: [
+      showPickerButton ? /* @__PURE__ */ jsx(
         "button",
         {
           className: "date-picker-button",
@@ -2134,21 +2742,41 @@ function DateField({ label, value, onChange }) {
           onClick: openCalendar,
           children: /* @__PURE__ */ jsx(CalendarDays, { size: 18 })
         }
-      ),
+      ) : null,
       /* @__PURE__ */ jsx(
         "input",
         {
           ref: inputRef,
           type: "date",
-          min: "2035-01-01",
-          max: "2099-12-31",
-          value,
-          onInput: (event) => updateValue(event.currentTarget.value),
-          onChange: (event) => updateValue(event.currentTarget.value),
+          min,
+          max,
+          value: draftValue,
+          onInput: (event) => {
+            setDraftValue(event.currentTarget.value);
+            setErrorMessage("");
+          },
+          onChange: (event) => {
+            setDraftValue(event.currentTarget.value);
+            setErrorMessage("");
+          },
+          onKeyDown: (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            confirmValue();
+          },
+          "aria-invalid": Boolean(errorMessage),
           "aria-label": label
         }
-      )
-    ] })
+      ),
+      /* @__PURE__ */ jsx("button", { "aria-label": compact ? `${label} 확인` : void 0, className: "date-confirm-button", onClick: confirmValue, title: compact ? "날짜 확인" : void 0, type: "button", children: compact ? /* @__PURE__ */ jsx(Check, { size: 14 }) : "확인" })
+    ] }),
+    errorMessage ? /* @__PURE__ */ jsx("small", { className: "date-error-message", role: "alert", children: errorMessage }) : null
+  ] });
+}
+function DateField({ label, min = "2035-01-01", max = "2099-12-31", value, onChange }) {
+  return /* @__PURE__ */ jsxs("div", { className: "field date-field", children: [
+    /* @__PURE__ */ jsx("span", { children: label }),
+    /* @__PURE__ */ jsx(ConfirmedDateInput, { label, max, min, onConfirm: onChange, value })
   ] });
 }
 function NoticeCard({ title, body }) {
@@ -2166,6 +2794,12 @@ function Stat({ label, value, sub }) {
 }
 function registerAppShell() {
   if (!("serviceWorker" in navigator)) return;
+  if (["localhost", "127.0.0.1", "::1"].includes(window.location.hostname)) {
+    navigator.serviceWorker.getRegistrations().then((registrations) => {
+      registrations.forEach((registration) => registration.unregister());
+    }).catch(() => void 0);
+    return;
+  }
   window.addEventListener("load", () => {
     navigator.serviceWorker.register(new URL("sw.js", document.baseURI), { scope: "./" }).catch(() => void 0);
   });
