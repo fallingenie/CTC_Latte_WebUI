@@ -1,13 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  apparentTemperatureBasis,
+  buildClimateCsv,
   buildPlainLanguageSummary,
   calendarPeriodEnd,
   compareMetricSnapshots,
   createMetricSnapshot,
   decodeLessonState,
   encodeLessonState,
+  formatPublicMetricValue,
   isCompleteDateValue,
+  mapMarkerSizeForZoom,
   mapScaleForZoom,
   mapZoomAfterWheel,
   normalizeMetadataOptions,
@@ -58,14 +62,22 @@ test("메타데이터 선택지는 중복을 제거하고 빈 값이면 대체�
   assert.deepEqual(normalizeMetadataOptions({}, "models", ["기본"]), ["기본"]);
 });
 
-test("일반인 설명은 실제 제공 지표만 사용한다", () => {
+test("일반인 설명은 실제 제공 지표와 읽기 쉬운 표준 단위를 사용한다", () => {
   const summary = buildPlainLanguageSummary([
-    { key: "tasmax", numericValue: 33.2, unit: "도", available: true },
+    { key: "tasmax", numericValue: 33.78, unit: "도", available: true },
+    { key: "apparentTemperature", numericValue: 42.23, unit: "도", available: true },
+    { key: "precipitation", numericValue: 0.89, unit: "밀리미터/일", available: true },
     { key: "wind", numericValue: 4.1, unit: "미터/초", available: true }
   ], "2050-08-01");
-  assert.match(summary, /33.2/);
-  assert.match(summary, /4.1/);
-  assert.match(summary, /단기 일기예보가 아닙니다/);
+  assert.equal(summary, "최고 기온은 33.78℃입니다. 이 날 체감온도는 42.23℃입니다. 예상 평균 일일 강수량은 0.89mm입니다. 이 값은 기후 시나리오에 근거한 자료이며 단기 일기예보가 아닙니다.");
+});
+
+test("일반 요약 카드는 지표별 표준 단위를 사용한다", () => {
+  assert.equal(formatPublicMetricValue({ key: "tasmax", numericValue: 33.78 }), "33.78℃");
+  assert.equal(formatPublicMetricValue({ key: "tasmin", numericValue: 21.5 }), "21.5℃");
+  assert.equal(formatPublicMetricValue({ key: "apparentTemperature", numericValue: 42.23 }), "42.23℃");
+  assert.equal(formatPublicMetricValue({ key: "precipitation", numericValue: 0.89 }), "0.89 mm/day");
+  assert.equal(formatPublicMetricValue({ key: "wind", numericValue: 4.1 }), "4.1 m/s");
 });
 
 test("기후모델 원자료는 CSV의 raw 열에 기록한다", () => {
@@ -80,6 +92,42 @@ test("기후모델 원자료는 CSV의 raw 열에 기록한다", () => {
     corrected: metric.corrected,
     raw: undefined
   });
+});
+
+test("연구용 CSV는 생성 시각과 자료 출처 및 월별 체감 기준을 보존한다", () => {
+  const csv = buildClimateCsv({
+    attributionLabels: ["자료 제공자 A", "자료 제공자 B"],
+    dataMode: "bias-corrected",
+    dates: ["2050-01-15", "2050-08-15"],
+    generatedAt: "2026-07-13T00:00:00Z",
+    latitude: 36.35,
+    longitude: 127.38,
+    model: "MIROC6",
+    nearestDistanceKm: 1.2345,
+    scenario: "고배출 경로",
+    metrics: [{
+      key: "apparentTemperature",
+      label: "월별 체감 지표",
+      unit: "도",
+      corrected: { p10: [-5, 38], p50: [-3, 42], p90: [-1, 46] },
+      raw: { p10: [-6, 37], p50: [-4, 41], p90: [-2, 45] },
+      coverage: [true, true],
+      modelCounts: [1, 1]
+    }]
+  });
+  const [header, winter, summer] = csv.split("\r\n");
+  assert.match(header, /"generated_at","attribution_labels"$/u);
+  assert.match(winter, /"feels_like"/u);
+  assert.match(summer, /"heat_index"/u);
+  assert.match(summer, /"2026-07-13T00:00:00Z","자료 제공자 A \| 자료 제공자 B"$/u);
+  assert.match(summer, /"1\.234"/u);
+});
+
+test("월별 체감 기준은 5~9월 열지수, 나머지 달은 체감기온이다", () => {
+  assert.equal(apparentTemperatureBasis("2050-05-01").key, "heat_index");
+  assert.equal(apparentTemperatureBasis("2050-09-30").key, "heat_index");
+  assert.equal(apparentTemperatureBasis("2050-10-01").key, "feels_like");
+  assert.equal(apparentTemperatureBasis("2050-04-30").key, "feels_like");
 });
 
 test("단일 날짜 그래프는 가로축 중앙에 점을 배치한다", () => {
@@ -113,6 +161,14 @@ test("지도 휠은 2~10단계 범위에서 확대와 축소를 계산한다", (
   assert.equal(mapZoomAfterWheel(5, 120), 4);
   assert.equal(mapZoomAfterWheel(10, -120), 10);
   assert.equal(mapZoomAfterWheel(2, 120), 2);
+});
+
+test("지도 마커는 축소 화면에서 작아지고 확대 화면에서 제한적으로 커진다", () => {
+  assert.equal(mapMarkerSizeForZoom(2), 32);
+  assert.equal(mapMarkerSizeForZoom(5), 44);
+  assert.equal(mapMarkerSizeForZoom(8), 54);
+  assert.equal(mapMarkerSizeForZoom(10), 54);
+  assert.equal(mapMarkerSizeForZoom(Number.NaN), 44);
 });
 
 test("지도 축척은 확대할수록 더 짧은 실제 거리를 표시한다", () => {

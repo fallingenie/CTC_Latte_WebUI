@@ -1,4 +1,4 @@
-const CACHE_NAME = "climate-web-shell-v11";
+const CACHE_NAME = "climate-web-shell-v12";
 const SHELL_INDEX = new URL("index.html", self.location.href).toString();
 const SHELL_ASSETS = [
   "./",
@@ -38,6 +38,23 @@ self.addEventListener("fetch", (event) => {
           return response;
         })
         .catch(() => caches.match(SHELL_INDEX))
+    );
+    return;
+  }
+
+  const refreshBeforeCache = ["script", "style", "worker"].includes(request.destination)
+    || /\.(?:css|js)$/iu.test(url.pathname);
+  if (refreshBeforeCache) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          }
+          return response;
+        })
+        .catch(async (error) => (await caches.match(request)) || Promise.reject(error))
     );
     return;
   }

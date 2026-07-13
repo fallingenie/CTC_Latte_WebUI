@@ -99,11 +99,20 @@ export function buildPlainLanguageSummary(metrics, date) {
   const wind = available.get("wind");
   const comfort = available.get("apparentTemperature");
   const parts = [];
-  if (temperature) parts.push(`낮 최고기온은 ${displayMetricValue(temperature)}입니다`);
-  if (comfort) parts.push(`${Number(String(date).slice(5, 7))}월 체감 기준값은 ${displayMetricValue(comfort)}입니다`);
-  if (rain) parts.push(`하루 강수량은 ${displayMetricValue(rain)}입니다`);
-  if (wind) parts.push(`평균 풍속은 ${displayMetricValue(wind)}입니다`);
-  return `${parts.slice(0, 3).join(". ")}. 이 값은 기후 시나리오 자료이며 단기 일기예보가 아닙니다.`;
+  if (temperature) parts.push(`최고 기온은 ${formatNumber(temperature.numericValue)}℃입니다.`);
+  if (comfort) parts.push(`이 날 체감온도는 ${formatNumber(comfort.numericValue)}℃입니다.`);
+  if (rain) parts.push(`예상 평균 일일 강수량은 ${formatNumber(rain.numericValue)}mm입니다.`);
+  if (wind) parts.push(`평균 풍속은 ${formatNumber(wind.numericValue)}m/s입니다.`);
+  return `${parts.slice(0, 3).join(" ")} 이 값은 기후 시나리오에 근거한 자료이며 단기 일기예보가 아닙니다.`;
+}
+
+export function formatPublicMetricValue(metric) {
+  if (!Number.isFinite(metric?.numericValue)) return String(metric?.value ?? "자료 없음");
+  const value = formatNumber(metric.numericValue);
+  if (["tasmax", "tasmin", "apparentTemperature", "heatIndex", "feelsLike"].includes(metric.key)) return `${value}℃`;
+  if (metric.key === "precipitation") return `${value} mm/day`;
+  if (metric.key === "wind") return `${value} m/s`;
+  return `${value}${metric.unit ? ` ${metric.unit}` : ""}`;
 }
 
 export function buildStudentNotebookText({ baseline, comparison, focusLabel, note }) {
@@ -171,6 +180,12 @@ export function mapZoomAfterWheel(currentZoom, deltaY) {
   return Math.min(10, Math.max(2, zoom + (wheelDelta < 0 ? 1 : -1)));
 }
 
+export function mapMarkerSizeForZoom(zoom) {
+  const safeZoom = Math.min(10, Math.max(2, Number(zoom)));
+  if (!Number.isFinite(safeZoom)) return 44;
+  return Math.min(54, Math.round(32 + (safeZoom - 2) * 4));
+}
+
 export function mapScaleForZoom(latitude, zoom, maximumWidth = 48) {
   const safeLatitude = Math.min(85.0511, Math.max(-85.0511, Number(latitude)));
   const safeZoom = Math.min(10, Math.max(2, Number(zoom)));
@@ -204,6 +219,71 @@ export function resolveExportPercentiles(metric, dataMode) {
   };
 }
 
+export function apparentTemperatureBasis(date) {
+  const month = Number(String(date).slice(5, 7));
+  const usesHeatIndex = Number.isInteger(month) && month >= 5 && month <= 9;
+  return usesHeatIndex
+    ? { key: "heat_index", metricKey: "heatIndex", label: "열지수" }
+    : { key: "feels_like", metricKey: "feelsLike", label: "체감기온" };
+}
+
+export function buildClimateCsv(response) {
+  const header = [
+    "date",
+    "latitude",
+    "longitude",
+    "scenario",
+    "model",
+    "metric_key",
+    "metric_label",
+    "unit",
+    "calculation_basis",
+    "data_mode",
+    "corrected_p10",
+    "corrected_p50",
+    "corrected_p90",
+    "raw_p10",
+    "raw_p50",
+    "raw_p90",
+    "coverage",
+    "model_count",
+    "nearest_reference_distance_km",
+    "generated_at",
+    "attribution_labels"
+  ];
+  const attribution = Array.isArray(response.attributionLabels) ? response.attributionLabels.join(" | ") : "";
+  const rows = [header];
+  response.dates.forEach((date, dateIndex) => {
+    response.metrics.forEach((metric) => {
+      const exportSeries = resolveExportPercentiles(metric, response.dataMode);
+      rows.push([
+        date,
+        Number(response.latitude).toFixed(6),
+        Number(response.longitude).toFixed(6),
+        response.scenario,
+        response.model,
+        metric.key,
+        metric.label,
+        metric.unit,
+        metric.key === "apparentTemperature" ? apparentTemperatureBasis(date).key : "",
+        response.dataMode,
+        csvNumber(exportSeries.corrected?.p10[dateIndex]),
+        csvNumber(exportSeries.corrected?.p50[dateIndex]),
+        csvNumber(exportSeries.corrected?.p90[dateIndex]),
+        csvNumber(exportSeries.raw?.p10[dateIndex]),
+        csvNumber(exportSeries.raw?.p50[dateIndex]),
+        csvNumber(exportSeries.raw?.p90[dateIndex]),
+        metric.coverage[dateIndex] ? "available" : "missing",
+        String(metric.modelCounts[dateIndex] ?? 0),
+        response.nearestDistanceKm === void 0 ? "" : Number(response.nearestDistanceKm).toFixed(3),
+        response.generatedAt ?? "",
+        attribution
+      ]);
+    });
+  });
+  return rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
 export function seriesPointX(position, count, left, width) {
   const values = [position, count, left, width].map(Number);
   if (!values.every(Number.isFinite) || values[1] < 1 || values[3] < 0) {
@@ -221,12 +301,16 @@ function snapshotLines(title, snapshot) {
   ];
 }
 
-function displayMetricValue(metric) {
-  return `${formatNumber(metric.numericValue)}${metric.unit ? ` ${metric.unit}` : ""}`;
-}
-
 function formatNumber(value) {
   return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
+}
+
+function csvNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+}
+
+function csvCell(value) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
 
 function safeText(value, maximumLength) {

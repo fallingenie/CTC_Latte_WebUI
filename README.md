@@ -35,8 +35,13 @@ corepack pnpm build
 공개 소스에서 루트 배포본을 동일하게 재현하는지는 다음 명령으로 검증합니다.
 
 ```powershell
+corepack pnpm test
 corepack pnpm verify:reproducible
 ```
+
+`pnpm test`는 실제자료 API 경로 제한, 날짜 확인, 지도 확대·축소, 원자료 CSV 열, 월별 체감 기준, CSV 출처 정보와 파일 저장 결과를 검증합니다. GitHub의 검증 워크플로는 Windows와 Linux에서 동일한 테스트와 재현 빌드를 실행합니다.
+
+실제자료 자체의 배열·API 일치 여부는 WebUI 저장소의 합성값으로 대신하지 않습니다. 운영 데이터 검증에서는 정본의 Zarr·Parquet를 직접 읽는 검증기와 같은 좌표·날짜·시나리오·모델을 조회하는 API 검증기를 함께 실행해야 합니다.
 
 ## 자료 연결
 
