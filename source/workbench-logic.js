@@ -99,11 +99,16 @@ export function buildPlainLanguageSummary(metrics, date) {
   const wind = available.get("wind");
   const comfort = available.get("apparentTemperature");
   const parts = [];
-  if (temperature) parts.push(`최고 기온은 ${formatNumber(temperature.numericValue)}℃입니다.`);
+  if (temperature && rain) {
+    parts.push(`예상 최고 기온은 ${formatNumber(temperature.numericValue)}℃이며, 평균 일일 강수량은 ${formatNumber(rain.numericValue)}mm입니다.`);
+  } else if (temperature) {
+    parts.push(`예상 최고 기온은 ${formatNumber(temperature.numericValue)}℃입니다.`);
+  } else if (rain) {
+    parts.push(`평균 일일 강수량은 ${formatNumber(rain.numericValue)}mm입니다.`);
+  }
   if (comfort) parts.push(`이 날 체감온도는 ${formatNumber(comfort.numericValue)}℃입니다.`);
-  if (rain) parts.push(`예상 평균 일일 강수량은 ${formatNumber(rain.numericValue)}mm입니다.`);
   if (wind) parts.push(`평균 풍속은 ${formatNumber(wind.numericValue)}m/s입니다.`);
-  return `${parts.slice(0, 3).join(" ")} 이 값은 기후 시나리오에 근거한 자료이며 단기 일기예보가 아닙니다.`;
+  return `${parts.join(" ")}\n이 값은 기후 시나리오에 근거한 자료이며 단기 일기예보가 아닙니다.`;
 }
 
 export function formatPublicMetricValue(metric) {

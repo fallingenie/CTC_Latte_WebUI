@@ -69,7 +69,17 @@ test("일반인 설명은 실제 제공 지표와 읽기 쉬운 표준 단위를
     { key: "precipitation", numericValue: 0.89, unit: "밀리미터/일", available: true },
     { key: "wind", numericValue: 4.1, unit: "미터/초", available: true }
   ], "2050-08-01");
-  assert.equal(summary, "최고 기온은 33.78℃입니다. 이 날 체감온도는 42.23℃입니다. 예상 평균 일일 강수량은 0.89mm입니다. 이 값은 기후 시나리오에 근거한 자료이며 단기 일기예보가 아닙니다.");
+  assert.equal(summary, "예상 최고 기온은 33.78℃이며, 평균 일일 강수량은 0.89mm입니다. 이 날 체감온도는 42.23℃입니다. 평균 풍속은 4.1m/s입니다.\n이 값은 기후 시나리오에 근거한 자료이며 단기 일기예보가 아닙니다.");
+});
+
+test("일반인 설명은 시나리오 안내를 새 줄에 분리한다", () => {
+  const summary = buildPlainLanguageSummary([
+    { key: "tasmax", available: true, numericValue: 45.04 },
+    { key: "precipitation", available: true, numericValue: 0 },
+    { key: "wind", available: true, numericValue: 3.71 }
+  ], "2050-08-01");
+
+  assert.equal(summary, "예상 최고 기온은 45.04℃이며, 평균 일일 강수량은 0mm입니다. 평균 풍속은 3.71m/s입니다.\n이 값은 기후 시나리오에 근거한 자료이며 단기 일기예보가 아닙니다.");
 });
 
 test("일반 요약 카드는 지표별 표준 단위를 사용한다", () => {
