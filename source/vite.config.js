@@ -17,6 +17,7 @@ const climateProxy = {
 };
 
 export default defineConfig({
+  appType: "mpa",
   root: sourceRoot,
   base: "./",
   publicDir: path.join(sourceRoot, "public"),

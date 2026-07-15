@@ -6,8 +6,13 @@ import { runInNewContext } from "node:vm";
 const source = await readFile(new URL("../source/public-app.js", import.meta.url), "utf8");
 const styleSource = await readFile(new URL("../source/public-app.css", import.meta.url), "utf8");
 const serviceWorkerSource = await readFile(new URL("../source/public/sw.js", import.meta.url), "utf8");
+const viteConfigSource = await readFile(new URL("../source/vite.config.js", import.meta.url), "utf8");
 const runtimeConfig = JSON.parse(await readFile(new URL("../source/public/runtime-config.json", import.meta.url), "utf8"));
 const productionDataPolicy = JSON.parse(await readFile(new URL("../config/production-data-policy.json", import.meta.url), "utf8"));
+
+test("해시 기반 Web UI는 미등록 경로를 index로 우회하지 않는다", () => {
+  assert.match(viteConfigSource, /appType: "mpa"/u);
+});
 
 function createServiceWorkerHarness() {
   const listeners = new Map();
