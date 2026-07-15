@@ -248,6 +248,9 @@ test("정상 조회 호환 계층은 안전한 추가 필드를 무시하고 내
 test("정상 조회의 추가 필드도 비공개 위치나 인증 정보를 암시하면 거부한다", () => {
   for (const response of [
     { ...validQueryResponse, qualityNotes: "gs://private-bucket/raw" },
+    { ...validQueryResponse, diagnostics: { auth: "Bearer top-secret" } },
+    { ...validQueryResponse, diagnostics: { note: "Bearer top-secret" } },
+    { ...validQueryResponse, diagnostics: { note: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature123" } },
     { ...validQueryResponse, sourcePath: "redacted" },
     { ...validSeriesResponse, diagnostics: { accessToken: "redacted" } },
     { ...validMetadata, qualitySummary: { storageId: "redacted" } }

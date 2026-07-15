@@ -687,12 +687,13 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
         scenario: context.scenario,
         model: context.model,
         dataMode: datasetRefresh ? undefined : expectedDataModeRef.current,
-        includeRaw: seriesRequest.includeRaw,
+        includeRaw: datasetRefresh ? undefined : seriesRequest.includeRaw,
         selectedMetrics: requestMetrics
       })) {
         throw new Error("불러온 자료가 선택한 조건이나 기간과 다릅니다. 다시 시도하세요.");
       }
       expectedDataModeRef.current = payload.dataMode;
+      setIncludeRaw(payload.includeRaw);
       let displayPayload = collapseApparentTemperatureSeries(payload, selectedMetrics);
       displayPayload = selectClimateSeriesMetrics(displayPayload, selectedMetrics);
       displayPayload = filterClimateSeriesByMonths(displayPayload, context.seasonMonths);

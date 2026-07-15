@@ -104,7 +104,7 @@ const PUBLIC_RETRYABLE_ERROR_ALLOWED_FIELDS = Object.freeze([
 const PUBLIC_API_ALLOWED_FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\[\])?(?:\.[A-Za-z][A-Za-z0-9_]*(?:\[\])?)*$/u;
 const PUBLIC_API_RESPONSE_ERROR = "공개 기후 자료 응답이 허용된 공개 계약과 맞지 않습니다.";
 const PUBLIC_CLIMATE_ATTRIBUTION_LABEL_SET = new Set(PUBLIC_CLIMATE_ATTRIBUTION_LABELS);
-const PUBLIC_API_FORBIDDEN_EXTENSION_FIELD_PATTERN = /^(?:(?:.*_)?(?:path|url|uri|credential|credentials|secret|secrets|token|tokens|password|passwords|authorization)|(?:file|folder|bucket|project|storage|repository|repo)_id|(?:api|access|secret)_key)$/u;
+const PUBLIC_API_FORBIDDEN_EXTENSION_FIELD_PATTERN = /^(?:(?:.*_)?(?:path|url|uri|auth|authentication|authorization|credential|credentials|secret|secrets|token|tokens|password|passwords|bearer|jwt|cookie|cookies)|(?:file|folder|bucket|project|storage|repository|repo)_id|(?:api|access|secret)_key)$/u;
 const PUBLIC_API_FORBIDDEN_TEXT_PATTERNS = Object.freeze([
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u,
   /\b(?:file|gs|gcs|s3|az|ssh|git):\/\//iu,
@@ -114,6 +114,9 @@ const PUBLIC_API_FORBIDDEN_TEXT_PATTERNS = Object.freeze([
   /\/(?:home|users|mnt|tmp|var|srv|opt|data)(?:\/|$)/iu,
   /\.(?:ctwebui|ctcapsule|zarr|parquet|nc4?|git)(?:\b|[\\/])/iu,
   /\b(?:github\.com|gitlab\.com|bitbucket\.org)(?:[/:]|$)/iu,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]+/iu,
+  /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/u,
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u,
   /\b(?:file|folder|bucket|project|repository|repo)[_-]?(?:id|path|url|uri)\b/iu,
   /(?:버킷|공유\s*링크|파일\s*식별자|내부\s*경로|비밀값|토큰|액세스\s*키)/u
 ]);
