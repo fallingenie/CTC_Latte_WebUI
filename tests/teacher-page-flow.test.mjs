@@ -30,10 +30,11 @@ test("수업 카드는 필수 비교 조건을 적용하고 수업 조건 단계
 
 test("현재 조회 상태와 비교 자료를 최종 단계 잠금 상태에 동기화한다", () => {
   assert.match(source, /type: TEACHER_FLOW_ACTIONS\.SET_COMPARISON_MATERIALS,[\s\S]*?materials: comparisonPoints/u);
-  assert.match(source, /type: TEACHER_FLOW_ACTIONS\.SET_QUERY_STATUS,[\s\S]*?teacherFlowQueryStatus\(remoteState\.status\)/u);
+  assert.match(source, /resolveTeacherQueryStatus\(remoteState\.status, lessonMetrics, requiredTeacherMetricKeys\)/u);
+  assert.match(source, /type: TEACHER_FLOW_ACTIONS\.SET_QUERY_STATUS,[\s\S]*?status: teacherQueryStatus/u);
   assert.match(source, /validateTeacherReviewReadiness\(teacherFlowState\)/u);
   assert.match(source, /messages: teacherReviewValidation\.errors\.map/u);
-  assert.match(source, /disabled: !currentSnapshot \|\| remoteState\.status !== "ready"/u);
+  assert.match(source, /disabled: !currentSnapshot \|\| teacherQueryStatus !== TEACHER_QUERY_STATUSES\.READY/u);
 });
 
 test("단계 통합 뒤에도 학생 링크와 자료 내보내기 및 DOCX 저장 계약을 유지한다", () => {

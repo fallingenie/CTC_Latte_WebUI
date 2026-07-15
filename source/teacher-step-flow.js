@@ -46,6 +46,29 @@ export const TEACHER_QUERY_STATUSES = Object.freeze({
   ERROR: "error"
 });
 
+/** 수업에 필요한 지표가 확인되면 관련 없는 지표의 결측 때문에 진행을 막지 않는다. */
+export function resolveTeacherQueryStatus(remoteStatus, metrics, requiredMetricKeys) {
+  if (remoteStatus === "ready") return TEACHER_QUERY_STATUSES.READY;
+  if (remoteStatus === "loading") return TEACHER_QUERY_STATUSES.LOADING;
+  if (remoteStatus === "error") return TEACHER_QUERY_STATUSES.ERROR;
+  if (remoteStatus !== "partial" || !Array.isArray(metrics) || !Array.isArray(requiredMetricKeys)) {
+    return TEACHER_QUERY_STATUSES.IDLE;
+  }
+
+  const requiredKeys = [...new Set(requiredMetricKeys
+    .filter((key) => typeof key === "string")
+    .map((key) => key.trim())
+    .filter(Boolean))];
+  if (requiredKeys.length === 0) return TEACHER_QUERY_STATUSES.IDLE;
+
+  const availableKeys = new Set(metrics
+    .filter((metric) => metric?.available !== false && Number.isFinite(metric?.numericValue))
+    .map((metric) => metric.key));
+  return requiredKeys.every((key) => availableKeys.has(key))
+    ? TEACHER_QUERY_STATUSES.READY
+    : TEACHER_QUERY_STATUSES.IDLE;
+}
+
 export const TEACHER_NAVIGATION_LABELS = Object.freeze({
   stepList: "교사용 수업 만들기 단계",
   previous: "이전 단계로 이동",

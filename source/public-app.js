@@ -55,6 +55,7 @@ import {
   TEACHER_STEP_IDS,
   createTeacherStepFlowState,
   getTeacherStepNavigation,
+  resolveTeacherQueryStatus,
   teacherStepFlowReducer,
   validateTeacherLessonConditions,
   validateTeacherReviewReadiness
@@ -2518,13 +2519,6 @@ function TeacherValidationSummary({ messages, successMessage }) {
   ] });
 }
 
-function teacherFlowQueryStatus(status) {
-  if (status === "ready") return TEACHER_QUERY_STATUSES.READY;
-  if (status === "loading") return TEACHER_QUERY_STATUSES.LOADING;
-  if (status === "error") return TEACHER_QUERY_STATUSES.ERROR;
-  return TEACHER_QUERY_STATUSES.IDLE;
-}
-
 function TeacherPage({ datasetState }) {
   const [teacherFlowState, dispatchTeacherFlow] = useReducer(teacherStepFlowReducer, void 0, createInitialTeacherStepFlowState);
   const teacherStepPanelRef = useRef(null);
@@ -2579,6 +2573,16 @@ function TeacherPage({ datasetState }) {
     () => deriveClimateMetrics({ date: lessonDate, raw: false, remoteState }),
     [lessonDate, remoteState]
   );
+  const requiredTeacherMetricKeys = useMemo(
+    () => activeTeacherSample
+      ? [...new Set([...activeTeacherSample.variableKeys, ...activeTeacherSample.derivedKeys])]
+      : [],
+    [activeTeacherSample]
+  );
+  const teacherQueryStatus = useMemo(
+    () => resolveTeacherQueryStatus(remoteState.status, lessonMetrics, requiredTeacherMetricKeys),
+    [remoteState.status, lessonMetrics, requiredTeacherMetricKeys]
+  );
   const currentSnapshot = useMemo(() => createMetricSnapshot(lessonMetrics, {
     date: lessonDate,
     latitude: lessonLocation.latitude,
@@ -2610,9 +2614,9 @@ function TeacherPage({ datasetState }) {
   useEffect(() => {
     dispatchTeacherFlow({
       type: TEACHER_FLOW_ACTIONS.SET_QUERY_STATUS,
-      status: teacherFlowQueryStatus(remoteState.status)
+      status: teacherQueryStatus
     });
-  }, [remoteState.status]);
+  }, [teacherQueryStatus]);
   useEffect(() => {
     teacherStepPanelRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
     teacherStepHeadingRef.current?.focus({ preventScroll: true });
@@ -2896,7 +2900,7 @@ function TeacherPage({ datasetState }) {
           ] })
         ] }),
         /* @__PURE__ */ jsxs("div", { className: "teacher-condition-grid", hidden: isReviewAndShare, children: [
-          /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "자료 상태" }), /* @__PURE__ */ jsx("strong", { children: teacherDataStatusLabel(remoteState.status) })] }),
+          /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "자료 상태" }), /* @__PURE__ */ jsx("strong", { children: teacherDataStatusLabel(teacherQueryStatus) })] }),
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "비교 목록" }), /* @__PURE__ */ jsxs("strong", { children: [comparisonPoints.length, "/", comparisonLimit, "개 자료"] })] })
         ] }),
         isLessonConditions ? /* @__PURE__ */ jsx(TeacherValidationSummary, {
@@ -2921,7 +2925,7 @@ function TeacherPage({ datasetState }) {
             /* @__PURE__ */ jsx("span", { children: point.model })
           ] }, point.id)) })
         ] }) : null,
-        isActivityComposition ? /* @__PURE__ */ jsxs("button", { className: "teacher-start-action", disabled: !currentSnapshot || remoteState.status !== "ready", onClick: startTeacherActivity, type: "button", children: [
+        isActivityComposition ? /* @__PURE__ */ jsxs("button", { className: "teacher-start-action", disabled: !currentSnapshot || teacherQueryStatus !== TEACHER_QUERY_STATUSES.READY, onClick: startTeacherActivity, type: "button", children: [
           /* @__PURE__ */ jsx(PlayCircle, { size: 18 }),
           /* @__PURE__ */ jsx("span", { children: started ? "첫 번째 비교 자료 선택 완료" : "현재 자료를 첫 번째 비교 자료로 정하기" }),
           /* @__PURE__ */ jsx(ArrowRight, { size: 17 })
