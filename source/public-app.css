@@ -1,3 +1,5 @@
+@import "pretendard/dist/web/variable/pretendardvariable.css";
+
 :root {
   --ink: #16201d;
   --ink-strong: #0d1714;
@@ -22,7 +24,7 @@
   --shadow-low: 0 1px 2px rgba(14, 34, 28, 0.06), 0 8px 24px rgba(14, 34, 28, 0.05);
   --shadow-high: 0 22px 70px rgba(14, 34, 28, 0.2);
   --focus: 0 0 0 3px rgba(25, 119, 154, 0.22);
-  font-family: "Pretendard Variable", Pretendard, "SUIT Variable", "Noto Sans KR", "Segoe UI", sans-serif;
+  font-family: "Pretendard Variable", Pretendard, "SUIT Variable", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "맑은 고딕", "Segoe UI", system-ui, sans-serif;
   color: var(--ink);
   background: var(--background);
   font-synthesis: none;
@@ -75,11 +77,11 @@ body {
   overflow-x: hidden;
   background: var(--background);
   color: var(--ink);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.55;
   letter-spacing: 0;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
+  text-rendering: auto;
+  -webkit-font-smoothing: auto;
 }
 
 button,
@@ -118,6 +120,8 @@ svg {
 }
 
 .app {
+  display: flex;
+  flex-direction: column;
   min-height: 100dvh;
 }
 
@@ -279,6 +283,7 @@ svg {
 }
 
 .main {
+  flex: 1 0 auto;
   width: min(100%, 100rem);
   margin: 0 auto;
   padding: 28px clamp(16px, 3vw, 36px) 48px;
@@ -292,7 +297,217 @@ svg {
 }
 
 .topbar-copy {
+  position: relative;
+  width: 100%;
   max-width: 62rem;
+}
+
+.topbar-eyebrow-row {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.source-citation-disclosure {
+  position: relative;
+  z-index: 620;
+  flex: 0 0 auto;
+}
+
+.source-citation-disclosure > summary {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  list-style: none;
+  cursor: pointer;
+}
+
+.source-citation-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.source-citation-disclosure > summary:hover,
+.source-citation-disclosure[open] > summary {
+  border-color: var(--green);
+  background: var(--green-soft);
+  color: var(--green-dark);
+}
+
+.source-citation-disclosure > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.source-citation-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(37rem, calc(100vw - 32px));
+  max-height: min(70dvh, 42rem);
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-high);
+  color: var(--ink);
+}
+
+.source-citation-panel header {
+  padding-bottom: 13px;
+  border-bottom: 1px solid var(--line);
+}
+
+.source-citation-panel header strong {
+  display: block;
+  color: var(--ink-strong);
+  font-size: 16px;
+}
+
+.source-citation-panel header p,
+.source-citation-panel header small,
+.source-citation-panel section p {
+  display: block;
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.source-citation-panel section {
+  margin-top: 15px;
+}
+
+.source-citation-panel h2 {
+  margin: 0 0 8px;
+  color: var(--ink-strong);
+  font-size: 13px;
+}
+
+.source-model-list,
+.source-method-list {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.source-model-list li {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+
+.source-model-list strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.source-model-list li > span {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.source-model-list a,
+.source-method-list a,
+.source-kma-notice a,
+.source-citation-link,
+.site-footer a {
+  color: var(--blue);
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.source-model-list a {
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  font-size: 10px;
+}
+
+.source-model-list small {
+  color: var(--amber);
+  font-size: 11px;
+}
+
+.source-method-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.source-kma-notice > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.source-kma-notice img {
+  display: block;
+  width: auto;
+  max-width: min(12.5rem, 100%);
+  max-height: 42px;
+  object-fit: contain;
+}
+
+.source-citation-link {
+  display: inline-flex;
+  min-height: 36px;
+  margin-top: 16px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.site-footer {
+  position: static;
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.site-footer-inner {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  width: min(100%, 100rem);
+  min-height: 56px;
+  margin: 0 auto;
+  padding: 10px clamp(16px, 3vw, 36px);
+}
+
+.site-footer strong {
+  color: var(--ink);
 }
 
 .eyebrow,
@@ -3997,6 +4212,43 @@ html[data-theme="dark"] .public-condition-strip select {
     line-height: 1.5;
   }
 
+  .topbar-eyebrow-row {
+    gap: 9px;
+    align-items: flex-start;
+  }
+
+  .topbar-eyebrow-row .eyebrow {
+    padding-top: 9px;
+  }
+
+  .source-citation-disclosure > summary {
+    min-height: 36px;
+  }
+
+  .source-citation-panel {
+    right: 0;
+    width: calc(100vw - 24px);
+    max-height: calc(100dvh - 150px);
+    padding: 15px;
+  }
+
+  .source-model-list li,
+  .source-method-list li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .source-model-list li > span {
+    justify-content: flex-start;
+  }
+
+  .site-footer-inner {
+    display: grid;
+    gap: 4px;
+    align-content: center;
+    min-height: 64px;
+    padding: 10px 12px;
+  }
+
   .query-layout {
     gap: 14px;
   }
@@ -4360,6 +4612,101 @@ html[data-theme="dark"] .public-condition-strip select {
   .export-format-control {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* 100% 화면 배율에서도 한글의 획과 보조 정보가 또렷하게 보이도록 최소 크기를 지킨다. */
+.app small,
+.app .problem-category-control button,
+.app .regional-study-heading strong,
+.app .regional-study-options strong,
+.app .date-confirm-button,
+.app .date-error-message,
+.app .mystery-hints ol,
+.app .map-toolbar span,
+.app .map-status span,
+.app .map-attribution,
+.app .map-scale,
+.app .metric-card > span,
+.app .raw-metric,
+.app .metric-export-button,
+.app .stat-card span,
+.app .stat-card p,
+.app .timeline-row p,
+.app .public-condition-strip strong,
+.app .public-command-actions button,
+.app .public-export-action,
+.app .public-results-head span,
+.app .loading-meta,
+.app .period-shortcuts button,
+.app .export-date-grid label,
+.app .export-format-control button small,
+.app .export-metric-list label,
+.app .export-raw-toggle,
+.app .export-context-strip span,
+.app .preview-metric-tabs button,
+.app .chart-heading span,
+.app .chart-tool-row,
+.app .chart-view-controls .chart-reference-clear,
+.app .chart-plot-shell > svg text,
+.app .chart-floating-tooltip,
+.app .chart-hover-readout,
+.app .chart-comparison-detail .comparison-title,
+.app .preview-summary-grid span,
+.app .export-dialog-status,
+.app .teacher-sample-label,
+.app .teacher-sample-meta span,
+.app .teacher-sample-list button,
+.app .lesson-step > span,
+.app .teacher-map-note p,
+.app .teacher-condition-grid span,
+.app .teacher-condition-grid strong,
+.app .student-problem-question span,
+.app .student-microclimate-extension strong,
+.app .mystery-answer strong,
+.app .student-focus-options button,
+.app .comparison-toolbar button,
+.app .student-save-action,
+.app .public-decade-picker button,
+.app .student-conclusion-options legend,
+.app .student-conclusion-options button,
+.app .comparison-toolbar strong,
+.app .comparison-toolbar span,
+.app .comparison-table > div,
+.app .teacher-text-field,
+.app .teacher-comparison-list strong,
+.app .teacher-comparison-list span,
+.app .teacher-empty-comparison,
+.app .public-condition-strip input,
+.app .public-condition-strip select,
+.app .public-condition-strip .date-input-wrap input,
+.app .public-condition-strip .date-confirm-button,
+.app .public-decade-picker > span,
+.app .public-location strong,
+.app .teacher-next-step > span,
+.app .teacher-action-heading strong,
+.app .teacher-inquiry-flow p,
+.app .teacher-validation-summary strong,
+.app .teacher-validation-summary li,
+.app .teacher-review-brief span,
+.app .teacher-review-comparisons li > span:last-child,
+.app .teacher-review-comparisons strong,
+.app .teacher-step-navigation button,
+.app .teacher-step-count,
+.app .teacher-step-label strong {
+  font-size: 0.75rem;
+}
+
+.app .student-prompt,
+.app .student-workbench .workbench-heading p,
+.app .public-plain-summary,
+.app .teacher-sample-library-heading p,
+.app .teacher-sample-list p,
+.app .teacher-panel-title p,
+.app .teacher-data-workbench .panel-heading-row p,
+.app .teacher-inquiry-flow p,
+.app .teacher-step-heading p,
+.app .teacher-validation-summary strong {
+  font-size: 0.8125rem;
 }
 
 @media (max-width: 960px) {
@@ -5473,4 +5820,17 @@ html[data-theme="dark"] .public-condition-strip select {
     padding-inline: 5px;
     font-size: 9px;
   }
+}
+
+/* 단계 흐름의 핵심 문구는 뒤쪽 반응형 규칙에도 12px 아래로 줄이지 않는다. */
+.app small,
+.app .teacher-step-heading > span,
+.app .teacher-step-label strong,
+.app .teacher-step-navigation button,
+.app .teacher-step-count {
+  font-size: 0.75rem;
+}
+
+.app .teacher-step-heading p {
+  font-size: 0.8125rem;
 }

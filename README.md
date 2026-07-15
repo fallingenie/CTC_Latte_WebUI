@@ -54,9 +54,13 @@ corepack pnpm verify:deployment
 
 ## 자료 연결
 
-브라우저의 기후자료 조회는 같은 출처의 `/api/climate/query`, `/api/climate/series`, `/api/climate/metadata`만 호출합니다. 지도 화면은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 타일 제공자에 연결됩니다. 저장소 주소, 원본 자료 경로, 인증 정보는 브라우저 번들에 포함하지 않습니다. 실제 자료 서비스에서는 기후자료 API 계약을 읽기 전용 게이트웨이에 연결해야 합니다.
+브라우저의 기후자료 조회는 같은 출처의 `/api/climate/query`, `/api/climate/series`, `/api/climate/metadata`만 호출합니다. 지도 화면은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 타일 제공자에 연결됩니다. 실제 자료 서비스에서는 기후자료 API 계약을 읽기 전용 게이트웨이에 연결해야 합니다.
+
+공개 Attribution 카탈로그에 고정된 프로젝트 제작자명, 공개 GitHub 프로필·프로젝트 저장소 링크와 DOI·인용 링크는 UI와 내보내기에서 의도적으로 허용합니다. 이 공개 출처 정보를 제외한 Google Drive·GCS 주소, 로컬·네트워크 경로, 비공개 저장소 주소와 토큰·자격 증명은 브라우저 번들, UI 또는 내보내기에 포함하지 않습니다.
 
 운영 게이트웨이는 사용자 명의 Google Drive 마운트 안의 준비된 Web 자료를 먼저 읽고, 해당 범위를 벗어난 조회는 Team Start가 정의한 GCS CMIP6 원자료로 보완합니다. 로컬 드라이브와 네트워크 공유 폴더는 개발·정합성 대조에만 사용할 수 있으며 운영 원본이나 장애 대체 경로로 허용하지 않습니다. `pnpm start:gateway:production`은 이 경계를 강제하고, `pnpm attest:production`은 외부 Build와 loopback 게이트웨이의 실제 응답을 대조한 비공개 v2 확인서를 만듭니다. 배포 산출물과 서버 원본 정책은 `pnpm verify:cloud-policy` 및 `pnpm verify:deployment`로 확인합니다. 자세한 배포 차단 기준은 [배포 자료 원본 정책](docs/DEPLOYMENT_DATA_SOURCE_POLICY.md)을 참고하세요.
+
+기간 자료 내보내기의 CSV 출처 묶음, PDF, PNG, 대화형 HTML에는 자료 출처와 인용 정보를 포함해야 합니다. 대한민국 기상청 ASOS 자료 사용을 고지할 때는 변형·대체하지 않은 원본 `kma_mark_1.png`와 `kma_mark_2.png`를 함께 사용합니다. `raw-model-grid` 결과는 ASOS 관측 보정 미사용으로 명시하고 ASOS 자료를 사용했다는 인상을 주지 않아야 합니다. 논문과 자료 인용의 라이선스는 공개 Attribution 카탈로그에 값이 있을 때만 표시하며, 값이 없으면 추정하지 않습니다.
 
 지표 계산과 결측 처리 기준은 [자료 의미와 계산 기준](docs/DATA_SEMANTICS.md)을 참고하세요.
 

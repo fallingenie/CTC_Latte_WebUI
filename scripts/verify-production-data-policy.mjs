@@ -15,6 +15,14 @@ const EXPECTED_ATTESTATION_CONTRACT_FIELDS = Object.freeze([
   "requiredFields",
   "internalPathExposureAllowed"
 ]);
+const ALLOWED_PUBLIC_ARTIFACT_URL_PATTERNS = Object.freeze([
+  /https:\/\/github\.com\/fallingenie\/CTC_Latte_WebUI/giu,
+  /https:\/\/github\.com\/fallingenie/giu,
+  /https:\/\/github\.com\/Hopding\/pdf-lib/giu,
+  /https:\/\/github\.com\/ashtuchkin\/iconv-lite\/wiki\/(?:Node-v4-compatibility|Use-Buffers-when-decoding)/giu,
+  /https:\/\/github\.com\/\$\{/gu,
+  /https:\/\/www\.data\.go\.kr\/data\/15057210\/openapi\.do/giu
+]);
 
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const failures = [];
@@ -175,11 +183,18 @@ function scanPublicArtifacts(directory) {
 
   for (const filePath of listFiles(directory)) {
     if (!/\.(?:css|html|js|json|svg|webmanifest)$/iu.test(filePath)) continue;
-    const content = fs.readFileSync(filePath, "utf8");
+    const content = redactAllowedPublicArtifactUrls(fs.readFileSync(filePath, "utf8"));
     for (const { label, pattern } of forbiddenPatterns) {
       if (pattern.test(content)) failures.push(`${path.relative(root, filePath)}에 ${label}가 포함되어 있습니다.`);
     }
   }
+}
+
+function redactAllowedPublicArtifactUrls(content) {
+  return ALLOWED_PUBLIC_ARTIFACT_URL_PATTERNS.reduce(
+    (current, pattern) => current.replace(pattern, "[검토된 공개 출처]"),
+    content
+  );
 }
 
 function listFiles(directory) {

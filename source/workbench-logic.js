@@ -3,6 +3,22 @@ import { PUBLIC_CLIMATE_ATTRIBUTION_LABELS } from "./runtime-policy.js";
 const lessonStateVersion = 2;
 const maximumNoteLength = 2000;
 const publicAttributionLabelSet = new Set(PUBLIC_CLIMATE_ATTRIBUTION_LABELS);
+const publicExportDataModes = new Set(["bias-corrected", "raw-model-grid"]);
+const attributionDocumentName = "LICENSES_AND_ATTRIBUTION.md";
+const kmaAsosUseByDataMode = Object.freeze({
+  "bias-corrected": "used_for_bias_correction",
+  "raw-model-grid": "not_used_raw_model_grid"
+});
+const kmaAsosNoticeByDataMode = Object.freeze({
+  "bias-corrected": "대한민국 기상청 ASOS 보정 사용",
+  "raw-model-grid": "대한민국 기상청 ASOS 보정 미사용"
+});
+const kmaAsosSourceUrl = "https://www.data.go.kr/data/15057210/openapi.do";
+const kmaMarkArchivePaths = Object.freeze([
+  "licenses/kma_mark_1.png",
+  "licenses/kma_mark_2.png"
+]);
+const pngSignature = Object.freeze([137, 80, 78, 71, 13, 10, 26, 10]);
 const privateLocatorPatterns = [
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u,
   /\b(?:gs|gcs|s3|az|file):\/\//iu,
@@ -471,6 +487,9 @@ export function buildClimateCsv(response) {
   if (!isPublicClimateTextPayloadSafe(response)) {
     throw new TypeError("공개할 수 없는 연결 정보가 포함되어 자료 내보내기를 중단했습니다.");
   }
+  const dataMode = requirePublicExportDataMode(response.dataMode);
+  const datasetIdentity = requirePublicDatasetIdentity(response);
+  const generatedAt = requireOptionalUtcTimestamp(response.generatedAt, "생성 시각");
   const header = [
     "date",
     "latitude",
@@ -492,6 +511,10 @@ export function buildClimateCsv(response) {
     "model_count",
     "nearest_reference_distance_km",
     "generated_at",
+    "dataset_version",
+    "dataset_updated_at",
+    "attribution_document",
+    "kma_asos_use",
     "attribution_labels",
     "problem_id",
     "problem_revision",
@@ -503,7 +526,7 @@ export function buildClimateCsv(response) {
   const rows = [header];
   response.dates.forEach((date, dateIndex) => {
     response.metrics.forEach((metric) => {
-      const exportSeries = resolveExportPercentiles(metric, response.dataMode);
+      const exportSeries = resolveExportPercentiles(metric, dataMode);
       rows.push([
         date,
         Number(response.latitude).toFixed(6),
@@ -514,7 +537,7 @@ export function buildClimateCsv(response) {
         metric.label,
         metricDisplayUnit(metric),
         metric.key === "apparentTemperature" ? apparentTemperatureBasis(date).key : "",
-        response.dataMode,
+        dataMode,
         csvNumber(exportSeries.corrected?.p10[dateIndex]),
         csvNumber(exportSeries.corrected?.p50[dateIndex]),
         csvNumber(exportSeries.corrected?.p90[dateIndex]),
@@ -524,7 +547,11 @@ export function buildClimateCsv(response) {
         metric.coverage[dateIndex] ? "available" : "missing",
         String(metric.modelCounts[dateIndex] ?? 0),
         response.nearestDistanceKm === void 0 ? "" : Number(response.nearestDistanceKm).toFixed(3),
-        response.generatedAt ?? "",
+        generatedAt,
+        datasetIdentity.datasetVersion,
+        datasetIdentity.datasetUpdatedAt,
+        attributionDocumentName,
+        kmaAsosUseByDataMode[dataMode],
         attribution,
         response.exploration?.id ?? "",
         response.exploration?.revision ?? "",
@@ -579,10 +606,13 @@ export function chartComparison(current, reference) {
   };
 }
 
-export function buildInteractiveClimateHtml(response) {
+export function buildInteractiveClimateHtml(response, attribution) {
   if (!isPublicClimateTextPayloadSafe(response)) {
     throw new TypeError("공개할 수 없는 연결 정보가 포함되어 자료 내보내기를 중단했습니다.");
   }
+  const dataMode = requirePublicExportDataMode(response.dataMode);
+  const datasetIdentity = requirePublicDatasetIdentity(response);
+  const generatedAt = requireOptionalUtcTimestamp(response.generatedAt, "생성 시각");
   const exploration = response.exploration ? {
     title: safeText(response.exploration.title ?? "", 240),
     question: safeText(response.exploration.question ?? "", 600),
@@ -596,7 +626,10 @@ export function buildInteractiveClimateHtml(response) {
       model: safeText(response.model ?? "", 160),
       dateStart: validDate(response.dateStart),
       dateEnd: validDate(response.dateEnd),
-      dataMode: response.dataMode === "raw-model-grid" ? "기후 모델 원자료" : "보정한 자료",
+      dataMode: dataMode === "raw-model-grid" ? "기후 모델 원자료 격자값" : "KMA ASOS 관측자료 기반 보정값",
+      datasetVersion: datasetIdentity.datasetVersion,
+      datasetUpdatedAt: datasetIdentity.datasetUpdatedAt,
+      generatedAt,
       seasonMonths: Array.isArray(response.seasonMonths) ? response.seasonMonths.filter((month) => Number.isInteger(month) && month >= 1 && month <= 12) : []
     },
     exploration,
@@ -613,6 +646,12 @@ export function buildInteractiveClimateHtml(response) {
   const contextLine = [payload.context.coordinates, payload.context.scenario, payload.context.model].map(escapeHtml).join(" · ");
   const explorationBlock = payload.exploration ? `<section class="context-note"><strong>${escapeHtml(payload.exploration.title)}</strong><p>${escapeHtml(payload.exploration.question)}</p><small>해석할 때 주의할 점: ${escapeHtml(payload.exploration.interpretationLimit)}</small></section>` : "";
   const seasonLine = payload.context.seasonMonths.length ? `<p>대상 월: ${escapeHtml(payload.context.seasonMonths.join(", "))}월</p>` : "";
+  const attributionBlock = buildInteractiveAttributionHtml(attribution, {
+    dataMode,
+    datasetVersion: payload.context.datasetVersion,
+    datasetUpdatedAt: payload.context.datasetUpdatedAt,
+    generatedAt: payload.context.generatedAt
+  });
   return `<!doctype html>
 <html lang="ko">
 <head>
@@ -620,7 +659,7 @@ export function buildInteractiveClimateHtml(response) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(payload.title)}</title>
 <style>
-:root{color-scheme:light dark;--bg:#eef3f1;--surface:#fff;--ink:#10211c;--muted:#63706b;--line:#d6dfdb;--green:#176b55;--green-soft:#e5f3ed;--coral:#d95d39;--raw:#6d6483}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI","Noto Sans KR",sans-serif}main{width:min(1180px,calc(100% - 32px));margin:28px auto;padding:28px;border:1px solid var(--line);border-radius:8px;background:var(--surface);box-shadow:0 18px 50px rgba(19,47,38,.09)}header{display:flex;gap:20px;align-items:flex-start;justify-content:space-between;margin-bottom:18px}h1{margin:0;font-size:clamp(24px,4vw,38px);letter-spacing:0}header p{margin:7px 0 0;color:var(--muted)}.badge{padding:7px 10px;border-radius:6px;background:var(--green-soft);color:var(--green);font-weight:800;white-space:nowrap}.context-note{margin:0 0 18px;padding:13px 15px;border-left:3px solid var(--green);background:var(--green-soft)}.context-note strong,.context-note p,.context-note small{display:block;margin:0}.context-note p{margin-top:4px}.context-note small{margin-top:6px;color:var(--muted)}.tabs,.controls{display:flex;flex-wrap:wrap;gap:8px}.tabs{margin-bottom:12px}.tabs button,.controls button{min-height:38px;padding:7px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-weight:750;cursor:pointer}.tabs button[aria-selected="true"]{border-color:var(--green);background:var(--green-soft);color:var(--green)}.chart-card{padding:18px;border:1px solid var(--line);border-radius:8px}.chart-title{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:10px}.chart-title strong{font-size:18px}.controls button{min-width:40px}.controls .clear{color:var(--coral)}svg{display:block;width:100%;height:auto;min-height:310px;touch-action:none;cursor:crosshair;user-select:none}.grid{stroke:var(--line);stroke-width:1}.band{fill:rgba(23,107,85,.12)}.line{fill:none;stroke:var(--green);stroke-width:3;stroke-linejoin:round;stroke-linecap:round}.raw{fill:none;stroke:var(--raw);stroke-width:2;stroke-dasharray:7 6}.cursor{stroke:var(--coral);stroke-width:1}.reference{stroke:var(--green);stroke-width:2;stroke-dasharray:4 4}.point{fill:var(--coral);stroke:var(--surface);stroke-width:3}.axis{fill:var(--muted);font-size:12px}.readout{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:1px;margin-top:12px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--line)}.readout div{min-width:0;padding:10px 12px;background:var(--surface)}.readout span{display:block;color:var(--muted);font-size:11px}.readout strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.help{margin:12px 0 0;color:var(--muted);font-size:13px}.positive{color:#b24327}.negative{color:#166f93}footer{margin-top:18px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}@media(max-width:720px){main{width:100%;margin:0;padding:18px;border:0;border-radius:0}header,.chart-title{display:grid}.readout{grid-template-columns:repeat(2,minmax(0,1fr))}svg{min-height:250px}}@media(prefers-color-scheme:dark){:root{--bg:#101714;--surface:#17201c;--ink:#edf5f1;--muted:#a9b7b0;--line:#35443d;--green:#6bc6a5;--green-soft:#203b31;--coral:#ff8968}}
+:root{color-scheme:light dark;--bg:#eef3f1;--surface:#fff;--ink:#10211c;--muted:#63706b;--line:#d6dfdb;--green:#176b55;--green-soft:#e5f3ed;--coral:#d95d39;--raw:#6d6483}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI","Noto Sans KR",sans-serif}main{width:min(1180px,calc(100% - 32px));margin:28px auto;padding:28px;border:1px solid var(--line);border-radius:8px;background:var(--surface);box-shadow:0 18px 50px rgba(19,47,38,.09)}header{display:flex;gap:20px;align-items:flex-start;justify-content:space-between;margin-bottom:18px}h1{margin:0;font-size:clamp(24px,4vw,38px);letter-spacing:0}header p{margin:7px 0 0;color:var(--muted)}.badge{padding:7px 10px;border-radius:6px;background:var(--green-soft);color:var(--green);font-weight:800;white-space:nowrap}.context-note{margin:0 0 18px;padding:13px 15px;border-left:3px solid var(--green);background:var(--green-soft)}.context-note strong,.context-note p,.context-note small{display:block;margin:0}.context-note p{margin-top:4px}.context-note small{margin-top:6px;color:var(--muted)}.tabs,.controls{display:flex;flex-wrap:wrap;gap:8px}.tabs{margin-bottom:12px}.tabs button,.controls button{min-height:38px;padding:7px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink);font:inherit;font-weight:750;cursor:pointer}.tabs button[aria-selected="true"]{border-color:var(--green);background:var(--green-soft);color:var(--green)}.chart-card{padding:18px;border:1px solid var(--line);border-radius:8px}.chart-title{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:10px}.chart-title strong{font-size:18px}.controls button{min-width:40px}.controls .clear{color:var(--coral)}svg{display:block;width:100%;height:auto;min-height:310px;touch-action:none;cursor:crosshair;user-select:none}.grid{stroke:var(--line);stroke-width:1}.band{fill:rgba(23,107,85,.12)}.line{fill:none;stroke:var(--green);stroke-width:3;stroke-linejoin:round;stroke-linecap:round}.raw{fill:none;stroke:var(--raw);stroke-width:2;stroke-dasharray:7 6}.cursor{stroke:var(--coral);stroke-width:1}.reference{stroke:var(--green);stroke-width:2;stroke-dasharray:4 4}.point{fill:var(--coral);stroke:var(--surface);stroke-width:3}.axis{fill:var(--muted);font-size:12px}.readout{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:1px;margin-top:12px;border:1px solid var(--line);border-radius:7px;overflow:hidden;background:var(--line)}.readout div{min-width:0;padding:10px 12px;background:var(--surface)}.readout span{display:block;color:var(--muted);font-size:11px}.readout strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.help{margin:12px 0 0;color:var(--muted);font-size:13px}.positive{color:#b24327}.negative{color:#166f93}.attribution{margin-top:18px;border:1px solid var(--line);border-radius:8px;background:var(--surface)}.attribution summary{padding:12px 14px;color:var(--green);font-weight:800;cursor:pointer}.attribution-content{padding:0 14px 14px}.attribution-content h2{margin:16px 0 7px;font-size:15px}.attribution-content p,.attribution-content li{color:var(--muted);font-size:12px}.attribution-content ul,.attribution-content ol{margin:0;padding-left:20px}.attribution-models>li,.attribution-methods li{margin:7px 0}.attribution-models ul{margin-top:4px}.attribution-content a{color:var(--green);font-weight:700;overflow-wrap:anywhere}.attribution-marks{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px}.attribution-marks img{display:block;width:auto;max-width:100%;max-height:46px;object-fit:contain}.attribution-meta{padding:10px;border-radius:6px;background:var(--green-soft);overflow-wrap:anywhere}footer{margin-top:18px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}@media(max-width:720px){main{width:100%;margin:0;padding:18px;border:0;border-radius:0}header,.chart-title{display:grid}.readout{grid-template-columns:repeat(2,minmax(0,1fr))}svg{min-height:250px}.attribution-content{padding-inline:12px}}@media(prefers-color-scheme:dark){:root{--bg:#101714;--surface:#17201c;--ink:#edf5f1;--muted:#a9b7b0;--line:#35443d;--green:#6bc6a5;--green-soft:#203b31;--coral:#ff8968}}
 </style>
 </head>
 <body>
@@ -636,7 +675,8 @@ ${explorationBlock}
 <div class="readout" aria-live="polite"><div><span>현재 날짜</span><strong id="current-date">그래프를 가리키세요</strong></div><div><span>현재 값</span><strong id="current-value">-</strong></div><div><span>첫 번째 날짜</span><strong id="reference-date">날짜를 눌러 정하기</strong></div><div><span>첫 번째 날짜와의 차이</span><strong id="delta-value">-</strong></div><div><span>변화율 · 날짜 차이</span><strong id="delta-percent">-</strong></div></div>
 <p class="help">마우스 휠로 확대하거나 축소하고, 그래프를 끌어 기간을 옮길 수 있습니다. 날짜를 누르면 첫 번째 비교 날짜로 정해집니다.</p>
 </section>
-<footer>이 자료는 기후 시나리오 교육·연구용 결과이며 단기 기상예보가 아닙니다. 이 파일은 외부 연결 없이 동작합니다.</footer>
+${attributionBlock}
+<footer>이 자료는 기후 시나리오 교육·연구용 결과이며 단기 기상예보가 아닙니다. 그래프와 출처 정보는 외부 연결 없이 확인할 수 있습니다.</footer>
 </main>
 <script id="climate-data" type="application/json">${serialized}</script>
 <script>
@@ -822,6 +862,264 @@ ${explorationBlock}
 </script>
 </body>
 </html>`;
+}
+
+function buildInteractiveAttributionHtml(attribution, context) {
+  const record = requireInteractiveAttribution(attribution, context.dataMode);
+  const modelItems = record.climateModels.map((model) => {
+    const citations = model.citations.map((citation) => (
+      `<li>${escapeHtml(citation.activity)}: ${escapeHtml(citation.title)} <a href="${escapeHtml(citation.href)}" target="_blank" rel="noopener noreferrer">DOI ${escapeHtml(citation.doi)}</a></li>`
+    )).join("");
+    return `<li><strong>${escapeHtml(model.name)}</strong> · ${escapeHtml(model.institution)}<ul>${citations}</ul></li>`;
+  }).join("");
+  const methodItems = record.methodologyReferences.map((reference) => (
+    `<li>${escapeHtml(reference.authors)} (${reference.year}). ${escapeHtml(reference.title)}. ${escapeHtml(reference.sourceTitle)}. <a href="${escapeHtml(reference.href)}" target="_blank" rel="noopener noreferrer">DOI ${escapeHtml(reference.doi)}</a></li>`
+  )).join("");
+  const sourceNotice = context.dataMode === "raw-model-grid"
+    ? "기후 모델 원자료 격자값입니다. 대한민국 기상청 ASOS 관측자료를 사용한 보정은 적용하지 않았습니다."
+    : "대한민국 기상청 ASOS 관측자료를 사용해 보정한 값입니다.";
+  const generatedAt = context.generatedAt ? ` · 생성 ${escapeHtml(context.generatedAt)}` : "";
+  const markItems = record.marks.map((mark) => `<img src="${escapeHtml(mark.dataUrl)}" alt="${escapeHtml(mark.alt)}">`).join("");
+  return `<details class="attribution"><summary>CMIP6/downscaleCMIP6 출처·인용</summary><div class="attribution-content">
+<p class="attribution-meta">${escapeHtml(sourceNotice)} · 자료판 ${escapeHtml(context.datasetVersion)} · 자료 갱신 ${escapeHtml(context.datasetUpdatedAt)}${generatedAt}</p>
+<section><h2>대한민국 기상청 ASOS</h2><p>${escapeHtml(sourceNotice)} (${escapeHtml(record.asosNotice)})</p><p>자료 출처: ${escapeHtml(record.asosSource.organization)} <a href="${escapeHtml(record.asosSource.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(record.asosSource.title)}</a></p><div class="attribution-marks">${markItems}</div></section>
+<section><h2>기후 모델 자료</h2><ul class="attribution-models">${modelItems}</ul></section>
+<section><h2>자료 처리 방법</h2><ol class="attribution-methods">${methodItems}</ol></section>
+<section><h2>제작자</h2><p>${escapeHtml(record.project.title)} · ${escapeHtml(record.project.creator.displayName)} · <a href="${escapeHtml(record.project.creator.githubUrl)}" target="_blank" rel="noopener noreferrer">GitHub ${escapeHtml(record.project.creator.githubHandle)}</a> · <a href="${escapeHtml(record.project.repositoryUrl)}" target="_blank" rel="noopener noreferrer">프로젝트 저장소</a> · ${escapeHtml(record.project.license.title)} (${escapeHtml(record.project.license.identifier)})</p></section>
+</div></details>`;
+}
+
+function requireInteractiveAttribution(value, dataMode) {
+  if (!isRecord(value)
+    || value.publicSafe !== true
+    || value.schemaVersion !== 1
+    || value.catalogSchemaVersion !== 1
+    || value.dataMode !== dataMode
+    || !isPublicAttributionTreeSafe(value)) {
+    throw new TypeError("대화형 HTML에 넣을 공개 출처 정보를 확인할 수 없습니다.");
+  }
+  const expectedUsed = dataMode === "bias-corrected";
+  const expectedNotice = kmaAsosNoticeByDataMode[dataMode];
+  const correction = value.asosCorrection;
+  if (!isRecord(correction)
+    || correction.used !== expectedUsed
+    || correction.notice !== expectedNotice
+    || !isRecord(correction.source)
+    || correction.source.url !== kmaAsosSourceUrl
+    || !Array.isArray(correction.marks)
+    || correction.marks.length !== kmaMarkArchivePaths.length
+    || !Array.isArray(value.markDataUrls)
+    || value.markDataUrls.length !== kmaMarkArchivePaths.length) {
+    throw new TypeError("dataMode와 대한민국 기상청 ASOS 출처 표기가 일치하지 않습니다.");
+  }
+  const marks = correction.marks.map((mark, index) => {
+    if (!isRecord(mark) || mark.archivePath !== kmaMarkArchivePaths[index]) {
+      throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
+    }
+    return {
+      alt: requirePublicAttributionText(mark.alt, 160, "출처 표시 이미지 대체 문구"),
+      dataUrl: requirePngDataUrl(value.markDataUrls[index])
+    };
+  });
+  const project = requireInteractiveProjectAttribution(value.project);
+  if (!Array.isArray(value.climateModels) || value.climateModels.length === 0) {
+    throw new TypeError("기후 모델 인용 정보가 필요합니다.");
+  }
+  const climateModels = value.climateModels.map((model) => {
+    if (!isRecord(model) || !Array.isArray(model.citations) || model.citations.length === 0) {
+      throw new TypeError("기후 모델 인용 정보가 완전하지 않습니다.");
+    }
+    return {
+      name: requirePublicAttributionText(model.name, 120, "기후 모델 이름"),
+      institution: requirePublicAttributionText(model.institution, 240, "기후 모델 기관"),
+      citations: model.citations.map((citation) => {
+        if (!isRecord(citation)) throw new TypeError("기후 모델 인용 정보가 완전하지 않습니다.");
+        requireAttributionAuthors(citation.authors);
+        const source = requireDoiSource(citation.source);
+        return {
+          activity: requirePublicAttributionText(citation.activity, 80, "기후 모델 활동"),
+          title: requirePublicAttributionText(citation.title, 600, "기후 모델 자료 제목"),
+          ...source
+        };
+      })
+    };
+  });
+  if (!Array.isArray(value.methodologyReferences) || value.methodologyReferences.length === 0) {
+    throw new TypeError("자료 처리 방법 인용 정보가 필요합니다.");
+  }
+  const methodologyReferences = value.methodologyReferences.map((reference) => {
+    if (!isRecord(reference) || !Number.isInteger(reference.year) || reference.year < 1800 || reference.year > 2200) {
+      throw new TypeError("자료 처리 방법 인용 정보가 완전하지 않습니다.");
+    }
+    const source = requireDoiSource(reference.source);
+    return {
+      authors: requireAttributionAuthors(reference.authors),
+      year: reference.year,
+      title: requirePublicAttributionText(reference.title, 800, "자료 처리 방법 제목"),
+      sourceTitle: requirePublicAttributionText(reference.source?.title, 300, "자료 처리 방법 출처"),
+      ...source
+    };
+  });
+  return {
+    asosNotice: expectedNotice,
+    asosSource: {
+      organization: requirePublicAttributionText(correction.source.organization, 120, "ASOS 제공 기관"),
+      title: requirePublicAttributionText(correction.source.title, 200, "ASOS 자료 제목"),
+      href: kmaAsosSourceUrl
+    },
+    marks,
+    project,
+    climateModels,
+    methodologyReferences
+  };
+}
+
+function requireInteractiveProjectAttribution(value) {
+  if (!isRecord(value) || !isRecord(value.creator) || !isRecord(value.license)) {
+    throw new TypeError("프로젝트 제작자와 라이선스 출처 정보가 필요합니다.");
+  }
+  const githubHandle = requirePublicAttributionText(value.creator.githubHandle, 40, "GitHub 계정");
+  if (!/^@[a-z0-9](?:[a-z0-9-]{0,38})$/iu.test(githubHandle)) {
+    throw new TypeError("GitHub 계정 표기가 올바르지 않습니다.");
+  }
+  const expectedGithubUrl = `https://github.com/${githubHandle.slice(1)}`;
+  if (value.creator.githubUrl !== expectedGithubUrl) {
+    throw new TypeError("GitHub 제작자 주소가 계정 표기와 일치하지 않습니다.");
+  }
+  const repositoryUrl = value.repositoryUrl;
+  if (typeof repositoryUrl !== "string"
+    || !/^https:\/\/github\.com\/[a-z0-9](?:[a-z0-9-]{0,38})\/[a-z0-9._-]+$/iu.test(repositoryUrl)
+    || !repositoryUrl.startsWith(`${expectedGithubUrl}/`)) {
+    throw new TypeError("GitHub 프로젝트 주소가 올바르지 않습니다.");
+  }
+  return {
+    title: requirePublicAttributionText(value.title, 240, "프로젝트 제목"),
+    repositoryUrl,
+    creator: {
+      displayName: requirePublicAttributionText(value.creator.displayName, 160, "제작자 이름"),
+      githubHandle,
+      githubUrl: expectedGithubUrl
+    },
+    license: {
+      identifier: requirePublicAttributionText(value.license.identifier, 80, "라이선스 식별자"),
+      title: requirePublicAttributionText(value.license.title, 200, "라이선스 제목")
+    }
+  };
+}
+
+function requireAttributionAuthors(value) {
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError("인용 저자 정보가 필요합니다.");
+  return value.map((author) => {
+    if (!isRecord(author)) throw new TypeError("인용 저자 정보가 완전하지 않습니다.");
+    if (author.name !== undefined) return requirePublicAttributionText(author.name, 240, "인용 기관명");
+    const familyName = requirePublicAttributionText(author.familyName, 120, "인용 저자 성");
+    const givenNames = requirePublicAttributionText(author.givenNames, 120, "인용 저자 이름");
+    return `${familyName}, ${givenNames}`;
+  }).join("; ");
+}
+
+function requireDoiSource(value) {
+  if (!isRecord(value)) throw new TypeError("인용 DOI 정보가 필요합니다.");
+  const doi = requirePublicAttributionText(value.doi, 160, "인용 DOI");
+  if (!/^10\.\d{4,9}\/[a-z0-9._()\-;/:]+$/iu.test(doi)) throw new TypeError("인용 DOI가 올바르지 않습니다.");
+  return { doi, href: safeDoiHref(value.url, doi) };
+}
+
+function safeDoiHref(value, doi) {
+  if (typeof value !== "string" || value !== `https://doi.org/${doi}`) {
+    throw new TypeError("인용 DOI 주소가 DOI와 일치하지 않습니다.");
+  }
+  return value;
+}
+
+function requirePngDataUrl(value) {
+  if (typeof value !== "string" || value.length > 4_000_000) {
+    throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
+  }
+  const payload = value.match(/^data:image\/png;base64,((?:[a-z0-9+/]{4})*(?:[a-z0-9+/]{2}==|[a-z0-9+/]{3}=)?)$/iu)?.[1];
+  if (!payload || typeof globalThis.atob !== "function") {
+    throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
+  }
+  let decoded;
+  try {
+    decoded = globalThis.atob(payload);
+  } catch {
+    throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
+  }
+  const hasPngHeader = decoded.length >= 24
+    && pngSignature.every((byte, index) => decoded.charCodeAt(index) === byte)
+    && decoded.slice(12, 16) === "IHDR";
+  if (!hasPngHeader) throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
+  return value;
+}
+
+function requirePublicAttributionText(value, maximumLength, label) {
+  if (typeof value !== "string") throw new TypeError(`${label}은 문자열이어야 합니다.`);
+  const text = value.trim();
+  if (!text || text.length > maximumLength || !isPublicGatewayTextSafe(text)) {
+    throw new TypeError(`${label}에 공개할 수 없는 정보가 포함되어 있습니다.`);
+  }
+  return text;
+}
+
+function isPublicAttributionTreeSafe(value, seen = new WeakSet()) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") {
+    return isPublicGatewayTextSafe(value)
+      || /^https:\/\/doi\.org\/10\.\d{4,9}\/[a-z0-9._()\-;/:]+$/iu.test(value)
+      || /^https:\/\/github\.com\/[a-z0-9](?:[a-z0-9-]{0,38})(?:\/[a-z0-9._-]+)?$/iu.test(value)
+      || value === kmaAsosSourceUrl
+      || /^data:image\/png;base64,[a-z0-9+/=]+$/iu.test(value);
+  }
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "boolean") return true;
+  if (typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  return Object.values(value).every((item) => isPublicAttributionTreeSafe(item, seen));
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function requirePublicExportDataMode(value) {
+  if (!publicExportDataModes.has(value)) {
+    throw new TypeError("자료 내보내기 dataMode는 bias-corrected 또는 raw-model-grid여야 합니다.");
+  }
+  return value;
+}
+
+function requirePublicDatasetIdentity(value) {
+  const datasetVersion = value?.datasetVersion;
+  if (typeof datasetVersion !== "string" || !/^[a-f0-9]{64}$/u.test(datasetVersion)) {
+    throw new TypeError("공개 자료판 식별자는 64자리 소문자 SHA-256이어야 합니다.");
+  }
+  return {
+    datasetVersion,
+    datasetUpdatedAt: requireUtcTimestamp(value?.datasetUpdatedAt, "자료 갱신 시각")
+  };
+}
+
+function requireOptionalUtcTimestamp(value, label) {
+  return value === undefined || value === null || value === "" ? "" : requireUtcTimestamp(value, label);
+}
+
+function requireUtcTimestamp(value, label) {
+  if (typeof value !== "string") throw new TypeError(`${label}은 UTC 시각 문자열이어야 합니다.`);
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|\+00:00)$/u.exec(value);
+  if (!match) throw new TypeError(`${label}은 UTC ISO-8601 형식이어야 합니다.`);
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
+  const [year, month, day, hour, minute, second] = [yearText, monthText, dayText, hourText, minuteText, secondText].map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  const valid = year >= 1000
+    && parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day
+    && parsed.getUTCHours() === hour
+    && parsed.getUTCMinutes() === minute
+    && parsed.getUTCSeconds() === second;
+  if (!valid) throw new TypeError(`${label}이 유효하지 않습니다.`);
+  return value;
 }
 
 export function seriesPointX(position, count, left, width) {

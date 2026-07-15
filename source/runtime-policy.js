@@ -252,6 +252,49 @@ export function isMatchingPublicDatasetIdentity(response, expectedVersion, expec
     && normalizeDatasetUpdatedAt(response?.datasetUpdatedAt) === expectedUpdatedAtValue;
 }
 
+export function isCurrentPublicDatasetResult(response, metadata, status) {
+  return status === "ready"
+    && isMatchingPublicDatasetIdentity(response, metadata?.datasetVersion, metadata?.datasetUpdatedAt);
+}
+
+export function createPublicMetadataRefreshQueue(startRequest) {
+  if (typeof startRequest !== "function") throw new TypeError("자료 기준 확인 함수를 지정해야 합니다.");
+
+  let inFlight;
+  let forcedFollowUp;
+  const start = () => {
+    let request;
+    try {
+      request = startRequest();
+    } catch (error) {
+      request = Promise.reject(error);
+    }
+    const pending = Promise.resolve(request).finally(() => {
+      if (inFlight === pending) inFlight = void 0;
+    });
+    inFlight = pending;
+    return pending;
+  };
+
+  return {
+    hasInFlight() {
+      return Boolean(inFlight);
+    },
+    request({ force = false } = {}) {
+      if (!inFlight) return start();
+      if (!force) return inFlight;
+      if (forcedFollowUp) return forcedFollowUp;
+
+      const queued = inFlight.catch(() => void 0).then(start);
+      const followUp = queued.finally(() => {
+        if (forcedFollowUp === followUp) forcedFollowUp = void 0;
+      });
+      forcedFollowUp = followUp;
+      return followUp;
+    }
+  };
+}
+
 export function formatPublicDatasetUpdatedAt(value) {
   const normalized = normalizeDatasetUpdatedAt(value);
   if (!normalized) return "";

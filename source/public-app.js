@@ -1,13 +1,18 @@
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
-import { useRef, useState, useEffect, useLayoutEffect, useMemo, useReducer, StrictMode } from "react";
+import { useRef, useState, useEffect, useLayoutEffect, useMemo, useReducer, useCallback, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { X, CalendarDays, Download, Table2, FileText, Image, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge, Mountain, Waves, ArrowLeft, ArrowRight, Sun, Moon, Monitor, BookOpen, BookmarkPlus, ClipboardCopy, Navigation, Plus, Minus, Trash2, NotebookPen, Target, Link, LockKeyhole, RefreshCw } from "lucide-react";
 import { requestSaveTarget, saveBlobToTarget } from "./browser-download.js";
 import { climateProblemSets } from "./climate-problem-catalog.js";
+import { PUBLIC_ATTRIBUTION_CATALOG, findClimateModelAttribution } from "./attribution-catalog.js";
+import { buildClimatePdfBlob } from "./climate-pdf.js";
+import { buildAttributionBundle, buildPublicExportAttribution } from "./export-attribution.js";
 import {
   PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS,
   PUBLIC_DATASET_REFRESH_INTERVAL_MS,
+  createPublicMetadataRefreshQueue,
   formatPublicDatasetUpdatedAt,
+  isCurrentPublicDatasetResult,
   isMatchingPublicDatasetIdentity,
   isPublicDatasetIdentityChange,
   validatePublicClimateQueryResponse,
@@ -66,7 +71,7 @@ async function exportClimateSeries(response, format) {
   }
   const stem = climateExportFileStem(response);
   const specifications = {
-    csv: { filename: `${stem}.csv`, mimeType: "text/csv", extension: ".csv", description: "날짜별 기후 자료(CSV)" },
+    csv: { filename: `${stem}.zip`, mimeType: "application/zip", extension: ".zip", description: "날짜별 기후 자료와 출처 묶음" },
     png: { filename: `${stem}.png`, mimeType: "image/png", extension: ".png", description: "날짜별 기후 변화 이미지" },
     pdf: { filename: `${stem}.pdf`, mimeType: "application/pdf", extension: ".pdf", description: "날짜별 기후 변화 보고서" },
     html: { filename: `${stem}.html`, mimeType: "text/html", extension: ".html", description: "대화형 기후 변화 그래프" }
@@ -76,14 +81,47 @@ async function exportClimateSeries(response, format) {
   if (target.kind === "cancelled") return saveBlobToTarget(target, new Blob());
   let blob;
   if (format === "csv") {
-    blob = new Blob(["\uFEFF", buildClimateCsv(response)], { type: "text/csv;charset=utf-8" });
+    blob = await buildAttributionBundle({
+      csv: `\uFEFF${buildClimateCsv(response)}`,
+      csvFilename: `${stem}.csv`,
+      dataMode: response.dataMode,
+      model: response.model,
+      datasetVersion: response.datasetVersion,
+      datasetUpdatedAt: response.datasetUpdatedAt,
+      generatedAt: response.generatedAt
+    });
   } else if (format === "html") {
-    blob = new Blob([buildInteractiveClimateHtml(response)], { type: "text/html;charset=utf-8" });
+    blob = new Blob([buildInteractiveClimateHtml(response, await buildInteractiveAttributionPayload(response))], { type: "text/html;charset=utf-8" });
   } else {
     const canvas = await buildClimateReportCanvas(response);
-    blob = format === "png" ? await canvasBlob(canvas, "image/png") : await canvasPdfBlob(canvas);
+    blob = format === "png" ? await canvasBlob(canvas, "image/png") : await buildClimatePdfBlob(canvas, response);
   }
   return saveBlobToTarget(target, blob);
+}
+async function buildInteractiveAttributionPayload(response) {
+  const record = buildPublicExportAttribution({
+    dataMode: response.dataMode,
+    model: response.model,
+    datasetVersion: response.datasetVersion,
+    datasetUpdatedAt: response.datasetUpdatedAt,
+    generatedAt: response.generatedAt
+  });
+  const markDataUrls = await Promise.all([
+    imageAssetDataUrl("./assets/licenses/kma_mark_1.png"),
+    imageAssetDataUrl("./assets/licenses/kma_mark_2.png")
+  ]);
+  return { ...record, markDataUrls };
+}
+async function imageAssetDataUrl(path) {
+  const response = await fetch(path, { cache: "force-cache" });
+  if (!response.ok) throw new Error("출처 표시 이미지를 불러오지 못했습니다.");
+  const blob = await response.blob();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("출처 표시 이미지를 읽지 못했습니다."));
+    reader.onerror = () => reject(new Error("출처 표시 이미지를 읽지 못했습니다."));
+    reader.readAsDataURL(blob);
+  });
 }
 function climateExportFileStem(response) {
   const metricPart = response.metrics.length === 1 ? response.metrics[0].key : "all-metrics";
@@ -92,7 +130,7 @@ function climateExportFileStem(response) {
 async function buildClimateReportCanvas(response) {
   const width = 1600;
   const chartHeight = 230;
-  const footerHeight = 220;
+  const footerHeight = 285;
   const canvas = document.createElement("canvas");
   canvas.width = width;
   const measurementContext = canvas.getContext("2d");
@@ -159,6 +197,11 @@ async function buildClimateReportCanvas(response) {
   const attribution = normalizePublicAttributionLabels(response.attributionLabels).join(" · ") || "기후 자료 출처 정보 포함";
   context.fillText(`자료 고지: ${attribution}`, 88, footerY + 76);
   context.fillText(`생성 시각: ${new Date(response.generatedAt).toLocaleString("ko-KR")}`, 88, footerY + 114);
+  context.font = '18px "Segoe UI", "Noto Sans KR", sans-serif';
+  context.fillText(`자료판: ${response.datasetVersion}`, 88, footerY + 152);
+  context.fillText(`자료 갱신 시각: ${response.datasetUpdatedAt}`, 88, footerY + 186);
+  context.fillText(`제작자: ${PUBLIC_ATTRIBUTION_CATALOG.project.creator.displayName} · GitHub ${PUBLIC_ATTRIBUTION_CATALOG.project.creator.githubHandle}`, 88, footerY + 220);
+  await drawKmaAttributionMarks(context, response, width);
   return canvas;
 }
 function climateReportHeaderLayout(context, response, width) {
@@ -346,69 +389,33 @@ function canvasBlob(canvas, type, quality) {
     canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("이미지 파일을 만들지 못했습니다.")), type, quality);
   });
 }
-async function canvasPdfBlob(canvas) {
-  const jpeg = new Uint8Array(await (await canvasBlob(canvas, "image/jpeg", 0.94)).arrayBuffer());
-  const pageWidth = 842;
-  const pageHeight = Math.round(pageWidth * canvas.height / canvas.width);
-  const encoder = new TextEncoder();
-  const parts = [];
-  const offsets = [0];
-  let byteLength = 0;
-  const append = (value) => {
-    const bytes = typeof value === "string" ? encoder.encode(value) : value;
-    parts.push(bytes);
-    byteLength += bytes.byteLength;
-  };
-  const object = (id, body, suffix = "") => {
-    offsets[id] = byteLength;
-    append(`${id} 0 obj
-`);
-    append(body);
-    append(`${suffix}
-endobj
-`);
-  };
-  append("%PDF-1.4\n%CTC\n");
-  object(1, "<< /Type /Catalog /Pages 2 0 R >>");
-  object(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
-  object(
-    3,
-    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im0 4 0 R >> >> /Contents 5 0 R >>`
-  );
-  offsets[4] = byteLength;
-  append(`4 0 obj
-<< /Type /XObject /Subtype /Image /Width ${canvas.width} /Height ${canvas.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.byteLength} >>
-stream
-`);
-  append(jpeg);
-  append("\nendstream\nendobj\n");
-  const content = `q
-${pageWidth} 0 0 ${pageHeight} 0 0 cm
-/Im0 Do
-Q
-`;
-  object(5, `<< /Length ${encoder.encode(content).byteLength} >>
-stream
-${content}endstream`);
-  const xrefOffset = byteLength;
-  const newline = String.fromCharCode(10);
-  append(["xref", "0 6", "0000000000 65535 f ", ""].join(newline));
-  for (let id = 1; id <= 5; id += 1) {
-    append(`${String(offsets[id]).padStart(10, "0")} 00000 n ${newline}`);
-  }
-  append(`trailer
-<< /Size 6 /Root 1 0 R >>
-startxref
-${xrefOffset}
-%%EOF
-`);
-  const output = new Uint8Array(byteLength);
-  let cursor = 0;
-  parts.forEach((part) => {
-    output.set(part, cursor);
-    cursor += part.byteLength;
+async function drawKmaAttributionMarks(context, response, canvasWidth) {
+  const [markOne, markTwo] = await Promise.all([
+    loadImageAsset("./assets/licenses/kma_mark_1.png"),
+    loadImageAsset("./assets/licenses/kma_mark_2.png")
+  ]);
+  const markOneWidth = 132;
+  const markOneHeight = markOneWidth * markOne.naturalHeight / markOne.naturalWidth;
+  const markTwoWidth = 112;
+  const markTwoHeight = markTwoWidth * markTwo.naturalHeight / markTwo.naturalWidth;
+  const right = canvasWidth - 88;
+  const top = 82;
+  context.drawImage(markOne, right - markOneWidth - markTwoWidth - 18, top, markOneWidth, markOneHeight);
+  context.drawImage(markTwo, right - markTwoWidth, top, markTwoWidth, markTwoHeight);
+  context.save();
+  context.fillStyle = "#43514c";
+  context.font = '16px "Segoe UI", "Noto Sans KR", sans-serif';
+  context.textAlign = "right";
+  context.fillText(response.dataMode === "raw-model-grid" ? "ASOS 관측 보정 미적용" : "대한민국 기상청 ASOS 자료 포함", right, top + Math.max(markOneHeight, markTwoHeight) + 24);
+  context.restore();
+}
+function loadImageAsset(path) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("출처 표시 이미지를 불러오지 못했습니다."));
+    image.src = path;
   });
-  return new Blob([output.buffer], { type: "application/pdf" });
 }
 const configPath = "./runtime-config.json";
 const RETRYABLE_CLIMATE_REQUEST_ATTEMPTS = 2;
@@ -532,7 +539,7 @@ const metricOptions = [
   { key: "apparentTemperature", label: "체감 지표", icon: CloudSun },
 ];
 const formatOptions = [
-  { key: "csv", label: "표 자료(CSV)", detail: "날짜별 수치 전체", icon: Table2 },
+  { key: "csv", label: "CSV 자료 묶음", detail: "CSV·출처 문서·원본 표장", icon: Table2 },
   { key: "html", label: "대화형 그래프(HTML)", detail: "마우스로 값 확인·확대·날짜 비교", icon: Monitor },
   { key: "pdf", label: "인쇄용 보고서(PDF)", detail: "보고서와 그래프", icon: FileText },
   { key: "png", label: "고해상도 이미지(PNG)", detail: "그래프를 이미지로 저장", icon: Image }
@@ -542,6 +549,10 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
   const closeButtonRef = useRef(null);
   const openerRef = useRef(null);
   const metadata = datasetState.metadata;
+  const exportScenarios = normalizeMetadataOptions(metadata, "scenarios", context?.scenario ? [context.scenario] : []);
+  const exportModels = normalizeMetadataOptions(metadata, "models", context?.model ? [context.model] : []);
+  const exportScenario = context && exportScenarios.includes(context.scenario) ? context.scenario : exportScenarios[0];
+  const exportModel = context && exportModels.includes(context.model) ? context.model : exportModels[0];
   const seriesControllerRef = useRef();
   const reloadPreviewRef = useRef();
   const handledRefreshSequenceRef = useRef(datasetState.refreshSequence);
@@ -595,6 +606,7 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
   const busy = status === "loading" || status === "exporting";
   const dayCount = inclusiveDayCount(startDate, endDate);
   const selectedMetric = response?.metrics.find((metric) => metric.key === previewMetric) ?? response?.metrics[0];
+  const hasCurrentPreview = isCurrentPublicDatasetResult(response, metadata, status);
   useEffect(() => {
     if (!busy) return;
     const preventRefresh = (event) => {
@@ -658,6 +670,17 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
       setMessage("시작일과 종료일을 확인하세요. 종료일은 시작일보다 빠를 수 없습니다.");
       return;
     }
+    if (!metadata?.datasetVersion || !metadata?.datasetUpdatedAt) {
+      setStatus("loading");
+      setMessage("최신 기후자료의 기준을 확인하고 있습니다.");
+      try {
+        await datasetState.requestRefresh({ force: true });
+      } catch (error) {
+        setStatus("error");
+        setMessage(error instanceof Error ? error.message : "최신 기후자료의 기준을 확인하지 못했습니다. 다시 시도하세요.");
+      }
+      return;
+    }
     const controller = new AbortController();
     seriesControllerRef.current?.abort();
     seriesControllerRef.current = controller;
@@ -672,21 +695,29 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
         longitude: context.longitude,
         startDate,
         endDate,
-        scenario: context.scenario,
-        model: context.model,
+        scenario: exportScenario,
+        model: exportModel,
         metrics: requestMetrics,
         includeRaw,
         ...(metadata?.datasetVersion ? { datasetVersion: metadata.datasetVersion } : {})
       };
       const payload = await fetchPublicClimateSeries(seriesRequest, { signal: controller.signal });
-      if (!isMatchingPublicDatasetIdentity(payload, seriesRequest.datasetVersion, metadata?.datasetUpdatedAt)
-        || !isMatchingClimateSeriesResponse(payload, {
+      if (!isMatchingPublicDatasetIdentity(payload, seriesRequest.datasetVersion, metadata?.datasetUpdatedAt)) {
+        const nextMetadata = await datasetState.requestRefresh({ force: true });
+        if (isPublicDatasetIdentityChange(metadata, nextMetadata)) {
+          setStatus("loading");
+          setMessage("기후자료가 갱신되어 같은 조건의 기간 결과를 다시 불러오고 있습니다.");
+          return;
+        }
+        throw new Error("불러온 자료가 최신 자료 기준과 다릅니다. 다시 시도하세요.");
+      }
+      if (!isMatchingClimateSeriesResponse(payload, {
         startDate,
         endDate,
         latitude: context.latitude,
         longitude: context.longitude,
-        scenario: context.scenario,
-        model: context.model,
+        scenario: exportScenario,
+        model: exportModel,
         dataMode: datasetRefresh ? undefined : expectedDataModeRef.current,
         includeRaw: datasetRefresh ? undefined : seriesRequest.includeRaw,
         selectedMetrics: requestMetrics
@@ -736,7 +767,11 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
     return () => window.clearTimeout(timer);
   }, [datasetState.refreshSequence, metadata?.datasetVersion]);
   const exportFile = async () => {
-    if (!response) return;
+    if (!hasCurrentPreview) {
+      setStatus("error");
+      setMessage("현재 자료판으로 미리보기를 다시 불러온 뒤 저장하세요.");
+      return;
+    }
     setStatus("exporting");
     setMessage(`${format.toUpperCase()} 파일을 만들고 있습니다.`);
     try {
@@ -885,8 +920,8 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
           /* @__PURE__ */ jsxs("main", { className: "export-preview", children: [
             /* @__PURE__ */ jsxs("div", { className: "export-context-strip", children: [
               context.exploration?.title ? /* @__PURE__ */ jsx("span", { children: context.exploration.title }) : null,
-              /* @__PURE__ */ jsx("span", { children: context.scenario }),
-              /* @__PURE__ */ jsx("span", { children: context.model }),
+              /* @__PURE__ */ jsx("span", { children: exportScenario }),
+              /* @__PURE__ */ jsx("span", { children: exportModel }),
               /* @__PURE__ */ jsx("span", { children: formatCoordinatePair(context.latitude, context.longitude) }),
               context.seasonMonths?.length ? /* @__PURE__ */ jsxs("span", { children: ["대상 월 ", context.seasonMonths.join(", "), "월"] }) : null
             ] }),
@@ -946,7 +981,7 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
               /* @__PURE__ */ jsx(Eye, { size: 17 }),
               " 자료 미리보기"
             ] }),
-            /* @__PURE__ */ jsxs("button", { className: "primary-action", disabled: !response || busy, onClick: exportFile, type: "button", children: [
+            /* @__PURE__ */ jsxs("button", { className: "primary-action", disabled: !hasCurrentPreview || busy, onClick: exportFile, type: "button", children: [
               /* @__PURE__ */ jsx(Download, { size: 17 }),
               " ",
               format.toUpperCase(),
@@ -1579,20 +1614,22 @@ function usePublicDatasetMetadata() {
     refreshSequence: 0,
     status: "loading"
   });
+  const refreshRef = useRef(() => Promise.resolve(void 0));
+  const requestRefresh = useCallback((options = {}) => refreshRef.current(options), []);
   useEffect(() => {
     let active = true;
     let activeController;
-    let inFlight;
     let lastCheckAt = 0;
-    const checkMetadata = (initial = false) => {
-      const now = Date.now();
-      if (inFlight || !initial && now - lastCheckAt < PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS) return;
-      if (!initial && typeof navigator !== "undefined" && navigator.onLine === false) return;
-      lastCheckAt = now;
+    const performMetadataCheck = () => {
+      if (!active) return Promise.resolve(void 0);
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        return Promise.reject(new Error("기후자료 연결을 확인할 수 없습니다."));
+      }
+      lastCheckAt = Date.now();
       const controller = new AbortController();
       activeController = controller;
-      const pending = fetchPublicClimateMetadata({ signal: controller.signal }).then(validatePublicDatasetMetadata).then((nextMetadata) => {
-        if (!active) return;
+      return fetchPublicClimateMetadata({ signal: controller.signal }).then(validatePublicDatasetMetadata).then((nextMetadata) => {
+        if (!active) return void 0;
         setDatasetState((current) => {
           if (!current.metadata) {
             return { metadata: nextMetadata, refreshSequence: current.refreshSequence, status: "ready" };
@@ -1604,32 +1641,42 @@ function usePublicDatasetMetadata() {
             status: changed ? "updated" : "ready"
           };
         });
-      }).catch(() => {
+        return nextMetadata;
+      }).catch((error) => {
         if (!active) return;
         setDatasetState((current) => current.metadata ? current : { ...current, status: "unavailable" });
+        throw error;
       }).finally(() => {
-        if (inFlight === pending) inFlight = void 0;
         if (activeController === controller) activeController = void 0;
       });
-      inFlight = pending;
     };
-    const onFocus = () => checkMetadata();
+    const refreshQueue = createPublicMetadataRefreshQueue(performMetadataCheck);
+    const checkMetadata = ({ force = false, initial = false } = {}) => {
+      const now = Date.now();
+      if (refreshQueue.hasInFlight()) return refreshQueue.request({ force });
+      if (!initial && !force && now - lastCheckAt < PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS) return Promise.resolve(void 0);
+      return refreshQueue.request();
+    };
+    refreshRef.current = checkMetadata;
+    const checkSilently = (options) => void checkMetadata(options).catch(() => void 0);
+    const onFocus = () => checkSilently();
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") checkMetadata();
+      if (document.visibilityState === "visible") checkSilently();
     };
-    checkMetadata(true);
+    checkSilently({ initial: true });
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    const interval = window.setInterval(checkMetadata, PUBLIC_DATASET_REFRESH_INTERVAL_MS);
+    const interval = window.setInterval(() => checkSilently(), PUBLIC_DATASET_REFRESH_INTERVAL_MS);
     return () => {
       active = false;
+      refreshRef.current = () => Promise.resolve(void 0);
       activeController?.abort();
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
-  return datasetState;
+  return useMemo(() => ({ ...datasetState, requestRefresh }), [datasetState, requestRefresh]);
 }
 function App() {
   const route = useHashRoute();
@@ -1661,9 +1708,10 @@ function App() {
       ] })
     ] }) }),
     /* @__PURE__ */ jsxs("main", { className: "main", children: [
-      /* @__PURE__ */ jsx(TopBar, { route }),
+      /* @__PURE__ */ jsx(TopBar, { metadata: datasetState.metadata, route }),
       page
-    ] })
+    ] }),
+    /* @__PURE__ */ jsx(SiteFooter, {})
   ] });
 }
 function useThemeMode() {
@@ -1718,12 +1766,68 @@ function ProblemCategoryControl({ value, onChange, label }) {
     children: option.label
   }, option.key)) });
 }
-function TopBar({ route }) {
+function TopBar({ metadata, route }) {
   const meta = routeTitles[route];
   return /* @__PURE__ */ jsx("header", { className: "topbar", children: /* @__PURE__ */ jsxs("div", { className: "topbar-copy", children: [
-    /* @__PURE__ */ jsx("span", { className: "eyebrow", children: meta.eyebrow }),
+    /* @__PURE__ */ jsxs("div", { className: "topbar-eyebrow-row", children: [
+      /* @__PURE__ */ jsx("span", { className: "eyebrow", children: meta.eyebrow }),
+      /* @__PURE__ */ jsx(SourceCitationDisclosure, { metadata })
+    ] }),
     /* @__PURE__ */ jsx("h1", { children: meta.title }),
     /* @__PURE__ */ jsx("p", { children: meta.subtitle })
+  ] }) });
+}
+function SourceCitationDisclosure({ metadata }) {
+  const catalog = PUBLIC_ATTRIBUTION_CATALOG;
+  const advertisedModels = Array.isArray(metadata?.models)
+    ? metadata.models.filter((model) => model && model !== "전체 앙상블")
+    : catalog.climateModels.map((model) => model.name);
+  const modelRows = advertisedModels.map((model) => ({ name: model, attribution: findClimateModelAttribution(model) }));
+  const basisDate = formatPublicDatasetUpdatedAt(metadata?.datasetUpdatedAt);
+  return /* @__PURE__ */ jsxs("details", { className: "source-citation-disclosure", children: [
+    /* @__PURE__ */ jsxs("summary", { children: [/* @__PURE__ */ jsx(BookOpen, { size: 14 }), /* @__PURE__ */ jsx("span", { children: "출처·인용" })] }),
+    /* @__PURE__ */ jsxs("div", { className: "source-citation-panel", children: [
+      /* @__PURE__ */ jsxs("header", { children: [
+        /* @__PURE__ */ jsx("strong", { children: "CMIP6/downscaleCMIP6 자료 출처" }),
+        /* @__PURE__ */ jsx("p", { children: "기후 모델, 관측자료, 자료 처리 방법의 출처와 인용 정보를 확인할 수 있습니다." }),
+        basisDate ? /* @__PURE__ */ jsxs("small", { children: ["현재 자료 기준일: ", basisDate] }) : null
+      ] }),
+      /* @__PURE__ */ jsxs("section", { children: [
+        /* @__PURE__ */ jsx("h2", { children: "기후 모델 자료" }),
+        /* @__PURE__ */ jsx("ul", { className: "source-model-list", children: modelRows.map(({ name, attribution }) => /* @__PURE__ */ jsxs("li", { children: [
+          /* @__PURE__ */ jsx("strong", { children: name }),
+          attribution ? /* @__PURE__ */ jsx("span", { children: attribution.citations.map((citation) => /* @__PURE__ */ jsx("a", { href: citation.source.url, rel: "noreferrer", target: "_blank", children: citation.activity }, citation.source.doi)) }) : /* @__PURE__ */ jsx("small", { children: "이 자료판의 상세 인용 정보를 확인하세요." })
+        ] }, name)) })
+      ] }),
+      /* @__PURE__ */ jsxs("section", { children: [
+        /* @__PURE__ */ jsx("h2", { children: "자료 처리 방법" }),
+        /* @__PURE__ */ jsx("ol", { className: "source-method-list", children: catalog.methodologyReferences.map((reference) => /* @__PURE__ */ jsxs("li", { children: [
+          /* @__PURE__ */ jsxs("span", { children: [formatCitationAuthors(reference.authors), " (", reference.year, "). ", reference.title] }),
+          /* @__PURE__ */ jsx("a", { href: reference.source.url, rel: "noreferrer", target: "_blank", children: "DOI" })
+        ] }, reference.id)) })
+      ] }),
+      /* @__PURE__ */ jsxs("section", { className: "source-kma-notice", children: [
+        /* @__PURE__ */ jsx("h2", { children: "대한민국 기상청 ASOS" }),
+        /* @__PURE__ */ jsx("p", { children: "관측 보정이 적용된 결과에는 대한민국 기상청 ASOS 자료가 포함됩니다." }),
+        /* @__PURE__ */ jsx("a", { href: "https://www.data.go.kr/data/15057210/openapi.do", rel: "noreferrer", target: "_blank", children: "ASOS 시간자료 출처 보기" }),
+        /* @__PURE__ */ jsxs("div", { children: [
+          /* @__PURE__ */ jsx("img", { alt: "공공누리 제1유형 출처 표시", src: "./assets/licenses/kma_mark_1.png" }),
+          /* @__PURE__ */ jsx("img", { alt: "제3자 권리 포함 저작권 표시", src: "./assets/licenses/kma_mark_2.png" })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsx("a", { className: "source-citation-link", href: `${catalog.project.repositoryUrl}/blob/main/CITATION.cff`, rel: "noreferrer", target: "_blank", children: "전체 인용 정보 보기" })
+    ] })
+  ] });
+}
+function formatCitationAuthors(authors) {
+  if (!Array.isArray(authors)) return "저자 정보 없음";
+  return authors.map((author) => author.name ?? [author.familyName, author.givenNames].filter(Boolean).join(", ")).join("; ");
+}
+function SiteFooter() {
+  const creator = PUBLIC_ATTRIBUTION_CATALOG.project.creator;
+  return /* @__PURE__ */ jsx("footer", { className: "site-footer", children: /* @__PURE__ */ jsxs("div", { className: "site-footer-inner", children: [
+    /* @__PURE__ */ jsxs("span", { children: ["제작자 ", /* @__PURE__ */ jsx("strong", { children: creator.displayName })] }),
+    /* @__PURE__ */ jsx("a", { href: creator.githubUrl, rel: "noreferrer", target: "_blank", children: `GitHub ${creator.githubHandle}` })
   ] }) });
 }
 function renderRoute(route, datasetState) {
@@ -1781,24 +1885,27 @@ function QueryPage({ audience, datasetState }) {
     date,
     scenario,
     model,
+    requestDatasetRefresh: datasetState.requestRefresh,
     datasetUpdatedAt: metadata?.datasetUpdatedAt,
     datasetVersion: metadata?.datasetVersion,
     refreshSequence: datasetState.refreshSequence
   });
   const usesRawModelGrid = remoteState.response?.dataMode === "raw-model-grid";
+  const hasCurrentDatasetResult = isCurrentPublicDatasetResult(remoteState.response, metadata, remoteState.status);
   const metricsForSelection = useMemo(
     () => deriveClimateMetrics({ date, raw, remoteState }),
     [date, raw, remoteState]
   );
-  const hasExportableMetrics = metricsForSelection.some((metric) => metric.available !== false && Number.isFinite(metric.numericValue));
-  const currentSnapshot = useMemo(() => createMetricSnapshot(metricsForSelection, {
+  const hasExportableMetrics = hasCurrentDatasetResult
+    && metricsForSelection.some((metric) => metric.available !== false && Number.isFinite(metric.numericValue));
+  const currentSnapshot = useMemo(() => hasCurrentDatasetResult ? createMetricSnapshot(metricsForSelection, {
     date,
     latitude: coordinates.latitude,
     longitude: coordinates.longitude,
     scenario,
     model,
     label: activeStudySite ? `${activePreset.label.replace(/^[A-Z]\s+/u, "")} · ${activeStudySite.label}` : activePreset.label.replace(/^[A-Z]\s+/u, "")
-  }), [metricsForSelection, date, coordinates.latitude, coordinates.longitude, scenario, model, activePreset.label, activeStudySite]);
+  }) : void 0, [hasCurrentDatasetResult, metricsForSelection, date, coordinates.latitude, coordinates.longitude, scenario, model, activePreset.label, activeStudySite]);
   const comparisonRows = useMemo(
     () => compareMetricSnapshots(comparisonBaseline, currentSnapshot),
     [comparisonBaseline, currentSnapshot]
@@ -1831,6 +1938,9 @@ function QueryPage({ audience, datasetState }) {
   useEffect(() => {
     setStudentConclusion("");
   }, [date, coordinates.latitude, coordinates.longitude, scenario, model, selectedPresetId]);
+  useEffect(() => {
+    setComparisonBaseline(void 0);
+  }, [metadata?.datasetUpdatedAt, metadata?.datasetVersion]);
   useEffect(() => {
     setMysteryGuess("");
     setMysteryRevealed(false);
@@ -1943,6 +2053,10 @@ function QueryPage({ audience, datasetState }) {
   };
   const exportMetric = (metric) => {
     if (!metric.key) return;
+    if (!hasCurrentDatasetResult) {
+      setQueryMessage("최신 기후자료 조회가 끝난 뒤 기간 자료를 내보낼 수 있습니다.");
+      return;
+    }
     if (locationConcealed) {
       setQueryMessage("먼저 위치 후보를 고르고 정답을 확인하세요. 그 뒤 기간 자료를 내보낼 수 있습니다.");
       return;
@@ -1964,6 +2078,10 @@ function QueryPage({ audience, datasetState }) {
     });
   };
   const exportAllMetrics = () => {
+    if (!hasCurrentDatasetResult) {
+      setQueryMessage("최신 기후자료 조회가 끝난 뒤 전체 자료를 내보낼 수 있습니다.");
+      return;
+    }
     if (locationConcealed) {
       setQueryMessage("먼저 위치 후보를 고르고 정답을 확인하세요. 그 뒤 전체 자료를 내보낼 수 있습니다.");
       return;
@@ -1989,6 +2107,10 @@ function QueryPage({ audience, datasetState }) {
     });
   };
   const openProblemPeriod = (period) => {
+    if (!hasCurrentDatasetResult) {
+      setQueryMessage("최신 기후자료 조회가 끝난 뒤 기간 자료를 확인할 수 있습니다.");
+      return;
+    }
     if (locationConcealed) {
       setQueryMessage("먼저 지표와 단서를 살펴보고 위치 후보를 고르세요. 정답을 확인하면 기간 자료가 열립니다.");
       return;
@@ -2142,7 +2264,7 @@ function QueryPage({ audience, datasetState }) {
           ] })
         ] }),
         /* @__PURE__ */ jsx("div", { className: `mini-status ${remoteState.status === "ready" ? "ok" : "warn"}`, "aria-live": "polite", children: remoteState.message }),
-        /* @__PURE__ */ jsx(MetricGrid, { items: metricsForSelection, onExportMetric: locationConcealed ? undefined : exportMetric }),
+        /* @__PURE__ */ jsx(MetricGrid, { items: metricsForSelection, onExportMetric: locationConcealed || !hasCurrentDatasetResult ? undefined : exportMetric }),
         /* @__PURE__ */ jsx(StudentWorkbench, {
           baseline: comparisonBaseline,
           comparisonRows,
@@ -2565,10 +2687,12 @@ function TeacherPage({ datasetState }) {
     date: lessonDate,
     scenario: lessonScenario,
     model: lessonModel,
+    requestDatasetRefresh: datasetState.requestRefresh,
     datasetUpdatedAt: metadata?.datasetUpdatedAt,
     datasetVersion: metadata?.datasetVersion,
     refreshSequence: datasetState.refreshSequence
   });
+  const hasCurrentDatasetResult = isCurrentPublicDatasetResult(remoteState.response, metadata, remoteState.status);
   const lessonMetrics = useMemo(
     () => deriveClimateMetrics({ date: lessonDate, raw: false, remoteState }),
     [lessonDate, remoteState]
@@ -2583,14 +2707,14 @@ function TeacherPage({ datasetState }) {
     () => resolveTeacherQueryStatus(remoteState.status, lessonMetrics, requiredTeacherMetricKeys),
     [remoteState.status, lessonMetrics, requiredTeacherMetricKeys]
   );
-  const currentSnapshot = useMemo(() => createMetricSnapshot(lessonMetrics, {
+  const currentSnapshot = useMemo(() => hasCurrentDatasetResult ? createMetricSnapshot(lessonMetrics, {
     date: lessonDate,
     latitude: lessonLocation.latitude,
     longitude: lessonLocation.longitude,
     scenario: lessonScenario,
     model: lessonModel,
     label: lessonLocation.label
-  }), [lessonMetrics, lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonLocation.label, lessonScenario, lessonModel]);
+  }) : void 0, [hasCurrentDatasetResult, lessonMetrics, lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonLocation.label, lessonScenario, lessonModel]);
   useLayoutEffect(() => {
     dispatchTeacherFlow({
       type: TEACHER_FLOW_ACTIONS.UPDATE_CONDITIONS,
@@ -2611,6 +2735,10 @@ function TeacherPage({ datasetState }) {
       materials: comparisonPoints
     });
   }, [comparisonPoints]);
+  useEffect(() => {
+    setComparisonPoints([]);
+    setStarted(false);
+  }, [metadata?.datasetUpdatedAt, metadata?.datasetVersion]);
   useEffect(() => {
     dispatchTeacherFlow({
       type: TEACHER_FLOW_ACTIONS.SET_QUERY_STATUS,
@@ -2999,16 +3127,19 @@ function PublicPage({ datasetState }) {
     date: publicDate,
     scenario: publicScenario,
     model: publicModel,
+    requestDatasetRefresh: datasetState.requestRefresh,
     datasetUpdatedAt: metadata?.datasetUpdatedAt,
     datasetVersion: metadata?.datasetVersion,
     refreshSequence: datasetState.refreshSequence
   });
   const usesRawModelGrid = remoteState.response?.dataMode === "raw-model-grid";
+  const hasCurrentDatasetResult = isCurrentPublicDatasetResult(remoteState.response, metadata, remoteState.status);
   const publicMetrics = useMemo(
     () => simplifyPublicMetrics(deriveClimateMetrics({ date: publicDate, raw: false, remoteState })),
     [remoteState]
   );
-  const hasPublicMetrics = publicMetrics.some((metric) => metric.available !== false && Number.isFinite(metric.numericValue));
+  const hasPublicMetrics = hasCurrentDatasetResult
+    && publicMetrics.some((metric) => metric.available !== false && Number.isFinite(metric.numericValue));
   const plainLanguageSummary = buildPlainLanguageSummary(publicMetrics, publicDate);
   const dateYear = Number(publicDate.slice(0, 4));
   const dateMonthDay = publicDate.slice(4);
@@ -3076,6 +3207,10 @@ function PublicPage({ datasetState }) {
   };
   const exportPublicMetric = (metric) => {
     if (!metric.key) return;
+    if (!hasCurrentDatasetResult) {
+      setMessage("최신 기후자료 조회가 끝난 뒤 기간 자료를 내보낼 수 있습니다.");
+      return;
+    }
     setExportContext({
       date: publicDate,
       latitude: coordinates.latitude,
@@ -3088,6 +3223,10 @@ function PublicPage({ datasetState }) {
     });
   };
   const exportPublicMetrics = () => {
+    if (!hasCurrentDatasetResult) {
+      setMessage("최신 기후자료 조회가 끝난 뒤 기간 자료를 내보낼 수 있습니다.");
+      return;
+    }
     const initialMetrics = publicMetrics.filter((metric) => metric.key && metric.available !== false && Number.isFinite(metric.numericValue)).map((metric) => metric.key);
     setExportContext({
       date: publicDate,
@@ -3101,6 +3240,10 @@ function PublicPage({ datasetState }) {
     });
   };
   const savePublicSummary = () => {
+    if (!hasCurrentDatasetResult) {
+      setMessage("최신 기후자료 조회가 끝난 뒤 결과 이미지를 저장할 수 있습니다.");
+      return;
+    }
     setExportContext({
       date: publicDate,
       latitude: coordinates.latitude,
@@ -3176,7 +3319,7 @@ function PublicPage({ datasetState }) {
           /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(CloudSun, { size: 18 }) }),
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: "쉽게 읽기" }), /* @__PURE__ */ jsx("p", { children: plainLanguageSummary })] })
         ] }),
-        /* @__PURE__ */ jsx(MetricGrid, { items: publicMetrics, onExportMetric: exportPublicMetric }),
+        /* @__PURE__ */ jsx(MetricGrid, { items: publicMetrics, onExportMetric: hasCurrentDatasetResult ? exportPublicMetric : undefined }),
         /* @__PURE__ */ jsxs("div", { className: "public-results-footer", children: [
           /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("strong", { children: "현재 화면" }),
@@ -3195,6 +3338,7 @@ function useRemoteMetricResponse({
   date,
   scenario,
   model,
+  requestDatasetRefresh,
   datasetUpdatedAt,
   datasetVersion,
   refreshSequence
@@ -3213,9 +3357,23 @@ function useRemoteMetricResponse({
     message: "실제 기후 자료를 불러오고 있습니다."
   });
   const controllerRef = useRef();
+  const cancelledConditionRef = useRef();
   const completedRefreshSequenceRef = useRef(refreshSequence);
   const observedDatasetVersionRef = useRef(datasetVersion);
   useEffect(() => {
+    if (cancelledConditionRef.current && cancelledConditionRef.current !== conditionKey) {
+      cancelledConditionRef.current = void 0;
+    }
+    if (cancelledConditionRef.current === conditionKey) return;
+    if (!datasetVersion || !datasetUpdatedAt) {
+      setState((current) => ({
+        ...(current.conditionKey === conditionKey && current.response ? { response: current.response } : {}),
+        conditionKey,
+        status: "loading",
+        message: "최신 기후자료의 기준을 확인하고 있습니다."
+      }));
+      return;
+    }
     let active = true;
     const controller = new AbortController();
     const datasetRefresh = refreshSequence > completedRefreshSequenceRef.current;
@@ -3240,7 +3398,22 @@ function useRemoteMetricResponse({
       fetchPublicClimateQuery(request, { signal: controller.signal }).then((payload) => {
         if (!active) return;
         const response = responseIfRequestMatches(payload, request, datasetUpdatedAt);
-        if (!response) throw new Error("불러온 자료가 현재 선택한 조건과 다릅니다. 다시 시도하세요.");
+        if (!response) {
+          return requestDatasetRefresh({ force: true }).then((nextMetadata) => {
+            if (!active || cancelledConditionRef.current === conditionKey) return;
+            if (isPublicDatasetIdentityChange({ datasetVersion, datasetUpdatedAt }, nextMetadata)) {
+              setState((current) => ({
+                ...(current.conditionKey === conditionKey && current.response ? { response: current.response } : {}),
+                conditionKey,
+                status: "loading",
+                message: "기후자료가 갱신되어 같은 조건의 결과를 다시 불러오고 있습니다.",
+                refreshNotice: "기후자료가 갱신되어 같은 조건의 결과를 다시 불러오고 있습니다."
+              }));
+              return;
+            }
+            throw new Error("불러온 자료가 현재 선택한 조건과 다릅니다. 다시 시도하세요.");
+          });
+        }
         completedRefreshSequenceRef.current = Math.max(completedRefreshSequenceRef.current, refreshSequence);
         const status = response.coverage === "available" ? "ready" : response.coverage === "fallback" ? "partial" : "missing";
         const coverageMessage = response.coverage === "available"
@@ -3260,6 +3433,7 @@ function useRemoteMetricResponse({
         });
       }).catch((error) => {
         if (error instanceof Error && error.name === "AbortError") return;
+        if (cancelledConditionRef.current === conditionKey) return;
         if (active) {
           completedRefreshSequenceRef.current = Math.max(completedRefreshSequenceRef.current, refreshSequence);
           setState((current) => {
@@ -3282,11 +3456,11 @@ function useRemoteMetricResponse({
       controller.abort();
       if (controllerRef.current === controller) controllerRef.current = void 0;
     };
-  }, [conditionKey, request, refreshSequence]);
+  }, [conditionKey, datasetUpdatedAt, datasetVersion, request, requestDatasetRefresh, refreshSequence]);
   const cancel = () => {
-    if (state.status !== "loading" || !controllerRef.current) return;
-    const datasetRefresh = refreshSequence > completedRefreshSequenceRef.current;
-    controllerRef.current.abort();
+    if (state.status !== "loading") return;
+    cancelledConditionRef.current = conditionKey;
+    controllerRef.current?.abort();
     controllerRef.current = void 0;
     completedRefreshSequenceRef.current = Math.max(completedRefreshSequenceRef.current, refreshSequence);
     setState((current) => ({

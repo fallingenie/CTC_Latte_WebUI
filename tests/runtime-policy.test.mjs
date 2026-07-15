@@ -8,7 +8,9 @@ import {
   PUBLIC_DATASET_REFRESH_INTERVAL_MS,
   PUBLIC_DATA_SOURCE_POLICY,
   PUBLIC_RETRYABLE_RAW_QUERY_MESSAGE,
+  createPublicMetadataRefreshQueue,
   formatPublicDatasetUpdatedAt,
+  isCurrentPublicDatasetResult,
   isMatchingPublicDatasetIdentity,
   isMatchingPublicDatasetVersion,
   isPublicDatasetIdentityChange,
@@ -406,6 +408,67 @@ test("버전이 고정된 API 응답은 요청 버전과 정확히 같아야 한
   assert.equal(isMatchingPublicDatasetIdentity(validQueryResponse, currentDatasetVersion, currentDatasetUpdatedAt), true);
   assert.equal(isMatchingPublicDatasetIdentity(validQueryResponse, currentDatasetVersion, nextDatasetUpdatedAt), false);
   assert.equal(isMatchingPublicDatasetIdentity(validQueryResponse, nextDatasetVersion, currentDatasetUpdatedAt), false);
+});
+
+test("저장 가능한 결과는 현재 자료판과 일치하고 조회가 완료된 경우로 제한한다", () => {
+  assert.equal(isCurrentPublicDatasetResult(validQueryResponse, validMetadata, "ready"), true);
+  assert.equal(isCurrentPublicDatasetResult(validQueryResponse, validMetadata, "loading"), false);
+  assert.equal(isCurrentPublicDatasetResult(validQueryResponse, validMetadata, "error"), false);
+  assert.equal(isCurrentPublicDatasetResult(
+    { ...validQueryResponse, datasetVersion: nextDatasetVersion },
+    validMetadata,
+    "ready"
+  ), false);
+  assert.equal(isCurrentPublicDatasetResult(
+    { ...validQueryResponse, datasetUpdatedAt: nextDatasetUpdatedAt },
+    validMetadata,
+    "ready"
+  ), false);
+});
+
+test("진행 중 강제 자료 확인은 기존 요청 뒤에 최신 요청을 정확히 한 번 실행한다", async () => {
+  const pending = [];
+  let callCount = 0;
+  const queue = createPublicMetadataRefreshQueue(() => new Promise((resolve, reject) => {
+    callCount += 1;
+    pending.push({ resolve, reject });
+  }));
+
+  const first = queue.request();
+  const shared = queue.request();
+  const forced = queue.request({ force: true });
+  const sharedForced = queue.request({ force: true });
+  assert.equal(callCount, 1);
+  assert.equal(shared, first);
+  assert.equal(sharedForced, forced);
+
+  pending[0].resolve("이전 자료판");
+  assert.equal(await first, "이전 자료판");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callCount, 2);
+  assert.equal(queue.hasInFlight(), true);
+
+  pending[1].resolve("최신 자료판");
+  assert.equal(await forced, "최신 자료판");
+  assert.equal(queue.hasInFlight(), false);
+});
+
+test("첫 자료 확인이 실패해도 대기한 강제 확인은 새 요청으로 이어진다", async () => {
+  const pending = [];
+  let callCount = 0;
+  const queue = createPublicMetadataRefreshQueue(() => new Promise((resolve, reject) => {
+    callCount += 1;
+    pending.push({ resolve, reject });
+  }));
+
+  const first = queue.request();
+  const forced = queue.request({ force: true });
+  pending[0].reject(new Error("교체 전 요청 실패"));
+  await assert.rejects(first, /교체 전 요청 실패/u);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(callCount, 2);
+  pending[1].resolve("최신 자료판");
+  assert.equal(await forced, "최신 자료판");
 });
 
 test("자료 갱신 시각은 내부 버전 대신 한국어 기준일로 표시한다", () => {
