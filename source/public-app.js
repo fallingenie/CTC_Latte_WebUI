@@ -545,6 +545,7 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
   const reloadPreviewRef = useRef();
   const handledRefreshSequenceRef = useRef(datasetState.refreshSequence);
   const observedDialogDatasetVersionRef = useRef(metadata?.datasetVersion);
+  const expectedDataModeRef = useRef(context?.expectedDataMode);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [selectedMetrics, setSelectedMetrics] = useState([]);
@@ -557,6 +558,7 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
   useEffect(() => {
     if (!context) return;
     openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    expectedDataModeRef.current = context.expectedDataMode;
     seriesControllerRef.current?.abort();
     seriesControllerRef.current = void 0;
     setStartDate(context.initialStartDate ?? context.date);
@@ -684,12 +686,13 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
         longitude: context.longitude,
         scenario: context.scenario,
         model: context.model,
-        dataMode: context.expectedDataMode,
+        dataMode: datasetRefresh ? undefined : expectedDataModeRef.current,
         includeRaw: seriesRequest.includeRaw,
         selectedMetrics: requestMetrics
       })) {
         throw new Error("불러온 자료가 선택한 조건이나 기간과 다릅니다. 다시 시도하세요.");
       }
+      expectedDataModeRef.current = payload.dataMode;
       let displayPayload = collapseApparentTemperatureSeries(payload, selectedMetrics);
       displayPayload = selectClimateSeriesMetrics(displayPayload, selectedMetrics);
       displayPayload = filterClimateSeriesByMonths(displayPayload, context.seasonMonths);
@@ -723,6 +726,7 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
     const datasetRefresh = datasetState.refreshSequence > handledRefreshSequenceRef.current;
     if (datasetRefresh) handledRefreshSequenceRef.current = datasetState.refreshSequence;
     if (!nextDatasetVersion || (!versionTransition && !datasetRefresh)) return;
+    expectedDataModeRef.current = undefined;
     const shouldReload = Boolean(context) && (status === "loading" || (Boolean(response) && status !== "exporting"));
     if (!shouldReload) return;
     seriesControllerRef.current?.abort();

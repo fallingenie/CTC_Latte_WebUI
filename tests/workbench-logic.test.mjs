@@ -315,6 +315,23 @@ test("기간 자료 응답은 좌표·기간·시나리오·모델과 배열 길
   }, validSeriesExpectation), false);
 });
 
+test("자료판 갱신 뒤에는 같은 조건의 원자료와 보정 자료 전환을 모두 허용한다", () => {
+  const refreshedExpectation = { ...validSeriesExpectation, dataMode: undefined };
+  assert.equal(isMatchingClimateSeriesResponse(validSeriesResponse, refreshedExpectation), true);
+  assert.equal(isMatchingClimateSeriesResponse({
+    ...validSeriesResponse,
+    dataMode: "raw-model-grid"
+  }, refreshedExpectation), true);
+  assert.equal(isMatchingClimateSeriesResponse({
+    ...validSeriesResponse,
+    dataMode: "unknown-mode"
+  }, refreshedExpectation), false);
+  assert.equal(isMatchingClimateSeriesResponse({
+    ...validSeriesResponse,
+    dataMode: "raw-model-grid"
+  }, validSeriesExpectation), false);
+});
+
 test("기간 자료 응답은 저장소 주소와 내부 파일 형식을 공개 화면에서 거부한다", () => {
   const unsafeValues = [
     "gs://synthetic-private-bucket/cmip6.zarr",

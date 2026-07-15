@@ -189,18 +189,20 @@ export function filterClimateSeriesByMonths(response, months) {
 }
 
 export function isMatchingClimateSeriesResponse(value, expected) {
+  const expectedDataMode = expected?.dataMode;
   if (!value
     || typeof value !== "object"
     || !expected
     || typeof expected !== "object"
     || typeof expected.includeRaw !== "boolean"
-    || !["bias-corrected", "raw-model-grid"].includes(expected.dataMode)) return false;
+    || (expectedDataMode !== undefined && !["bias-corrected", "raw-model-grid"].includes(expectedDataMode))) return false;
   if (value.publicSafe !== true
     || value.attributionReady !== true
     || !Array.isArray(value.attributionLabels)
     || value.attributionLabels.length === 0
     || !["bias-corrected", "raw-model-grid"].includes(value.dataMode)) return false;
-  if (value.dataMode !== expected.dataMode || value.includeRaw !== expected.includeRaw) return false;
+  if ((expectedDataMode !== undefined && value.dataMode !== expectedDataMode)
+    || value.includeRaw !== expected.includeRaw) return false;
   if (value.dateStart !== expected.startDate || value.dateEnd !== expected.endDate) return false;
   if (!nearlyEqual(value.latitude, expected.latitude) || !nearlyEqual(value.longitude, expected.longitude)) return false;
   if (value.scenario !== expected.scenario || value.model !== expected.model) return false;

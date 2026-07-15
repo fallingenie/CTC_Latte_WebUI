@@ -225,6 +225,7 @@ test("실제 확인서 생성은 metadata, query, series가 같은 자료판일 
       CTC_PRODUCTION_ATTESTATION_OUTPUT: outputPath
     },
     fetchImplementation,
+    frontendRoot: fixture.frontendRoot,
     strictGit: false,
     now: () => new Date("2026-07-15T03:04:05.006Z"),
     gitRunner: async (repositoryRoot, argumentsList) => {
@@ -388,6 +389,7 @@ test("외부와 로컬 게이트웨이의 실제 조회값이 다르면 확인�
         CTC_PRODUCTION_ATTESTATION_OUTPUT: outputPath
       },
       fetchImplementation,
+      frontendRoot: fixture.frontendRoot,
       strictGit: false,
       now: () => new Date("2026-07-15T03:04:05.006Z"),
       gitRunner: async (repositoryRoot, argumentsList) => {
@@ -403,11 +405,14 @@ test("외부와 로컬 게이트웨이의 실제 조회값이 다르면 확인�
 
 async function createFixture() {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ctc-webui-production-"));
+  const frontendRoot = path.join(tempRoot, "frontend");
   const backendRoot = path.join(tempRoot, "backend");
   const driveRoot = path.join(tempRoot, "drive");
   const webDataRoot = path.join(driveRoot, "release.ctwebui");
+  await fs.mkdir(path.join(frontendRoot, "dist"), { recursive: true });
   await fs.mkdir(path.join(backendRoot, "scripts"), { recursive: true });
   await fs.mkdir(path.join(webDataRoot, "meta"), { recursive: true });
+  await fs.writeFile(path.join(frontendRoot, "dist", "index.html"), "<!doctype html><title>기후 타임캡슐</title>\n", "utf8");
   await fs.writeFile(path.join(backendRoot, "scripts", "serve_webui_data_gateway.py"), "print('gateway')\n", "utf8");
 
   const rawIndex = {
@@ -458,6 +463,7 @@ async function createFixture() {
   };
   return {
     tempRoot,
+    frontendRoot,
     backendRoot,
     driveRoot,
     webDataRoot,
@@ -482,6 +488,7 @@ function createAttestationOptions(fixture, outputPath, fetchImplementation) {
       CTC_PRODUCTION_ATTESTATION_OUTPUT: outputPath
     },
     fetchImplementation,
+    frontendRoot: fixture.frontendRoot,
     strictGit: false,
     now: () => new Date("2026-07-15T03:04:05.006Z"),
     gitRunner: async (repositoryRoot, argumentsList) => {
@@ -550,7 +557,7 @@ function createGatewayFetch(fixture, calls) {
       };
     } else {
       const relativePath = decodeURIComponent(parsed.pathname.replace(/^\//u, ""));
-      const filePath = path.join(root, "dist", ...relativePath.split("/"));
+      const filePath = path.join(fixture.frontendRoot, "dist", ...relativePath.split("/"));
       try {
         return new Response(await fs.readFile(filePath), { status: 200 });
       } catch {

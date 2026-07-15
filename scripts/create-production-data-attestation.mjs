@@ -302,6 +302,7 @@ export async function createProductionDataAttestation({
   platform = process.platform,
   fileSystem = fs,
   fetchImplementation = globalThis.fetch,
+  frontendRoot = FRONTEND_ROOT,
   gitRunner = runGit,
   strictGit,
   now = () => new Date()
@@ -309,6 +310,7 @@ export async function createProductionDataAttestation({
   if (typeof fetchImplementation !== "function") {
     throw new AttestationValidationError("운영 게이트웨이를 호출할 fetch 구현이 없습니다.");
   }
+  const resolvedFrontendRoot = validateFrontendRoot(frontendRoot);
   const deployment = validateCloudOnlyDeploymentEnvironment(env, { platform });
   const outputPath = validateOutputPath(env.CTC_PRODUCTION_ATTESTATION_OUTPUT, platform);
   const baseUrl = validateDeploymentBaseUrl(env.CTC_DEPLOYMENT_BASE_URL);
@@ -325,7 +327,7 @@ export async function createProductionDataAttestation({
     rawCmip6Root: deployment.rawCmip6Root
   });
   const [frontendGit, backendGit] = await Promise.all([
-    inspectGitRepository(FRONTEND_ROOT, "프런트엔드", { requireCleanGit, gitRunner }),
+    inspectGitRepository(resolvedFrontendRoot, "프런트엔드", { requireCleanGit, gitRunner }),
     inspectGitRepository(deployment.backendRoot, "백엔드", { requireCleanGit, gitRunner })
   ]);
 
@@ -339,7 +341,7 @@ export async function createProductionDataAttestation({
     fetchImplementation,
     timeoutMs
   };
-  await verifyDeployedFrontend({ requestContext, fileSystem });
+  await verifyDeployedFrontend({ requestContext, fileSystem, frontendRoot: resolvedFrontendRoot });
   const health = validateHealthResponse(await fetchJson(
     new URL("/api/climate/health", baseUrl.origin),
     { ...requestContext, label: "health" }
@@ -605,8 +607,15 @@ async function runGit(repositoryRoot, argumentsList) {
   return stdout;
 }
 
-async function verifyDeployedFrontend({ requestContext, fileSystem }) {
-  const distRoot = path.join(FRONTEND_ROOT, "dist");
+function validateFrontendRoot(value) {
+  if (typeof value !== "string" || !path.isAbsolute(value)) {
+    throw new AttestationValidationError("프런트엔드 저장소 경로가 올바르지 않습니다.");
+  }
+  return path.resolve(value);
+}
+
+async function verifyDeployedFrontend({ requestContext, fileSystem, frontendRoot }) {
+  const distRoot = path.join(frontendRoot, "dist");
   const files = await listRegularDeploymentFiles(distRoot, { fileSystem });
   if (!files.length) {
     throw new AttestationValidationError("배포할 프런트엔드 산출물이 없습니다.");
