@@ -1,23 +1,33 @@
 {
   "name": "ctc-latte-webui-public",
   "private": false,
-  "version": "1.0.0-rc2",
+  "version": "1.0.0-rc3",
   "license": "GPL-3.0-only",
   "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite --config source/vite.config.js",
     "build": "vite build --config source/vite.config.js",
+    "sync:deploy": "pnpm build && node scripts/sync-deploy-artifacts.mjs",
     "preview": "vite preview --config source/vite.config.js",
-    "test": "node --test tests/*.test.mjs",
-    "verify:reproducible": "pnpm build && node scripts/verify-reproducible-build.mjs"
+    "start:gateway:production": "node scripts/start-production-gateway.mjs",
+    "attest:production": "node scripts/create-production-data-attestation.mjs",
+    "test": "node scripts/run-tests.mjs",
+    "verify:reproducible": "pnpm build && node scripts/verify-reproducible-build.mjs",
+    "verify:cloud-policy": "node scripts/verify-production-data-policy.mjs",
+    "verify:deployment": "pnpm build && node scripts/verify-reproducible-build.mjs && pnpm attest:production && node scripts/verify-production-data-policy.mjs --require-attestation"
   },
   "dependencies": {
+    "docx": "^9.7.1",
     "lucide-react": "^0.562.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },
   "devDependencies": {
+    "jszip": "^3.10.1",
     "vite": "^7.3.0"
   }
 }

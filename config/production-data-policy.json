@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 2,
+  "sourcePolicy": "cloud-only",
+  "allowedProviders": [
+    "google-drive",
+    "gcs"
+  ],
+  "queryOrder": [
+    "prepared-web-data",
+    "raw-cmip6"
+  ],
+  "routes": {
+    "prepared-web-data": {
+      "provider": "google-drive",
+      "role": "primary"
+    },
+    "raw-cmip6": {
+      "provider": "gcs",
+      "role": "coverage-fallback"
+    }
+  },
+  "localFilesystemSourceAllowed": false,
+  "browserStorageLocatorExposure": false,
+  "deploymentAttestation": {
+    "attestationVersion": 2,
+    "requiredFields": [
+      "allowedProviders",
+      "attestationVersion",
+      "attributionReady",
+      "backendCommitSha",
+      "datasetUpdatedAt",
+      "datasetVersion",
+      "frontendCommitSha",
+      "gateway",
+      "internalPathExposure",
+      "preparedData",
+      "publicSafe",
+      "queryOrder",
+      "rawData",
+      "verifiedAtUtc"
+    ],
+    "internalPathExposureAllowed": false
+  }
+}

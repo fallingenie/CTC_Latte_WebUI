@@ -18,6 +18,10 @@ export async function requestSaveTarget(
   { filename, mimeType, extension, description },
   environment = {}
 ) {
+  if (environment.preferFilePicker !== true) {
+    return { kind: "download", filename };
+  }
+
   const showSaveFilePicker = resolveSaveFilePicker(environment);
   if (!showSaveFilePicker) {
     return { kind: "download", filename };
