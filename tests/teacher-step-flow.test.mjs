@@ -10,6 +10,7 @@ import {
   createTeacherStepFlowState,
   getTeacherStepNavigation,
   hasRequiredTeacherComparisonMaterials,
+  resolveTeacherQueryStatus,
   teacherStepFlowReducer,
   validateTeacherLessonConditions,
   validateTeacherReviewReadiness
@@ -176,6 +177,30 @@ test("비교 자료와 실제 조회 성공이 모두 갖춰져야 최종 단계
   });
   assert.equal(canEnterTeacherStep(state, TEACHER_STEP_IDS.REVIEW_AND_SHARE), true);
   assert.equal(getTeacherStepNavigation(state).next.disabled, false);
+});
+
+test("수업 필수 지표가 있으면 다른 지표가 빠져도 조회를 완료한 것으로 본다", () => {
+  const metrics = [
+    { key: "precipitation", available: true, numericValue: 0.07 },
+    { key: "apparentTemperature", available: false }
+  ];
+
+  assert.equal(
+    resolveTeacherQueryStatus("partial", metrics, ["precipitation"]),
+    TEACHER_QUERY_STATUSES.READY
+  );
+  assert.equal(
+    resolveTeacherQueryStatus("partial", metrics, ["apparentTemperature"]),
+    TEACHER_QUERY_STATUSES.IDLE
+  );
+  assert.equal(
+    resolveTeacherQueryStatus("partial", metrics, []),
+    TEACHER_QUERY_STATUSES.IDLE
+  );
+  assert.equal(
+    resolveTeacherQueryStatus("loading", metrics, ["precipitation"]),
+    TEACHER_QUERY_STATUSES.LOADING
+  );
 });
 
 test("조회 조건을 바꾸면 이전 조회 성공을 무효화하고 최종 단계 잠금을 복원한다", () => {
