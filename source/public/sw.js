@@ -1,4 +1,4 @@
-const CACHE_NAME = "climate-web-shell-v12";
+const CACHE_NAME = "climate-web-shell-v16";
 const SHELL_INDEX = new URL("index.html", self.location.href).toString();
 const SHELL_ASSETS = [
   "./",
@@ -28,6 +28,7 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/climate/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith(

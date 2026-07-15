@@ -42,6 +42,7 @@ test("picker 성공은 write와 close가 끝난 뒤 완료된다", async () => {
   };
   let pickerOptions;
   const target = await requestSaveTarget(saveRequest, {
+    preferFilePicker: true,
     async showSaveFilePicker(options) {
       pickerOptions = options;
       return handle;
@@ -88,6 +89,7 @@ test("picker 취소는 cancelled 대상으로 반환된다", async () => {
   error.name = "AbortError";
 
   const target = await requestSaveTarget(saveRequest, {
+    preferFilePicker: true,
     async showSaveFilePicker() {
       throw error;
     }
@@ -105,6 +107,7 @@ test("picker 취소는 cancelled 대상으로 반환된다", async () => {
 
 test("picker 미지원 환경은 download 대상으로 전환된다", async () => {
   const target = await requestSaveTarget(saveRequest, {
+    preferFilePicker: true,
     showSaveFilePicker: null
   });
 
@@ -131,6 +134,7 @@ test("picker 보안 오류는 warning을 보존하고 download로 전환된다",
   error.name = "SecurityError";
 
   const target = await requestSaveTarget(saveRequest, {
+    preferFilePicker: true,
     async showSaveFilePicker() {
       throw error;
     }
@@ -140,6 +144,22 @@ test("picker 보안 오류는 warning을 보존하고 download로 전환된다",
     kind: "download",
     filename: saveRequest.filename,
     warning: error
+  });
+});
+
+test("기본 저장은 네이티브 파일을 먼저 자르지 않는 download 경로를 사용한다", async () => {
+  let pickerCalled = false;
+  const target = await requestSaveTarget(saveRequest, {
+    async showSaveFilePicker() {
+      pickerCalled = true;
+      throw new Error("호출되면 안 됩니다.");
+    }
+  });
+
+  assert.equal(pickerCalled, false);
+  assert.deepEqual(target, {
+    kind: "download",
+    filename: saveRequest.filename
   });
 });
 
@@ -190,4 +210,67 @@ test("picker close 실패는 예외를 전달한다", async () => {
 
   await assert.rejects(saveBlobToTarget(target, new Blob()), error);
   assert.deepEqual(events, ["write", "close"]);
+});
+
+test("브라우저 download 경로는 앵커를 눌러 실제 저장을 요청하고 주소를 정리한다", async () => {
+  const blob = new Blob(["기후 자료"], { type: "text/plain;charset=utf-8" });
+  const events = [];
+  const link = {
+    href: "",
+    download: "",
+    click() {
+      events.push("click");
+    },
+    remove() {
+      events.push("remove");
+    }
+  };
+  const environment = {
+    document: {
+      createElement(tagName) {
+        assert.equal(tagName, "a");
+        return link;
+      },
+      body: {
+        appendChild(value) {
+          assert.equal(value, link);
+          events.push("append");
+        }
+      }
+    },
+    URL: {
+      createObjectURL(value) {
+        assert.equal(value, blob);
+        events.push("create-url");
+        return "blob:test-download";
+      },
+      revokeObjectURL(value) {
+        assert.equal(value, "blob:test-download");
+        events.push("revoke-url");
+      }
+    },
+    setTimeout(callback, delay) {
+      assert.equal(delay, 2000);
+      events.push("schedule-cleanup");
+      callback();
+    }
+  };
+
+  const result = await saveBlobToTarget(
+    { kind: "download", filename: "기후-자료.txt" },
+    blob,
+    environment
+  );
+
+  assert.deepEqual(result, { outcome: "requested", filename: "기후-자료.txt" });
+  assert.equal(link.href, "blob:test-download");
+  assert.equal(link.download, "기후-자료.txt");
+  assert.deepEqual(events, [
+    "create-url",
+    "append",
+    "click",
+    "schedule-cleanup",
+    "remove",
+    "revoke-url"
+  ]);
 });

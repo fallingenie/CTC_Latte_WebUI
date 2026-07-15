@@ -1,0 +1,114 @@
+# 배포 자료 원본 정책
+
+## 원칙
+
+운영 Web UI의 기후자료 조회는 브라우저에서 같은 출처의 `/api/climate/*`만 호출합니다. 지도 타일은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 제공자 연결입니다. 브라우저 번들, 연결 설정, 기후자료 응답에는 저장소 주소, 파일 경로, 인증 정보와 내부 자료 확장자를 넣지 않습니다.
+
+공개 웹 서버는 빌드 결과인 `dist/`만 문서 루트로 배포합니다. 저장소 루트, `source/`, `config/`, `scripts/` 및 검증 증거 디렉터리를 정적 파일 서버의 공개 경로로 사용하지 않습니다.
+
+운영 게이트웨이의 자료 역할과 조회 순서는 다음과 같이 고정합니다.
+
+1. 사용자 명의 Google Drive의 `*.ctwebui`를 준비된 Web 자료의 기본 원본으로 사용합니다.
+2. 준비된 자료가 요청 좌표나 기간을 포함하지 않을 때 Team Start가 정의한 GCS CMIP6 원자료를 읽습니다.
+3. GCS 주소와 Google Drive 폴더 식별자는 서버 비공개 설정에서만 관리합니다.
+4. 로컬 드라이브, 네트워크 공유 폴더와 `file:` 주소는 운영 원본이나 장애 대체 경로로 사용하지 않습니다.
+현재 로컬 게이트웨이는 개발과 정합성 대조를 위한 임시 연결입니다. 운영 배포 대상이 아니며, 운영 장애 때 자동으로 선택되는 대체 경로에도 포함하지 않습니다.
+
+## 배포 차단 조건
+
+`config/production-data-policy.json`은 주소나 인증 정보 없이 운영 자료 원본의 종류와 순서만 선언합니다. `pnpm verify:cloud-policy`는 배포 산출물이 다음 조건을 지키는지 검사합니다.
+
+- 클라우드 전용 정책인지
+- 준비된 Web 자료는 Google Drive, 범위 밖 CMIP6 원자료는 GCS로 분리되어 있는지
+- 로컬 파일시스템 원본 경로가 꺼져 있는지
+- 공개 산출물에 로컬 경로, 저장소 주소와 내부 확장자가 없는지
+
+실제 운영 게이트웨이를 열기 전에는 게이트웨이가 생성한 비공개 확인서를 이용해 다음 검증도 통과해야 합니다.
+
+```powershell
+$env:CTC_BACKEND_ROOT = "<PR이 병합된 Backend main 절대경로>"
+$env:CTC_GOOGLE_DRIVE_MOUNT_ROOT = "<비공개 Google Drive 마운트 절대경로>"
+$env:CTC_WEB_DATA_ROOT = "<마운트 안의 현재 .ctwebui 절대경로>"
+$env:CTC_WEBUI_CMIP6_ZARR_ROOT = "<비공개 GCS 원자료 루트>"
+$env:CTC_GATEWAY_HOST = "127.0.0.1"
+$env:CTC_GATEWAY_PORT = "8765"
+corepack pnpm start:gateway:production
+```
+
+외부 HTTPS가 위 loopback 게이트웨이와 현재 `dist/`를 연결한 뒤 별도 셸에서 확인서를 만듭니다.
+
+```powershell
+$env:CTC_DEPLOYMENT_BASE_URL = "<외부 HTTPS 서비스 주소>"
+$env:CTC_GATEWAY_LOCAL_BASE_URL = "http://127.0.0.1:8765"
+corepack pnpm verify:deployment
+```
+
+`verify:deployment`는 저장된 JSON만 신뢰하지 않고 외부 HTTPS와 loopback 게이트웨이를 다시 조회해 10분 이내의 확인서를 새로 만든 뒤 검증합니다. `attest:production`은 문제 조사용으로 따로 실행할 수 있지만, 이전 확인서만으로 배포 검증을 대신할 수 없습니다. 저장소 주소와 Drive·GCS 위치는 서버 비공개 환경에만 둡니다. 확인서에는 주소나 경로를 기록하지 않으며 `.release-evidence/`는 Git과 정적 배포 대상에서 제외합니다.
+
+## 실제 배포 확인서 계약
+
+확인서는 정책 파일을 복사한 문서가 아니라 게이트웨이가 실제로 연 자료판에 대해 생성한 별도 JSON이어야 합니다. 허용되는 전체 형식은 다음과 같습니다.
+
+```json
+{
+  "allowedProviders": ["google-drive", "gcs"],
+  "attestationVersion": 2,
+  "attributionReady": true,
+  "backendCommitSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "datasetUpdatedAt": "2026-07-13T16:22:20.121000+00:00",
+  "datasetVersion": "1111111111111111111111111111111111111111111111111111111111111111",
+  "frontendCommitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "gateway": {
+    "frontendAssetsVerified": true,
+    "healthVerified": true,
+    "localGatewayVerified": true,
+    "metadataVerified": true,
+    "sameOrigin": true,
+    "seriesVerified": true
+  },
+  "internalPathExposure": false,
+  "preparedData": {
+    "attributionReady": true,
+    "dataMode": "bias-corrected",
+    "manifestSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "publicSafe": true,
+    "queryVerified": true
+  },
+  "publicSafe": true,
+  "queryOrder": ["prepared-web-data", "raw-cmip6"],
+  "rawData": {
+    "attributionReady": true,
+    "dataMode": "raw-model-grid",
+    "publicSafe": true,
+    "queryVerified": true,
+    "rawIndexSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "rawModelGrid": true
+  },
+  "verifiedAtUtc": "2026-07-15T03:04:05.006Z"
+}
+```
+
+- `datasetVersion`은 `manifest.json`, `meta/array_index.json`, `meta/raw_cmip6_index.json` 각각의 SHA-256을 파일명별 map으로 만들고, 키 정렬·공백 없는 구분자·UTF-8·비유한 수 금지 조건의 canonical JSON을 다시 SHA-256한 64자 소문자 값이어야 합니다.
+- `datasetUpdatedAt`은 위 세 파일의 수정 시각 중 가장 최신 `st_mtime_ns`를 UTC 마이크로초 ISO-8601 문자열로 바꾼 값이어야 합니다. 형식은 `2026-07-13T16:22:20.121000+00:00`과 같습니다.
+- metadata, 단일 날짜 조회와 기간 조회가 `datasetVersion`과 `datasetUpdatedAt`을 빠짐없이 포함하고, 두 문자열을 한 글자까지 동일하게 반환해야 합니다.
+- 외부 HTTPS의 모든 `dist/` 파일은 검증한 로컬 Build와 바이트 단위로 같아야 합니다.
+- 외부 health, metadata, 보정 자료, 전 세계 원자료와 기간 자료 응답은 loopback 운영 게이트웨이의 같은 요청 결과와 일치해야 합니다. 요청 식별자와 생성 시각만 비교에서 제외합니다.
+- Frontend와 Backend SHA는 각각 깨끗한 Git main 계열 작업 트리의 40자 commit SHA여야 합니다.
+- `allowedProviders`와 `queryOrder`는 값뿐 아니라 순서까지 정책과 같아야 합니다.
+- `publicSafe`와 `attributionReady`는 모두 `true`여야 합니다.
+- `internalPathExposure`는 `false`여야 합니다.
+- 위에 없는 필드, 주소, 토큰, 자격 증명, 로컬·네트워크·클라우드 저장소 위치 또는 내부 자료 확장자가 하나라도 있으면 확인서를 거부합니다.
+
+따라서 `config/production-data-policy.json` 자체를 확인서 경로로 지정하면 실패합니다. 검증 결과의 `attestationVerified`, `datasetVersion`, `datasetUpdatedAt`, Frontend·Backend commit SHA, `publicSafe`, `attributionReady`, `internalPathExposure`를 배포 개방 기록에 남기고, 검증에 실패하면 운영 트래픽을 열지 않습니다.
+
+## 공개 API 응답 변경 절차
+
+Frontend는 `runtime-policy.js`의 호환 계층에서 Backend 응답을 안정된 내부 형식으로 바꾼 뒤 화면에 전달합니다. `allowedFields`에는 `values[].label`처럼 화면과 내보내기에 필요한 필드 경로만 명시합니다. 필수 필드가 빠지거나 자료판 식별자, 요청 조건, 자료 형태가 달라지면 즉시 거부합니다.
+
+Backend가 정상 metadata, query, series 응답에 안전한 부가 필드를 추가하면 호환 계층은 응답 전체를 보안 검사한 뒤 그 필드를 화면에 전달하지 않고 무시합니다. 따라서 자료판 갱신, 새 모델 추가, 부가 진단 정보 추가는 Frontend 대규모 수정 사유가 아닙니다. 알 수 없는 필드라도 저장소 주소, 파일 경로, 인증 정보, 내부 자료 확장자 또는 이를 암시하는 필드 이름이 있으면 응답 전체를 거부합니다.
+
+같은 `*.ctwebui` 위치의 내용이 별도 통보 없이 교체되는 상황도 정상 갱신으로 처리합니다. Frontend는 RC 이름이나 파일명을 자료판 식별자로 사용하지 않고 metadata의 `datasetVersion`과 `datasetUpdatedAt`을 함께 확인합니다. 창이 다시 활성화될 때와 저빈도 주기 확인에서 두 값 중 하나라도 바뀌면 진행 중 요청을 취소하고 학생·교사·일반 화면의 현재 날짜·좌표·시나리오·모델을 새 자료판에 고정해 다시 조회합니다. 열려 있는 기간 내보내기도 새 자료판으로 다시 조회한 결과만 저장합니다.
+
+자료 갱신으로 같은 좌표가 `raw-model-grid`에서 `bias-corrected`로 바뀌거나 반대로 바뀔 수 있으므로, 이전 자료판의 자료 형태를 새 자료판에 강제하지 않습니다. 새 자료판 식별자와 요청 조건이 정확히 일치하고 응답 자료 형태가 공개 계약의 허용값일 때만 새 결과로 교체합니다. 기후자료 API 응답은 브라우저나 서비스 작업자 캐시에 저장하지 않습니다.
+
+오류 응답, 공개 연결 설정과 운영 확인서는 의미가 조금만 달라져도 배포 판단이 바뀌므로 계속 정확한 필드 계약을 사용합니다. Backend가 필수 필드를 삭제·이름 변경하거나 자료 단위, 자료 형태, 출처 표시 또는 재시도 의미를 바꾸는 파괴적 변경은 자동 흡수하지 않습니다. 이 경우에만 Backend와 Frontend 양쪽의 계약 검토와 사용자 승인을 거칩니다.

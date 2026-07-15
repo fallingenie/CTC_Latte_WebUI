@@ -1,5 +1,6 @@
 {
   "readPath": "/api/climate/query",
   "timeoutMs": 600000,
-  "publicSafe": true
+  "publicSafe": true,
+  "sourcePolicy": "cloud-only"
 }
