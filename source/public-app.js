@@ -2,7 +2,7 @@ import "./public-app.css";
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 import { useRef, useState, useEffect, useLayoutEffect, useMemo, useReducer, useCallback, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { X, CalendarDays, Download, Table2, FileText, Image, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge, Mountain, Waves, ArrowLeft, ArrowRight, Sun, Moon, Monitor, BookOpen, BookmarkPlus, ClipboardCopy, Navigation, Plus, Minus, Trash2, NotebookPen, Target, Link, LockKeyhole, RefreshCw } from "lucide-react";
+import { X, CalendarDays, Download, Table2, FileText, Image as ImageIcon, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge, Mountain, Waves, ArrowLeft, ArrowRight, Sun, Moon, Monitor, BookOpen, BookmarkPlus, ClipboardCopy, Navigation, Plus, Minus, Trash2, NotebookPen, Target, Link, LockKeyhole, RefreshCw } from "lucide-react";
 import { requestSaveTarget, saveBlobToTarget } from "./browser-download.js";
 import { climateProblemSets } from "./climate-problem-catalog.js";
 import { PUBLIC_ATTRIBUTION_CATALOG, findClimateModelAttribution } from "./attribution-catalog.js";
@@ -413,7 +413,7 @@ async function drawKmaAttributionMarks(context, response, canvasWidth) {
 }
 function loadImageAsset(path) {
   return new Promise((resolve, reject) => {
-    const image = new Image();
+    const image = new window.Image();
     image.onload = () => resolve(image);
     image.onerror = () => reject(new Error("출처 표시 이미지를 불러오지 못했습니다."));
     image.src = path;
@@ -550,7 +550,7 @@ const formatOptions = [
   { key: "csv", label: "CSV 자료 묶음", detail: "CSV·출처 문서·원본 표장", icon: Table2 },
   { key: "html", label: "대화형 그래프(HTML)", detail: "마우스로 값 확인·확대·날짜 비교", icon: Monitor },
   { key: "pdf", label: "인쇄용 보고서(PDF)", detail: "보고서와 그래프", icon: FileText },
-  { key: "png", label: "고해상도 이미지(PNG)", detail: "그래프를 이미지로 저장", icon: Image }
+  { key: "png", label: "고해상도 이미지(PNG)", detail: "그래프를 이미지로 저장", icon: ImageIcon }
 ];
 function ClimateExportDialog({ context, datasetState, onClose }) {
   const dialogRef = useRef(null);
@@ -3336,7 +3336,7 @@ function PublicPage({ datasetState }) {
             /* @__PURE__ */ jsx("strong", { children: "현재 화면" }),
             /* @__PURE__ */ jsx("span", { children: message })
           ] }),
-          /* @__PURE__ */ jsxs("button", { disabled: !hasPublicMetrics, onClick: savePublicSummary, type: "button", children: [/* @__PURE__ */ jsx(Image, { size: 16 }), "결과 이미지 저장"] })
+          /* @__PURE__ */ jsxs("button", { disabled: !hasPublicMetrics, onClick: savePublicSummary, type: "button", children: [/* @__PURE__ */ jsx(ImageIcon, { size: 16 }), "결과 이미지 저장"] })
         ] })
       ] })
     ] }),

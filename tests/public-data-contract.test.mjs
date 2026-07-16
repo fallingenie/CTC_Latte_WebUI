@@ -84,6 +84,9 @@ test("기간 자료의 모든 내보내기 형식은 출처 정보와 원본 기
   assert.match(source, /await drawKmaAttributionMarks\(context, response, width\)/u);
   assert.match(source, /loadImageAsset\("\.\/assets\/licenses\/kma_mark_1\.png"\)/u);
   assert.match(source, /loadImageAsset\("\.\/assets\/licenses\/kma_mark_2\.png"\)/u);
+  assert.match(source, /Image as ImageIcon/u);
+  assert.match(source, /const image = new window\.Image\(\)/u);
+  assert.doesNotMatch(source, /const image = new Image\(\)/u);
   assert.match(source, /CSV·출처 문서·원본 표장/u);
 });
 
