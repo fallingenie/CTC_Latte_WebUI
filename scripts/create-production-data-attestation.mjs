@@ -31,6 +31,8 @@ const MAX_FRONTEND_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_FRONTEND_TOTAL_BYTES = 64 * 1024 * 1024;
 const PRIVATE_DEPLOYMENT_PROBE_PATHS = Object.freeze([
   "/package.json",
+  "/source/access-gate.js",
+  "/source/access-policy.js",
   "/source/public-app.js",
   "/config/production-data-policy.json",
   "/scripts/create-production-data-attestation.mjs",

@@ -236,7 +236,7 @@ test("학생 기록과 교사 활동지는 모두 DOCX로 저장한다", () => {
 });
 
 test("배포 셸은 코드 자산을 네트워크에서 먼저 갱신한다", () => {
-  assert.match(serviceWorkerSource, /climate-web-shell-v16/u);
+  assert.match(serviceWorkerSource, /climate-web-shell-v17/u);
   assert.match(serviceWorkerSource, /\["script", "style", "worker"\]\.includes\(request\.destination\)/u);
   assert.match(serviceWorkerSource, /fetch\(request\)[\s\S]*caches\.match\(request\)/u);
   assert.match(source, /updateViaCache: "none"/u);

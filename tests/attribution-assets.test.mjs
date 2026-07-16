@@ -28,15 +28,14 @@ test("KMA attribution assets match the Backend origin/main canonical files", asy
   }
 });
 
-test("Vite 진입 자산은 고정 캐시 토큰 없이 해시 빌드에 맡긴다", async () => {
+test("Vite 진입 자산은 인증 게이트만 직접 불러오고 본 앱은 지연 로드한다", async () => {
   const indexHtml = await fs.readFile(path.join(root, "source", "index.html"), "utf8");
-  const publicAppSources = [...indexHtml.matchAll(/\bsrc=["']([^"']*public-app\.js[^"']*)["']/gu)]
+  const accessGateSources = [...indexHtml.matchAll(/\bsrc=["']([^"']*access-gate\.js[^"']*)["']/gu)]
     .map((match) => match[1]);
 
-  assert.deepEqual(publicAppSources, ["./public-app.js"]);
-  assert.doesNotMatch(indexHtml, /public-app\.js[?#]/u);
-  assert.match(indexHtml, /href=["']\.\/public-app\.css["']/u);
-  assert.doesNotMatch(indexHtml, /public-app\.css[?#]/u);
+  assert.deepEqual(accessGateSources, ["./access-gate.js"]);
+  assert.doesNotMatch(indexHtml, /(?:src|href)=["'][^"']*public-app\.(?:js|css)/u);
+  assert.doesNotMatch(indexHtml, /access-gate\.js[?#]/u);
 });
 
 function sha256(value) {

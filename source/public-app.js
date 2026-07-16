@@ -1,3 +1,4 @@
+import "./public-app.css";
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 import { useRef, useState, useEffect, useLayoutEffect, useMemo, useReducer, useCallback, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
