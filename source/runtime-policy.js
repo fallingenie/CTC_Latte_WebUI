@@ -1,5 +1,6 @@
 export const PUBLIC_CLIMATE_READ_PATH = "/api/climate/query";
 export const PUBLIC_DATA_SOURCE_POLICY = "cloud-only";
+export const PUBLIC_CLIMATE_METADATA_TIMEOUT_MS = 10 * 1e3;
 export const PUBLIC_DATASET_REFRESH_INTERVAL_MS = 15 * 60 * 1e3;
 export const PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS = 60 * 1e3;
 export const PUBLIC_RETRYABLE_RAW_QUERY_MESSAGE = "원자료 기후모델 조회가 시스템 부하로 완결되지 않았습니다. 잠시 후 다시 시도하세요.";

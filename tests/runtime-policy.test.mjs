@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   PUBLIC_BACKEND_CONTRACT_PROFILE,
+  PUBLIC_CLIMATE_METADATA_TIMEOUT_MS,
   PUBLIC_CLIMATE_READ_PATH,
   PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS,
   PUBLIC_DATASET_REFRESH_INTERVAL_MS,
@@ -131,6 +132,12 @@ test("배포 연결 설정은 동일 출처 API와 클라우드 전용 정책만
 test("배포 연결 설정은 시간 제한을 안전 범위로 조정한다", () => {
   assert.equal(validatePublicRuntimeConfig({ ...validConfig, timeoutMs: 1 }).timeoutMs, 30000);
   assert.equal(validatePublicRuntimeConfig({ ...validConfig, timeoutMs: 9999999 }).timeoutMs, 600000);
+});
+
+test("메타데이터 확인은 실제 기후자료 조회보다 빠르게 실패한다", () => {
+  assert.equal(PUBLIC_CLIMATE_METADATA_TIMEOUT_MS, 10000);
+  assert.equal(validatePublicRuntimeConfig(validConfig).timeoutMs, 600000);
+  assert.ok(PUBLIC_CLIMATE_METADATA_TIMEOUT_MS < validatePublicRuntimeConfig(validConfig).timeoutMs);
 });
 
 test("로컬 또는 외부 저장소를 가리키는 추가 설정은 거부한다", () => {

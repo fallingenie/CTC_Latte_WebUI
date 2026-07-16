@@ -9,6 +9,7 @@ import { PUBLIC_ATTRIBUTION_CATALOG, findClimateModelAttribution } from "./attri
 import { buildClimatePdfBlob } from "./climate-pdf.js";
 import { buildAttributionBundle, buildPublicExportAttribution } from "./export-attribution.js";
 import {
+  PUBLIC_CLIMATE_METADATA_TIMEOUT_MS,
   PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS,
   PUBLIC_DATASET_REFRESH_INTERVAL_MS,
   createPublicMetadataRefreshQueue,
@@ -436,7 +437,13 @@ async function fetchPublicClimateSeries(request, { signal } = {}) {
 }
 async function fetchPublicClimateMetadata({ signal } = {}) {
   const config = await loadPublicClimateConfig();
-  return fetchClimateJson(replaceEndpoint(config.readPath, "metadata"), "GET", void 0, config.timeoutMs, signal);
+  return fetchClimateJson(
+    replaceEndpoint(config.readPath, "metadata"),
+    "GET",
+    void 0,
+    PUBLIC_CLIMATE_METADATA_TIMEOUT_MS,
+    signal
+  );
 }
 async function loadPublicClimateConfig() {
   configPromise ??= fetch(configPath, { headers: { Accept: "application/json" } }).then(async (response) => {
@@ -1887,6 +1894,7 @@ function QueryPage({ audience, datasetState }) {
     scenario,
     model,
     requestDatasetRefresh: datasetState.requestRefresh,
+    datasetStatus: datasetState.status,
     datasetUpdatedAt: metadata?.datasetUpdatedAt,
     datasetVersion: metadata?.datasetVersion,
     refreshSequence: datasetState.refreshSequence
@@ -2689,6 +2697,7 @@ function TeacherPage({ datasetState }) {
     scenario: lessonScenario,
     model: lessonModel,
     requestDatasetRefresh: datasetState.requestRefresh,
+    datasetStatus: datasetState.status,
     datasetUpdatedAt: metadata?.datasetUpdatedAt,
     datasetVersion: metadata?.datasetVersion,
     refreshSequence: datasetState.refreshSequence
@@ -3129,6 +3138,7 @@ function PublicPage({ datasetState }) {
     scenario: publicScenario,
     model: publicModel,
     requestDatasetRefresh: datasetState.requestRefresh,
+    datasetStatus: datasetState.status,
     datasetUpdatedAt: metadata?.datasetUpdatedAt,
     datasetVersion: metadata?.datasetVersion,
     refreshSequence: datasetState.refreshSequence
@@ -3340,6 +3350,7 @@ function useRemoteMetricResponse({
   scenario,
   model,
   requestDatasetRefresh,
+  datasetStatus,
   datasetUpdatedAt,
   datasetVersion,
   refreshSequence
@@ -3366,6 +3377,14 @@ function useRemoteMetricResponse({
       cancelledConditionRef.current = void 0;
     }
     if (cancelledConditionRef.current === conditionKey) return;
+    if (datasetStatus === "unavailable") {
+      setState({
+        conditionKey,
+        status: "error",
+        message: "현재 기후자료 연결을 확인할 수 없습니다. 잠시 후 다시 시도하세요."
+      });
+      return;
+    }
     if (!datasetVersion || !datasetUpdatedAt) {
       setState((current) => ({
         ...(current.conditionKey === conditionKey && current.response ? { response: current.response } : {}),
@@ -3457,7 +3476,7 @@ function useRemoteMetricResponse({
       controller.abort();
       if (controllerRef.current === controller) controllerRef.current = void 0;
     };
-  }, [conditionKey, datasetUpdatedAt, datasetVersion, request, requestDatasetRefresh, refreshSequence]);
+  }, [conditionKey, datasetStatus, datasetUpdatedAt, datasetVersion, request, requestDatasetRefresh, refreshSequence]);
   const cancel = () => {
     if (state.status !== "loading") return;
     cancelledConditionRef.current = conditionKey;

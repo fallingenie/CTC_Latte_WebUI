@@ -286,6 +286,19 @@ test("공개 앱은 창 재활성화와 저빈도 주기로 자료 버전을 다
   assert.match(monitorSource, /return useMemo\(\(\) => \(\{ \.\.\.datasetState, requestRefresh \}\)/u);
 });
 
+test("게이트웨이 메타데이터가 없으면 긴 원자료 조회를 시작하지 않고 즉시 오류로 전환한다", () => {
+  assert.match(source, /PUBLIC_CLIMATE_METADATA_TIMEOUT_MS/u);
+  assert.match(source, /replaceEndpoint\(config\.readPath, "metadata"\)[\s\S]{0,160}PUBLIC_CLIMATE_METADATA_TIMEOUT_MS/u);
+  assert.equal(source.match(/datasetStatus: datasetState\.status/gu)?.length, 3);
+  const hookStart = source.indexOf("function useRemoteMetricResponse");
+  const hookEnd = source.indexOf("function buildUiRemoteChunkRequest", hookStart);
+  const hookSource = source.slice(hookStart, hookEnd);
+  assert.match(hookSource, /datasetStatus === "unavailable"/u);
+  assert.match(hookSource, /status: "error"/u);
+  assert.match(hookSource, /현재 기후자료 연결을 확인할 수 없습니다\. 잠시 후 다시 시도하세요\./u);
+  assert.ok(hookSource.indexOf('datasetStatus === "unavailable"') < hookSource.indexOf("fetchPublicClimateQuery(request"));
+});
+
 test("학생·교사·일반 조회는 같은 자료 버전에 고정되고 변경 시 자동 재조회한다", () => {
   assert.equal(source.match(/refreshSequence: datasetState\.refreshSequence/gu)?.length, 3);
   assert.equal(source.match(/datasetVersion: metadata\?\.datasetVersion/gu)?.length, 3);
