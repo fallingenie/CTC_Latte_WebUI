@@ -19,8 +19,8 @@ import {
   validateRawCmip6Index
 } from "./start-production-gateway.mjs";
 
-export const ATTESTATION_VERSION = 2;
-export const ALLOWED_PROVIDERS = Object.freeze(["google-drive", "gcs"]);
+export const ATTESTATION_VERSION = 3;
+export const ALLOWED_PROVIDERS = Object.freeze(["gcs"]);
 export const QUERY_ORDER = Object.freeze(["prepared-web-data", "raw-cmip6"]);
 export const PRODUCTION_ATTESTATION_MAX_AGE_MS = 10 * 60 * 1000;
 
@@ -67,12 +67,14 @@ const PREPARED_DATA_FIELDS = Object.freeze([
   "attributionReady",
   "dataMode",
   "manifestSha256",
+  "provider",
   "publicSafe",
   "queryVerified"
 ]);
 const RAW_DATA_FIELDS = Object.freeze([
   "attributionReady",
   "dataMode",
+  "provider",
   "publicSafe",
   "queryVerified",
   "rawIndexSha256",
@@ -131,7 +133,7 @@ export function validateProductionAttestation(value) {
   }
   requireExactFields(value, PRODUCTION_ATTESTATION_FIELDS, "프로덕션 데이터 확인서");
   if (value.attestationVersion !== ATTESTATION_VERSION) {
-    throw new AttestationValidationError("프로덕션 데이터 확인서 버전은 2여야 합니다.");
+    throw new AttestationValidationError("프로덕션 데이터 확인서 버전은 3이어야 합니다.");
   }
   if (!SHA256_PATTERN.test(value.datasetVersion)) {
     throw new AttestationValidationError("자료 버전 형식이 올바르지 않습니다.");
@@ -156,6 +158,7 @@ export function validateProductionAttestation(value) {
   requireExactFields(value.preparedData, PREPARED_DATA_FIELDS, "준비된 Web 자료 검증");
   if (!SHA256_PATTERN.test(value.preparedData.manifestSha256)
     || value.preparedData.queryVerified !== true
+    || value.preparedData.provider !== "gcs"
     || value.preparedData.dataMode !== "bias-corrected"
     || value.preparedData.publicSafe !== true
     || value.preparedData.attributionReady !== true) {
@@ -165,6 +168,7 @@ export function validateProductionAttestation(value) {
   requireExactFields(value.rawData, RAW_DATA_FIELDS, "CMIP6 원자료 검증");
   if (!SHA256_PATTERN.test(value.rawData.rawIndexSha256)
     || value.rawData.queryVerified !== true
+    || value.rawData.provider !== "gcs"
     || value.rawData.rawModelGrid !== true
     || value.rawData.dataMode !== "raw-model-grid"
     || value.rawData.publicSafe !== true
@@ -220,6 +224,7 @@ export function buildProductionAttestation({
     queryOrder: [...QUERY_ORDER],
     preparedData: {
       manifestSha256,
+      provider: "gcs",
       queryVerified: true,
       dataMode: "bias-corrected",
       publicSafe: true,
@@ -227,6 +232,7 @@ export function buildProductionAttestation({
     },
     rawData: {
       rawIndexSha256,
+      provider: "gcs",
       queryVerified: true,
       rawModelGrid: true,
       dataMode: "raw-model-grid",
@@ -299,6 +305,36 @@ export function resolveStrictGitMode(env = process.env, explicitValue) {
   throw new AttestationValidationError("프로덕션 확인서의 Git 검증은 비활성화할 수 없습니다.");
 }
 
+export async function readProductionAuthorizationHeader(
+  value,
+  { fileSystem = fs, platform = process.platform } = {}
+) {
+  const tokenPath = normalizeText(value);
+  if (!tokenPath) return undefined;
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  if (!pathApi.isAbsolute(tokenPath)) {
+    throw new AttestationValidationError("IAP 검증 토큰 파일은 절대경로여야 합니다.");
+  }
+  let tokenBuffer;
+  try {
+    const stat = await fileSystem.lstat(tokenPath);
+    if (!stat.isFile() || stat.size < 32 || stat.size > 16 * 1024) throw new Error("invalid-token-file");
+    tokenBuffer = await fileSystem.readFile(tokenPath);
+  } catch {
+    throw new AttestationValidationError("IAP 검증 토큰 파일을 확인할 수 없습니다.");
+  }
+  let token;
+  try {
+    token = new TextDecoder("utf-8", { fatal: true }).decode(tokenBuffer).trim();
+  } catch {
+    throw new AttestationValidationError("IAP 검증 토큰 형식이 올바르지 않습니다.");
+  }
+  if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(token)) {
+    throw new AttestationValidationError("IAP 검증 토큰 형식이 올바르지 않습니다.");
+  }
+  return `Bearer ${token}`;
+}
+
 export async function createProductionDataAttestation({
   env = process.env,
   platform = process.platform,
@@ -322,6 +358,10 @@ export async function createProductionDataAttestation({
   );
   const timeoutMs = parseRequestTimeout(env.CTC_PRODUCTION_ATTESTATION_TIMEOUT_MS);
   const requireCleanGit = resolveStrictGitMode(env, strictGit);
+  const authorizationHeader = await readProductionAuthorizationHeader(
+    env.CTC_PRODUCTION_AUTHORIZATION_TOKEN_FILE,
+    { fileSystem, platform }
+  );
 
   const gatewayFiles = await validateGatewayFiles(deployment, { fileSystem });
   const datasetEvidence = await readDatasetEvidence(gatewayFiles, {
@@ -334,6 +374,7 @@ export async function createProductionDataAttestation({
   ]);
 
   const requestContext = {
+    authorizationHeader,
     baseOrigin: baseUrl.origin,
     fetchImplementation,
     timeoutMs
@@ -668,14 +709,17 @@ async function listRegularDeploymentFiles(directory, { fileSystem }) {
   return files;
 }
 
-async function fetchBytes(url, { baseOrigin, fetchImplementation, timeoutMs, label, maximumBytes }) {
+async function fetchBytes(
+  url,
+  { authorizationHeader, baseOrigin, fetchImplementation, timeoutMs, label, maximumBytes }
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
   try {
     const response = await fetchImplementation(url, {
       method: "GET",
-      headers: { Accept: "*/*" },
+      headers: buildProbeHeaders("*/*", authorizationHeader),
       cache: "no-store",
       credentials: "omit",
       redirect: "error",
@@ -698,14 +742,24 @@ async function fetchBytes(url, { baseOrigin, fetchImplementation, timeoutMs, lab
   }
 }
 
-async function requirePrivateDeploymentPathUnavailable(url, { baseOrigin, fetchImplementation, timeoutMs }) {
+function buildProbeHeaders(accept, authorizationHeader, hasJsonBody = false) {
+  const headers = { Accept: accept };
+  if (hasJsonBody) headers["Content-Type"] = "application/json";
+  if (authorizationHeader) headers.Authorization = authorizationHeader;
+  return headers;
+}
+
+async function requirePrivateDeploymentPathUnavailable(
+  url,
+  { authorizationHeader, baseOrigin, fetchImplementation, timeoutMs }
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
   try {
     const response = await fetchImplementation(url, {
       method: "GET",
-      headers: { Accept: "*/*" },
+      headers: buildProbeHeaders("*/*", authorizationHeader),
       cache: "no-store",
       credentials: "omit",
       redirect: "error",
@@ -728,7 +782,10 @@ async function requirePrivateDeploymentPathUnavailable(url, { baseOrigin, fetchI
   }
 }
 
-async function fetchJson(url, { baseOrigin, fetchImplementation, timeoutMs, label, body }) {
+async function fetchJson(
+  url,
+  { authorizationHeader, baseOrigin, fetchImplementation, timeoutMs, label, body }
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
@@ -736,9 +793,7 @@ async function fetchJson(url, { baseOrigin, fetchImplementation, timeoutMs, labe
   try {
     response = await fetchImplementation(url, {
       method: body === undefined ? "GET" : "POST",
-      headers: body === undefined
-        ? { Accept: "application/json" }
-        : { Accept: "application/json", "Content-Type": "application/json" },
+      headers: buildProbeHeaders("application/json", authorizationHeader, body !== undefined),
       body: body === undefined ? undefined : JSON.stringify(body),
       cache: "no-store",
       credentials: "omit",

@@ -1,0 +1,6 @@
+.git
+.release-evidence
+.deploy-staging
+dist
+node_modules
+*.log

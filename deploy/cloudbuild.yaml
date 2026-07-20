@@ -1,0 +1,44 @@
+steps:
+  - name: node:22-bookworm-slim
+    id: frontend-quality-gates
+    dir: frontend
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        corepack enable
+        corepack prepare pnpm@10.33.2 --activate
+        pnpm install --frozen-lockfile
+        pnpm test
+        pnpm build
+        pnpm verify:cloud-policy
+  - name: gcr.io/cloud-builders/docker
+    id: build-container
+    args:
+      - build
+      - --file
+      - frontend/deploy/Dockerfile
+      - --tag
+      - ${_IMAGE_TAG}
+      - .
+  - name: gcr.io/cloud-builders/docker
+    id: smoke-container
+    args:
+      - run
+      - --rm
+      - --entrypoint
+      - /bin/sh
+      - ${_IMAGE_TAG}
+      - -ec
+      - |
+        node --version
+        python3 --version
+        python3 -c "import fsspec, gcsfs, numpy, pandas, pyarrow, xarray, zarr"
+        python3 -c "import sys; sys.path.insert(0, '/app/backend'); import Climate_Time_Capsule_app.services.exporting.web_query_service; import Climate_Time_Capsule_app.services.query.raw_zarr_point_worker"
+        id -u | grep -qx 10001
+        id -g | grep -qx 10001
+images:
+  - ${_IMAGE_TAG}
+timeout: 3600s
+options:
+  logging: CLOUD_LOGGING_ONLY

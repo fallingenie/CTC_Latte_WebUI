@@ -14,27 +14,29 @@ const DATASET_FILE_RELATIVE_PATHS = Object.freeze({
 });
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const ALLOWED_PYTHON_EXECUTABLES = new Set(["py", "py.exe", "python", "python.exe", "python3", "python3.exe"]);
-const LOCAL_FALLBACK_ENVIRONMENT_KEYS = Object.freeze([
-  "CLIMATE_CMIP6_LOCAL_ZARR_ROOT",
-  "CLIMATE_CMIP6_EXTRACTION_CACHE_ROOT",
-  "CLIMATE_TIME_CAPSULE_RAW_ZARR_POINT_CACHE",
-  "CLIMATE_TIME_CAPSULE_RAW_ZARR_POINT_CACHE_DIR",
-  "CLIMATE_TIME_CAPSULE_RAW_ZARR_POINT_CACHE_ROOT",
-  "CLIMATE_TIME_CAPSULE_SSD_SCRATCH_DIR",
-  "CMIP6_CACHE_ROOT",
-  "CTC_WEB_DATA_PARENT",
-  "CTC_WEBUI_RAW_CMIP6_CLOUD_CACHE_ROOT",
-  "CTC_WEBUI_RAW_CMIP6_INDEX_CACHE_ROOT",
-  "CTC_WEBUI_RAW_CMIP6_SOURCE_MANIFEST_SHA256"
-]);
-const LAUNCHER_ONLY_ENVIRONMENT_KEYS = Object.freeze([
-  "CTC_DEPLOYMENT_BASE_URL",
-  "CTC_GOOGLE_DRIVE_MOUNT_ROOT",
-  "CTC_PRODUCTION_ATTESTATION_OUTPUT",
-  "CTC_PRODUCTION_ATTESTATION_STRICT_GIT",
-  "CTC_PRODUCTION_DATA_ATTESTATION",
-  "CTC_PRODUCTION_EVIDENCE_ROOT"
-]);
+const PRODUCTION_PREPARED_DATA_PROVIDER = "gcs";
+const GATEWAY_PROCESS_ENVIRONMENT_KEYS = Object.freeze(new Set([
+  "APPDATA",
+  "COMSPEC",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "LANG",
+  "LC_ALL",
+  "LOCALAPPDATA",
+  "PATH",
+  "PATHEXT",
+  "PROGRAMDATA",
+  "PYTHONIOENCODING",
+  "PYTHONUTF8",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "TZ",
+  "USERPROFILE",
+  "WINDIR"
+]));
 
 export class ProductionDeploymentError extends Error {
   constructor(message) {
@@ -58,15 +60,19 @@ export function isLocalAbsolutePath(value) {
 
 export function validateCloudOnlyDeploymentEnvironment(env = process.env, { platform = process.platform } = {}) {
   const backendRoot = requiredEnvironmentValue(env, "CTC_BACKEND_ROOT");
-  const driveMountRoot = requiredEnvironmentValue(env, "CTC_GOOGLE_DRIVE_MOUNT_ROOT");
+  const preparedDataProvider = requiredEnvironmentValue(env, "CTC_PREPARED_DATA_PROVIDER").toLowerCase();
+  const preparedDataMountRoot = requiredEnvironmentValue(env, "CTC_PREPARED_DATA_MOUNT_ROOT");
   const webDataRoot = requiredEnvironmentValue(env, "CTC_WEB_DATA_ROOT");
   const rawCmip6Root = requiredEnvironmentValue(env, "CTC_WEBUI_CMIP6_ZARR_ROOT");
 
   if (!isAbsolutePathForPlatform(backendRoot, platform)) {
     throw new ProductionDeploymentError("CTC_BACKEND_ROOT는 절대경로여야 합니다.");
   }
-  if (!isAbsolutePathForPlatform(driveMountRoot, platform)) {
-    throw new ProductionDeploymentError("CTC_GOOGLE_DRIVE_MOUNT_ROOT는 절대경로여야 합니다.");
+  if (preparedDataProvider !== PRODUCTION_PREPARED_DATA_PROVIDER) {
+    throw new ProductionDeploymentError("운영 준비자료 제공자는 GCS여야 합니다.");
+  }
+  if (!isAbsolutePathForPlatform(preparedDataMountRoot, platform)) {
+    throw new ProductionDeploymentError("CTC_PREPARED_DATA_MOUNT_ROOT는 절대경로여야 합니다.");
   }
   if (!isAbsolutePathForPlatform(webDataRoot, platform)) {
     throw new ProductionDeploymentError("CTC_WEB_DATA_ROOT는 절대경로여야 합니다.");
@@ -74,8 +80,8 @@ export function validateCloudOnlyDeploymentEnvironment(env = process.env, { plat
   if (!webDataRoot.toLowerCase().endsWith(".ctwebui")) {
     throw new ProductionDeploymentError("CTC_WEB_DATA_ROOT는 .ctwebui 자료 폴더여야 합니다.");
   }
-  if (!isPathWithin(driveMountRoot, webDataRoot, platform)) {
-    throw new ProductionDeploymentError("CTC_WEB_DATA_ROOT는 지정된 Google Drive 마운트 안에 있어야 합니다.");
+  if (!isPathWithin(preparedDataMountRoot, webDataRoot, platform)) {
+    throw new ProductionDeploymentError("CTC_WEB_DATA_ROOT는 지정된 GCS 마운트 안에 있어야 합니다.");
   }
   if (!isGcsRoot(rawCmip6Root)) {
     throw new ProductionDeploymentError("CTC_WEBUI_CMIP6_ZARR_ROOT는 gs:// GCS 루트여야 합니다.");
@@ -84,7 +90,14 @@ export function validateCloudOnlyDeploymentEnvironment(env = process.env, { plat
     throw new ProductionDeploymentError("legacy CLIMATE_CMIP6_LOCAL_ZARR_ROOT는 비어 있어야 합니다.");
   }
 
-  return Object.freeze({ backendRoot, driveMountRoot, webDataRoot, rawCmip6Root, platform });
+  return Object.freeze({
+    backendRoot,
+    preparedDataProvider,
+    preparedDataMountRoot,
+    webDataRoot,
+    rawCmip6Root,
+    platform
+  });
 }
 
 export function validateGatewayEnvironment(env = process.env, options = {}) {
@@ -153,7 +166,7 @@ export async function validateGatewayFiles(configuration, { fileSystem = fs } = 
   const rawIndexPath = path.join(configuration.webDataRoot, DATASET_FILE_RELATIVE_PATHS.rawIndex);
 
   await requireDirectory(fileSystem, configuration.backendRoot, "백엔드 루트");
-  await requireDirectory(fileSystem, configuration.driveMountRoot, "Google Drive 마운트 루트");
+  await requireDirectory(fileSystem, configuration.preparedDataMountRoot, "GCS 마운트 루트");
   await requireDirectory(fileSystem, configuration.webDataRoot, ".ctwebui 자료 루트");
   await requireRegularFile(fileSystem, gatewayScript, "백엔드 게이트웨이 스크립트");
   await requireRegularFile(fileSystem, manifestPath, ".ctwebui manifest");
@@ -164,7 +177,7 @@ export async function validateGatewayFiles(configuration, { fileSystem = fs } = 
   try {
     realPaths = await Promise.all([
       fileSystem.realpath(configuration.backendRoot),
-      fileSystem.realpath(configuration.driveMountRoot),
+      fileSystem.realpath(configuration.preparedDataMountRoot),
       fileSystem.realpath(configuration.webDataRoot),
       fileSystem.realpath(gatewayScript),
       fileSystem.realpath(manifestPath),
@@ -174,8 +187,8 @@ export async function validateGatewayFiles(configuration, { fileSystem = fs } = 
   } catch {
     throw new ProductionDeploymentError("운영 게이트웨이의 실제 파일 경로를 확인할 수 없습니다.");
   }
-  const [backendRealPath, driveRealPath, webDataRealPath, gatewayRealPath, ...dataFileRealPaths] = realPaths;
-  if (!isPathWithin(driveRealPath, webDataRealPath, configuration.platform)
+  const [backendRealPath, mountRealPath, webDataRealPath, gatewayRealPath, ...dataFileRealPaths] = realPaths;
+  if (!isPathWithin(mountRealPath, webDataRealPath, configuration.platform)
     || !isPathWithin(backendRealPath, gatewayRealPath, configuration.platform)
     || dataFileRealPaths.some((filePath) => !isPathWithin(webDataRealPath, filePath, configuration.platform))) {
     throw new ProductionDeploymentError("운영 자료 또는 실행 파일이 승인된 루트 밖을 가리킵니다.");
@@ -194,8 +207,11 @@ export async function validateGatewayFiles(configuration, { fileSystem = fs } = 
 }
 
 export function buildGatewayChildEnvironment(parentEnv, configuration) {
-  const childEnv = {
-    ...parentEnv,
+  const childEnv = {};
+  for (const [key, value] of Object.entries(parentEnv)) {
+    if (GATEWAY_PROCESS_ENVIRONMENT_KEYS.has(key.toUpperCase())) childEnv[key] = value;
+  }
+  Object.assign(childEnv, {
     CTC_BACKEND_ROOT: configuration.backendRoot,
     CTC_WEB_DATA_ROOT: configuration.webDataRoot,
     CTC_WEBUI_CMIP6_ZARR_ROOT: configuration.rawCmip6Root,
@@ -203,9 +219,7 @@ export function buildGatewayChildEnvironment(parentEnv, configuration) {
     CTC_WEBUI_RAW_CMIP6_QUERY_CACHE: "0",
     CTC_WEBUI_RAW_CMIP6_MAX_CONCURRENT_WORKERS: "1",
     CTC_WEBUI_RAW_CMIP6_QUERY_WORKER: "1"
-  };
-  for (const key of LOCAL_FALLBACK_ENVIRONMENT_KEYS) delete childEnv[key];
-  for (const key of LAUNCHER_ONLY_ENVIRONMENT_KEYS) delete childEnv[key];
+  });
   return childEnv;
 }
 
@@ -230,6 +244,22 @@ export async function startProductionGateway({
   spawnProcess = spawn,
   signalTarget = process
 } = {}) {
+  const { child } = await spawnProductionGateway({
+    env,
+    platform,
+    fileSystem,
+    spawnProcess,
+    signalTarget
+  });
+  return waitForChildProcess(child, { platform, signalTarget });
+}
+
+export async function spawnProductionGateway({
+  env = process.env,
+  platform = process.platform,
+  fileSystem = fs,
+  spawnProcess = spawn
+} = {}) {
   const configuration = validateGatewayEnvironment(env, { platform });
   const files = await validateGatewayFiles(configuration, { fileSystem });
   const child = spawnProcess(
@@ -243,7 +273,7 @@ export async function startProductionGateway({
       windowsHide: true
     }
   );
-  return waitForChildProcess(child, { platform, signalTarget });
+  return Object.freeze({ child, configuration, files });
 }
 
 export function isMainEntry(metaUrl = import.meta.url, argvEntry = process.argv[1]) {

@@ -19,6 +19,7 @@ import {
   computeDatasetVersion,
   createProductionDataAttestation,
   hasInternalPathExposure,
+  readProductionAuthorizationHeader,
   resolveStrictGitMode,
   validateProductionAttestation,
   validateProductionAttestationFreshness
@@ -28,24 +29,30 @@ const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixedDatasetTime = new Date("2026-07-13T16:22:20.121Z");
 const backendDatasetTime = "2026-07-13T16:22:20.121000+00:00";
 
-test("운영 환경은 Google Drive 마운트 안의 Web 자료와 GCS 원자료만 허용한다", () => {
-  const driveRoot = path.resolve("drive-mount");
-  const webDataRoot = path.join(driveRoot, "release.ctwebui");
+test("운영 환경은 GCS 마운트 안의 Web 자료와 GCS 원자료만 허용한다", () => {
+  const mountRoot = path.resolve("gcs-mount");
+  const webDataRoot = path.join(mountRoot, "release.ctwebui");
   const env = {
     CTC_BACKEND_ROOT: path.resolve("backend"),
-    CTC_GOOGLE_DRIVE_MOUNT_ROOT: driveRoot,
+    CTC_PREPARED_DATA_PROVIDER: "gcs",
+    CTC_PREPARED_DATA_MOUNT_ROOT: mountRoot,
     CTC_WEB_DATA_ROOT: webDataRoot,
     CTC_WEBUI_CMIP6_ZARR_ROOT: "gs://private-bucket/cmip6"
   };
 
   const value = validateCloudOnlyDeploymentEnvironment(env);
   assert.equal(value.webDataRoot, webDataRoot);
-  assert.equal(value.driveMountRoot, driveRoot);
+  assert.equal(value.preparedDataMountRoot, mountRoot);
+  assert.equal(value.preparedDataProvider, "gcs");
   assert.equal(value.rawCmip6Root, env.CTC_WEBUI_CMIP6_ZARR_ROOT);
 
   assert.throws(
     () => validateCloudOnlyDeploymentEnvironment({ ...env, CTC_WEB_DATA_ROOT: path.resolve("outside.ctwebui") }),
-    /Google Drive 마운트/u
+    /GCS 마운트/u
+  );
+  assert.throws(
+    () => validateCloudOnlyDeploymentEnvironment({ ...env, CTC_PREPARED_DATA_PROVIDER: "google-drive" }),
+    /GCS여야/u
   );
   assert.throws(
     () => validateCloudOnlyDeploymentEnvironment({ ...env, CTC_WEBUI_CMIP6_ZARR_ROOT: path.resolve("raw-zarr") }),
@@ -58,11 +65,12 @@ test("운영 환경은 Google Drive 마운트 안의 Web 자료와 GCS 원자료
 });
 
 test("운영 실행기는 loopback과 허용된 Python 실행기만 사용한다", () => {
-  const driveRoot = path.resolve("drive-mount");
+  const mountRoot = path.resolve("gcs-mount");
   const env = {
     CTC_BACKEND_ROOT: path.resolve("backend"),
-    CTC_GOOGLE_DRIVE_MOUNT_ROOT: driveRoot,
-    CTC_WEB_DATA_ROOT: path.join(driveRoot, "release.ctwebui"),
+    CTC_PREPARED_DATA_PROVIDER: "gcs",
+    CTC_PREPARED_DATA_MOUNT_ROOT: mountRoot,
+    CTC_WEB_DATA_ROOT: path.join(mountRoot, "release.ctwebui"),
     CTC_WEBUI_CMIP6_ZARR_ROOT: "gs://private-bucket/cmip6",
     CTC_GATEWAY_PORT: "8765",
     CTC_PYTHON_EXECUTABLE: "python"
@@ -81,7 +89,7 @@ test("운영 실행기는 loopback과 허용된 Python 실행기만 사용한다
 test("게이트웨이 자식 환경은 로컬 대체 경로와 비공개 실행 설정을 제거한다", () => {
   const configuration = {
     backendRoot: path.resolve("backend"),
-    webDataRoot: path.resolve("drive", "release.ctwebui"),
+    webDataRoot: path.resolve("gcs", "release.ctwebui"),
     rawCmip6Root: "gs://private-bucket/cmip6"
   };
   const child = buildGatewayChildEnvironment({
@@ -90,8 +98,13 @@ test("게이트웨이 자식 환경은 로컬 대체 경로와 비공개 실행 
     CLIMATE_CMIP6_EXTRACTION_CACHE_ROOT: "local",
     CLIMATE_TIME_CAPSULE_RAW_ZARR_POINT_CACHE_DIR: "local",
     CLIMATE_TIME_CAPSULE_RAW_ZARR_POINT_CACHE_ROOT: "local",
-    CTC_GOOGLE_DRIVE_MOUNT_ROOT: "private",
-    CTC_PRODUCTION_ATTESTATION_OUTPUT: "private"
+    CTC_PREPARED_DATA_MOUNT_ROOT: "private",
+    CTC_PREPARED_DATA_PROVIDER: "gcs",
+    CTC_FRONTEND_DIST_ROOT: "private",
+    CTC_GATEWAY_STARTUP_TIMEOUT_MS: "private",
+    CTC_RELEASE_POINTER: "private",
+    CTC_PRODUCTION_ATTESTATION_OUTPUT: "private",
+    DEPLOYMENT_SECRET_TOKEN: "must-not-reach-python"
   }, configuration);
 
   assert.equal(child.CTC_WEBUI_RAW_CMIP6_INDEX_CACHE, "0");
@@ -101,8 +114,13 @@ test("게이트웨이 자식 환경은 로컬 대체 경로와 비공개 실행 
   assert.equal(child.CLIMATE_CMIP6_EXTRACTION_CACHE_ROOT, undefined);
   assert.equal(child.CLIMATE_TIME_CAPSULE_RAW_ZARR_POINT_CACHE_DIR, undefined);
   assert.equal(child.CLIMATE_TIME_CAPSULE_RAW_ZARR_POINT_CACHE_ROOT, undefined);
-  assert.equal(child.CTC_GOOGLE_DRIVE_MOUNT_ROOT, undefined);
+  assert.equal(child.CTC_PREPARED_DATA_MOUNT_ROOT, undefined);
+  assert.equal(child.CTC_PREPARED_DATA_PROVIDER, undefined);
+  assert.equal(child.CTC_FRONTEND_DIST_ROOT, undefined);
+  assert.equal(child.CTC_GATEWAY_STARTUP_TIMEOUT_MS, undefined);
+  assert.equal(child.CTC_RELEASE_POINTER, undefined);
   assert.equal(child.CTC_PRODUCTION_ATTESTATION_OUTPUT, undefined);
+  assert.equal(child.DEPLOYMENT_SECRET_TOKEN, undefined);
 });
 
 test("raw CMIP6 index는 GCS URI 또는 안전한 상대경로만 허용한다", () => {
@@ -139,7 +157,7 @@ test("raw CMIP6 index는 GCS URI 또는 안전한 상대경로만 허용한다",
   );
 });
 
-test("게이트웨이 파일은 Backend와 Drive 마운트 경계를 벗어나지 않는다", async (context) => {
+test("게이트웨이 파일은 Backend와 GCS 마운트 경계를 벗어나지 않는다", async (context) => {
   const fixture = await createFixture();
   context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
   const configuration = validateGatewayEnvironment(fixture.env);
@@ -148,7 +166,7 @@ test("게이트웨이 파일은 Backend와 Drive 마운트 경계를 벗어나�
   assert.equal(files.manifestPath, path.join(fixture.webDataRoot, "manifest.json"));
 });
 
-test("v2 확인서는 자료판 SHA와 UTC 갱신 시각, 두 Git SHA를 모두 고정한다", () => {
+test("v3 확인서는 GCS 자료판 SHA와 UTC 갱신 시각, 두 Git SHA를 모두 고정한다", () => {
   const value = buildProductionAttestation({
     datasetUpdatedAt: backendDatasetTime,
     datasetVersion: "1".repeat(64),
@@ -198,6 +216,17 @@ test("환경 변수로 프로덕션 Git 검증을 비활성화할 수 없다", (
   );
 });
 
+test("IAP 확인 토큰은 파일에서만 읽고 Bearer 헤더로 제한한다", async (context) => {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ctc-iap-token-"));
+  const tokenPath = path.join(tempRoot, "iap.jwt");
+  const token = "headersegment.payloadsegment.signaturesegment";
+  context.after(() => fs.rm(tempRoot, { recursive: true, force: true }));
+  await fs.writeFile(tokenPath, `${token}\n`, { encoding: "utf8", mode: 0o600 });
+  assert.equal(await readProductionAuthorizationHeader(tokenPath), `Bearer ${token}`);
+  await fs.writeFile(tokenPath, "not_a_valid_token_but_long_enough_to_pass_size_check", "utf8");
+  await assert.rejects(() => readProductionAuthorizationHeader(tokenPath), /형식이 올바르지 않습니다/u);
+});
+
 test("패키지와 공개 인용 메타데이터의 출시 후보 버전은 일치한다", async () => {
   const packageJson = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
   const citation = await fs.readFile(path.join(root, "CITATION.cff"), "utf8");
@@ -215,13 +244,22 @@ test("실제 확인서 생성은 metadata, query, series가 같은 자료판일 
   });
 
   const calls = [];
-  const fetchImplementation = createGatewayFetch(fixture, calls);
+  const token = "headersegment.payloadsegment.signaturesegment";
+  const tokenPath = path.join(fixture.tempRoot, "iap.jwt");
+  await fs.writeFile(tokenPath, token, { encoding: "utf8", mode: 0o600 });
+  const gatewayFetch = createGatewayFetch(fixture, calls);
+  const fetchImplementation = async (url, options) => {
+    const isExternal = new URL(url).hostname !== "127.0.0.1";
+    assert.equal(options.headers.Authorization, isExternal ? `Bearer ${token}` : undefined);
+    return gatewayFetch(url, options);
+  };
   const value = await createProductionDataAttestation({
     env: {
       ...fixture.env,
       CTC_DEPLOYMENT_BASE_URL: "https://climate.example.test",
       CTC_GATEWAY_LOCAL_BASE_URL: "http://127.0.0.1:8765",
       CTC_GATEWAY_PORT: "8765",
+      CTC_PRODUCTION_AUTHORIZATION_TOKEN_FILE: tokenPath,
       CTC_PRODUCTION_ATTESTATION_OUTPUT: outputPath
     },
     fetchImplementation,
@@ -242,6 +280,7 @@ test("실제 확인서 생성은 metadata, query, series가 같은 자료판일 
   assert.ok(calls.includes("/api/climate/query"));
   assert.ok(calls.includes("/api/climate/series"));
   assert.equal(calls.filter((pathname) => pathname === "/api/climate/series").length, 4);
+  assert.equal(JSON.stringify(value).includes(token), false);
   assert.deepEqual(JSON.parse(await fs.readFile(outputPath, "utf8")), value);
 });
 
@@ -407,8 +446,8 @@ async function createFixture() {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ctc-webui-production-"));
   const frontendRoot = path.join(tempRoot, "frontend");
   const backendRoot = path.join(tempRoot, "backend");
-  const driveRoot = path.join(tempRoot, "drive");
-  const webDataRoot = path.join(driveRoot, "release.ctwebui");
+  const mountRoot = path.join(tempRoot, "gcs");
+  const webDataRoot = path.join(mountRoot, "release.ctwebui");
   await fs.mkdir(path.join(frontendRoot, "dist"), { recursive: true });
   await fs.mkdir(path.join(backendRoot, "scripts"), { recursive: true });
   await fs.mkdir(path.join(webDataRoot, "meta"), { recursive: true });
@@ -465,12 +504,13 @@ async function createFixture() {
     tempRoot,
     frontendRoot,
     backendRoot,
-    driveRoot,
+    mountRoot,
     webDataRoot,
     datasetVersion: computeDatasetVersion(componentDigests),
     env: {
       CTC_BACKEND_ROOT: backendRoot,
-      CTC_GOOGLE_DRIVE_MOUNT_ROOT: driveRoot,
+      CTC_PREPARED_DATA_PROVIDER: "gcs",
+      CTC_PREPARED_DATA_MOUNT_ROOT: mountRoot,
       CTC_WEB_DATA_ROOT: webDataRoot,
       CTC_WEBUI_CMIP6_ZARR_ROOT: "gs://private-bucket/cmip6",
       CTC_PYTHON_EXECUTABLE: "python"

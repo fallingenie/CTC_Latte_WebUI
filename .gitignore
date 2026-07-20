@@ -4,3 +4,4 @@ dist/
 .DS_Store
 .gstack/
 .release-evidence/
+.deploy-staging/

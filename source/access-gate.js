@@ -40,11 +40,11 @@ function renderAccessGate(initialMessage = "") {
         <div class="access-gate-brand">
           <img src="./favicon.svg" alt="" width="56" height="56" />
           <div>
-            <p class="access-gate-eyebrow">비공개 시험 운영</p>
+            <p class="access-gate-eyebrow">출시 후보 시험 운영</p>
             <h1 id="access-gate-title">기후 타임캡슐</h1>
           </div>
         </div>
-        <p class="access-gate-copy">초대받은 사용자만 접속할 수 있습니다.</p>
+        <p class="access-gate-copy">시험 참여자용 화면입니다.</p>
         <form class="access-gate-form" novalidate>
           <label for="access-password">접속 암호</label>
           <input

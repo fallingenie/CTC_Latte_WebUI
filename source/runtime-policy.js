@@ -18,6 +18,7 @@ export const PUBLIC_BACKEND_CONTRACT_PROFILE = Object.freeze({
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1e3;
 const MINIMUM_TIMEOUT_MS = 30 * 1e3;
 const ALLOWED_CONFIG_KEYS = ["publicSafe", "readPath", "sourcePolicy", "timeoutMs"];
+const PUBLIC_CLOUD_RUN_HOST_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+run\.app$/u;
 const DATASET_VERSION_PATTERN = /^[0-9a-f]{64}$/u;
 const DATASET_UPDATED_AT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})\+00:00$/u;
 const PUBLIC_DATASET_METADATA_ALLOWED_FIELDS = Object.freeze([
@@ -133,8 +134,8 @@ export function validatePublicRuntimeConfig(value) {
     throw new Error("기후 자료 연결 정보가 공개 조회 기준과 맞지 않습니다.");
   }
 
-  if (value.readPath !== PUBLIC_CLIMATE_READ_PATH
-    || value.publicSafe !== true
+  const readPath = validatePublicClimateReadPath(value.readPath);
+  if (value.publicSafe !== true
     || value.sourcePolicy !== PUBLIC_DATA_SOURCE_POLICY
     || typeof value.timeoutMs !== "number"
     || !Number.isFinite(value.timeoutMs)) {
@@ -142,10 +143,35 @@ export function validatePublicRuntimeConfig(value) {
   }
 
   return {
-    readPath: PUBLIC_CLIMATE_READ_PATH,
+    readPath,
     sourcePolicy: PUBLIC_DATA_SOURCE_POLICY,
     timeoutMs: Math.min(DEFAULT_TIMEOUT_MS, Math.max(MINIMUM_TIMEOUT_MS, Math.round(value.timeoutMs)))
   };
+}
+
+export function validatePublicClimateReadPath(value) {
+  if (value === PUBLIC_CLIMATE_READ_PATH) return PUBLIC_CLIMATE_READ_PATH;
+  if (typeof value !== "string" || value.length > 512) {
+    throw new Error("기후 자료 연결 정보가 공개 조회 기준과 맞지 않습니다.");
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("기후 자료 연결 정보가 공개 조회 기준과 맞지 않습니다.");
+  }
+  if (parsed.protocol !== "https:"
+    || !PUBLIC_CLOUD_RUN_HOST_PATTERN.test(parsed.hostname)
+    || parsed.port
+    || parsed.username
+    || parsed.password
+    || parsed.pathname !== PUBLIC_CLIMATE_READ_PATH
+    || parsed.search
+    || parsed.hash) {
+    throw new Error("기후 자료 연결 정보가 공개 조회 기준과 맞지 않습니다.");
+  }
+  return parsed.toString();
 }
 
 export function validatePublicApiResponse(value, allowedFields) {

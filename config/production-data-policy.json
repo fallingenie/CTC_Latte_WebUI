@@ -1,8 +1,7 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 4,
   "sourcePolicy": "cloud-only",
   "allowedProviders": [
-    "google-drive",
     "gcs"
   ],
   "queryOrder": [
@@ -11,7 +10,7 @@
   ],
   "routes": {
     "prepared-web-data": {
-      "provider": "google-drive",
+      "provider": "gcs",
       "role": "primary"
     },
     "raw-cmip6": {
@@ -21,8 +20,14 @@
   },
   "localFilesystemSourceAllowed": false,
   "browserStorageLocatorExposure": false,
+  "delivery": {
+    "frontend": "github-pages",
+    "queryApi": "public-read-only-cloud-run",
+    "preparedData": "public-object-read-only-gcs",
+    "anonymousWriteAllowed": false
+  },
   "deploymentAttestation": {
-    "attestationVersion": 2,
+    "attestationVersion": 3,
     "requiredFields": [
       "allowedProviders",
       "attestationVersion",

@@ -6,8 +6,9 @@ import {
   PRODUCTION_ATTESTATION_FIELDS,
   validateProductionAttestationFreshness
 } from "./create-production-data-attestation.mjs";
+import { validatePublicRuntimeConfig } from "../source/runtime-policy.js";
 
-const EXPECTED_ALLOWED_PROVIDERS = Object.freeze(["google-drive", "gcs"]);
+const EXPECTED_ALLOWED_PROVIDERS = Object.freeze(["gcs"]);
 const EXPECTED_QUERY_ORDER = Object.freeze(["prepared-web-data", "raw-cmip6"]);
 const EXPECTED_ATTESTATION_FIELDS = PRODUCTION_ATTESTATION_FIELDS;
 const EXPECTED_ATTESTATION_CONTRACT_FIELDS = Object.freeze([
@@ -79,17 +80,17 @@ function verifyPolicy(value, label) {
     failures.push(`${label}의 형식이 올바르지 않습니다.`);
     return;
   }
-  if (value.schemaVersion !== 2) failures.push(`${label}의 schemaVersion은 2여야 합니다.`);
+  if (value.schemaVersion !== 4) failures.push(`${label}의 schemaVersion은 4여야 합니다.`);
   if (value.sourcePolicy !== "cloud-only") failures.push(`${label}은 cloud-only여야 합니다.`);
   if (!isSameArray(value.allowedProviders, EXPECTED_ALLOWED_PROVIDERS)) {
-    failures.push(`${label}은 Google Drive와 GCS만 허용해야 합니다.`);
+    failures.push(`${label}은 GCS만 허용해야 합니다.`);
   }
   if (!isSameArray(value.queryOrder, EXPECTED_QUERY_ORDER)) {
     failures.push(`${label}은 준비된 Web 자료를 먼저 읽고 CMIP6 원자료로 범위를 보완해야 합니다.`);
   }
-  if (value.routes?.["prepared-web-data"]?.provider !== "google-drive"
+  if (value.routes?.["prepared-web-data"]?.provider !== "gcs"
     || value.routes?.["prepared-web-data"]?.role !== "primary") {
-    failures.push(`${label}은 Google Drive의 준비된 Web 자료를 기본 조회 경로로 사용해야 합니다.`);
+    failures.push(`${label}은 GCS의 준비된 Web 자료를 기본 조회 경로로 사용해야 합니다.`);
   }
   if (value.routes?.["raw-cmip6"]?.provider !== "gcs"
     || value.routes?.["raw-cmip6"]?.role !== "coverage-fallback") {
@@ -100,6 +101,12 @@ function verifyPolicy(value, label) {
   }
   if (value.browserStorageLocatorExposure !== false) {
     failures.push(`${label}은 브라우저 저장소 위치 노출을 금지해야 합니다.`);
+  }
+  if (value.delivery?.frontend !== "github-pages"
+    || value.delivery?.queryApi !== "public-read-only-cloud-run"
+    || value.delivery?.preparedData !== "public-object-read-only-gcs"
+    || value.delivery?.anonymousWriteAllowed !== false) {
+    failures.push(`${label}은 GitHub Pages, 공개 읽기 전용 Cloud Run 및 GCS 배포를 강제해야 합니다.`);
   }
   const attestationContract = value.deploymentAttestation;
   if (!attestationContract || typeof attestationContract !== "object" || Array.isArray(attestationContract)
@@ -116,7 +123,7 @@ function verifyDeploymentAttestation(value, policyValue, label) {
   try {
     validateProductionAttestationFreshness(value);
   } catch (error) {
-    failures.push(`${label}가 고정된 v2 운영 계약을 충족하지 않습니다: ${error instanceof Error ? error.message : String(error)}`);
+    failures.push(`${label}가 고정된 v3 운영 계약을 충족하지 않습니다: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 
@@ -126,7 +133,7 @@ function verifyDeploymentAttestation(value, policyValue, label) {
   }
   if (!isSameArray(value.allowedProviders, EXPECTED_ALLOWED_PROVIDERS)
     || !isSameArray(value.allowedProviders, policyValue?.allowedProviders)) {
-    failures.push(`${label}는 실제 배포에서 Google Drive와 GCS만 사용했음을 증명해야 합니다.`);
+    failures.push(`${label}는 실제 배포에서 GCS만 사용했음을 증명해야 합니다.`);
   }
   if (!isSameArray(value.queryOrder, EXPECTED_QUERY_ORDER)
     || !isSameArray(value.queryOrder, policyValue?.queryOrder)) {
@@ -158,7 +165,11 @@ function verifyRuntimeConfig(value) {
   if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
     failures.push(`배포 연결 설정의 허용되지 않은 항목을 확인했습니다: ${actualKeys.join(", ")}`);
   }
-  if (value.readPath !== "/api/climate/query") failures.push("브라우저 API 경로는 동일 출처 상대 경로여야 합니다.");
+  try {
+    validatePublicRuntimeConfig(value);
+  } catch {
+    failures.push("브라우저 API 경로는 동일 출처 또는 검증된 공개 Cloud Run 주소여야 합니다.");
+  }
   if (value.publicSafe !== true) failures.push("배포 연결 설정은 publicSafe여야 합니다.");
   if (value.sourcePolicy !== "cloud-only") failures.push("배포 연결 설정은 cloud-only여야 합니다.");
 }

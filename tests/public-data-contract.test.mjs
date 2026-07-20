@@ -209,21 +209,28 @@ test("공개 앱은 허용된 실제자료 API 경로만 사용한다", () => {
   assert.doesNotMatch(source, /drive\.google\.com|googleapis\.com\/drive|\.ctwebui|\.ctcapsule/iu);
 });
 
-test("배포 설정은 클라우드 전용 원본 정책과 동일 출처 API만 선언한다", () => {
+test("기본 배포 설정은 로컬 동일 출처를 유지하고 공개 배포 정책은 Pages와 읽기 전용 클라우드를 선언한다", () => {
   assert.deepEqual(Object.keys(runtimeConfig).sort(), ["publicSafe", "readPath", "sourcePolicy", "timeoutMs"]);
   assert.equal(runtimeConfig.readPath, "/api/climate/query");
   assert.equal(runtimeConfig.publicSafe, true);
   assert.equal(runtimeConfig.sourcePolicy, "cloud-only");
+  assert.equal(productionDataPolicy.schemaVersion, 4);
   assert.equal(productionDataPolicy.sourcePolicy, "cloud-only");
-  assert.deepEqual(productionDataPolicy.allowedProviders, ["google-drive", "gcs"]);
+  assert.deepEqual(productionDataPolicy.allowedProviders, ["gcs"]);
   assert.deepEqual(productionDataPolicy.queryOrder, ["prepared-web-data", "raw-cmip6"]);
   assert.deepEqual(productionDataPolicy.routes, {
-    "prepared-web-data": { provider: "google-drive", role: "primary" },
+    "prepared-web-data": { provider: "gcs", role: "primary" },
     "raw-cmip6": { provider: "gcs", role: "coverage-fallback" }
   });
   assert.equal(productionDataPolicy.localFilesystemSourceAllowed, false);
   assert.equal(Object.hasOwn(productionDataPolicy, "verifiedEphemeralCacheAllowed"), false);
   assert.equal(productionDataPolicy.browserStorageLocatorExposure, false);
+  assert.deepEqual(productionDataPolicy.delivery, {
+    frontend: "github-pages",
+    queryApi: "public-read-only-cloud-run",
+    preparedData: "public-object-read-only-gcs",
+    anonymousWriteAllowed: false
+  });
 });
 
 test("학생 공유 링크에는 개발용 검색 매개변수를 포함하지 않는다", () => {

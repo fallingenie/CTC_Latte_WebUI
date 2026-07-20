@@ -51,8 +51,8 @@ test("index는 본 앱 대신 접근 게이트만 시작한다", () => {
 });
 
 test("접근 화면은 한국어 입력 안내와 오류 상태를 제공한다", () => {
-  assert.match(gateSource, /비공개 시험 운영/u);
-  assert.match(gateSource, /초대받은 사용자만 접속할 수 있습니다\./u);
+  assert.match(gateSource, /출시 후보 시험 운영/u);
+  assert.match(gateSource, /시험 참여자용 화면입니다\./u);
   assert.match(gateSource, /label for="access-password">접속 암호/u);
   assert.match(gateSource, /autocomplete="current-password"/u);
   assert.match(gateSource, /aria-live="polite"/u);
