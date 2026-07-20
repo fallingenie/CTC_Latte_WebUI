@@ -225,7 +225,7 @@ async function serveStaticFile(request, response, pathname, distRoot, fileSystem
     return writeJson(response, 400, { error: "요청 주소 형식이 올바르지 않습니다." });
   }
 
-  const relativePath = decodedPath === "/" || !path.posix.extname(decodedPath)
+  const relativePath = decodedPath === "/"
     ? "index.html"
     : decodedPath.replace(/^\/+/, "");
   const filePath = path.resolve(distRoot, ...relativePath.split("/"));

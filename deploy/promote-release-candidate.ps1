@@ -103,6 +103,20 @@ function Invoke-Captured {
     return ($output | Out-String).Trim()
 }
 
+function Test-ExternalSuccess {
+    param([string]$Command, [string[]]$Arguments)
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $Command @Arguments *> $null
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    return $exitCode -eq 0
+}
+
 function Get-RemoteMainCommit {
     param([string]$Repository)
     $line = Invoke-Captured git @('-C', $Repository, 'ls-remote', 'origin', 'refs/heads/main')
@@ -335,21 +349,23 @@ try {
 }
 finally {
     if (-not $promotionVerified -and $bootstrapService) {
-        & $gcloud run services delete $ServiceName `
-            --region $Region `
-            --project $ProjectId `
-            --quiet *> $null
-        if ($LASTEXITCODE -ne 0) {
+        if (-not (Test-ExternalSuccess $gcloud @(
+            'run', 'services', 'delete', $ServiceName,
+            '--region', $Region,
+            '--project', $ProjectId,
+            '--quiet'
+        ))) {
             Write-Warning '검증에 실패한 최초 Cloud Run 서비스를 자동 회수하지 못했습니다.'
         }
     }
     elseif (-not $promotionVerified -and $trafficPromoted -and $previousTrafficAllocation) {
-        & $gcloud run services update-traffic $ServiceName `
-            --to-revisions $previousTrafficAllocation `
-            --region $Region `
-            --project $ProjectId `
-            --quiet *> $null
-        if ($LASTEXITCODE -ne 0) {
+        if (-not (Test-ExternalSuccess $gcloud @(
+            'run', 'services', 'update-traffic', $ServiceName,
+            '--to-revisions', $previousTrafficAllocation,
+            '--region', $Region,
+            '--project', $ProjectId,
+            '--quiet'
+        ))) {
             Write-Warning '검증에 실패한 Cloud Run 트래픽을 이전 리비전으로 복구하지 못했습니다.'
         }
     }
@@ -358,7 +374,9 @@ finally {
         $gatewayProcess.WaitForExit(5000) | Out-Null
     }
     if ($worktreeCreated) {
-        & git -C $backendRoot worktree remove --force $cleanBackendRoot *> $null
+        if (-not (Test-ExternalSuccess git @('-C', $backendRoot, 'worktree', 'remove', '--force', $cleanBackendRoot))) {
+            Write-Warning '검증용 Backend worktree를 자동 회수하지 못했습니다.'
+        }
     }
     $resolvedStaging = [System.IO.Path]::GetFullPath($stagingRoot)
     $stagingPrefix = [System.IO.Path]::GetFullPath($stagingBase).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
