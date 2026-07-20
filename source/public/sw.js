@@ -1,11 +1,14 @@
-const CACHE_NAME = "climate-web-shell-v17";
+const CACHE_NAME = "climate-web-shell-v18";
 const SHELL_INDEX = new URL("index.html", self.location.href).toString();
 const SHELL_ASSETS = [
   "./",
   "index.html",
   "favicon.svg",
   "app.webmanifest",
-  "runtime-config.json"
+  "runtime-config.json",
+  "assets/icons/app-icon-192.png",
+  "assets/icons/app-icon-512.png",
+  "assets/icons/app-icon-maskable-512.png"
 ].map((path) => new URL(path, self.location.href).toString());
 
 self.addEventListener("install", (event) => {
