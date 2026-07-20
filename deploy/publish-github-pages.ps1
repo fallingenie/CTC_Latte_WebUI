@@ -16,17 +16,35 @@ $ErrorActionPreference = 'Stop'
 
 function Invoke-Checked {
     param([string]$Command, [string[]]$Arguments)
-    & $Command @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Command 명령이 실패했습니다. 종료 코드: $LASTEXITCODE"
+    $previousErrorActionPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $Command @Arguments
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "$Command 명령이 실패했습니다. 종료 코드: $exitCode"
     }
 }
 
 function Invoke-Captured {
     param([string]$Command, [string[]]$Arguments)
-    $output = & $Command @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Command 명령이 실패했습니다. 종료 코드: $LASTEXITCODE"
+    $previousErrorActionPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $Command @Arguments
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "$Command 명령이 실패했습니다. 종료 코드: $exitCode"
     }
     return ($output | Out-String).Trim()
 }

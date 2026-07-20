@@ -24,19 +24,55 @@ $ErrorActionPreference = 'Stop'
 
 function Invoke-Checked {
     param([string]$Command, [string[]]$Arguments)
-    & $Command @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Command 명령이 실패했습니다. 종료 코드: $LASTEXITCODE"
+    $previousErrorActionPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        & $Command @Arguments
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "$Command 명령이 실패했습니다. 종료 코드: $exitCode"
     }
 }
 
 function Invoke-Captured {
     param([string]$Command, [string[]]$Arguments)
-    $output = & $Command @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Command 명령이 실패했습니다. 종료 코드: $LASTEXITCODE"
+    $previousErrorActionPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $Command @Arguments
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "$Command 명령이 실패했습니다. 종료 코드: $exitCode"
     }
     return ($output | Out-String).Trim()
+}
+
+function Invoke-CapturedCombined {
+    param([string]$Command, [string[]]$Arguments)
+    $previousErrorActionPreference = $ErrorActionPreference
+    $exitCode = 1
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $Command @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($exitCode -ne 0) {
+        throw "$Command 명령이 실패했습니다. 종료 코드: $exitCode"
+    }
+    return @($output)
 }
 
 function Test-ExternalSuccess {
@@ -157,10 +193,12 @@ if (-not (Test-Path -LiteralPath $localDataRoot -PathType Container)) {
 $gcloud = Resolve-GcloudCommand
 
 $sourceRemoteRoot = "gs://$BucketName/$normalizedBucketPrefix/$normalizedRelativePath"
-$comparisonOutput = & $gcloud storage rsync $localDataRoot $sourceRemoteRoot --recursive --checksums-only --dry-run --delete-unmatched-destination-objects --project $ProjectId 2>&1
-if ($LASTEXITCODE -ne 0) {
-    throw 'GCS 자료와 로컬 정본의 비교가 실패했습니다.'
-}
+$comparisonOutput = Invoke-CapturedCombined $gcloud @(
+    'storage', 'rsync', $localDataRoot, $sourceRemoteRoot,
+    '--recursive', '--checksums-only', '--dry-run',
+    '--delete-unmatched-destination-objects',
+    '--project', $ProjectId
+)
 Assert-RsyncDryRunClean -Output $comparisonOutput -FailureMessage 'GCS 업로드가 로컬 정본과 일치하지 않습니다.'
 
 $evidenceRoot = Join-Path $frontendRoot '.release-evidence'
@@ -207,10 +245,12 @@ try {
             '--project', $ProjectId
         )
     }
-    $snapshotComparisonOutput = & $gcloud storage rsync $localDataRoot $snapshotUrl --recursive --checksums-only --dry-run --delete-unmatched-destination-objects --project $ProjectId 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw '불변 GCS 자료판과 로컬 정본의 비교가 실패했습니다.'
-    }
+    $snapshotComparisonOutput = Invoke-CapturedCombined $gcloud @(
+        'storage', 'rsync', $localDataRoot, $snapshotUrl,
+        '--recursive', '--checksums-only', '--dry-run',
+        '--delete-unmatched-destination-objects',
+        '--project', $ProjectId
+    )
     Assert-RsyncDryRunClean -Output $snapshotComparisonOutput -FailureMessage '불변 GCS 자료판이 로컬 정본과 일치하지 않습니다.'
 
     & node (Join-Path $frontendRoot 'scripts\create-release-pointer.mjs') `
