@@ -182,11 +182,13 @@ if ($visibility -ne 'PUBLIC') {
 
 $pagesEndpoint = "repos/$Repository/pages"
 if (Test-ExternalSuccess $gh @('api', $pagesEndpoint)) {
-    Invoke-Checked $gh @(
-        'api', '--method', 'PUT', $pagesEndpoint,
-        '-f', 'build_type=workflow',
-        '-F', 'https_enforced=true'
-    )
+    $existingPages = Invoke-Captured $gh @('api', $pagesEndpoint) | ConvertFrom-Json
+    if ([string]$existingPages.build_type -ne 'workflow') {
+        Invoke-Checked $gh @(
+            'api', '--method', 'PUT', $pagesEndpoint,
+            '-f', 'build_type=workflow'
+        )
+    }
 }
 else {
     Invoke-Checked $gh @(
@@ -205,8 +207,13 @@ $run = Wait-WorkflowRun `
 Invoke-Checked $gh @('run', 'watch', [string]$run.databaseId, '--repo', $Repository, '--exit-status')
 
 $pages = Invoke-Captured $gh @('api', $pagesEndpoint) | ConvertFrom-Json
-if (-not $pages.html_url -or [string]$pages.build_type -ne 'workflow') {
-    throw 'GitHub Pages 공개 주소 또는 배포 방식을 확인할 수 없습니다.'
+if (
+    -not $pages.html_url -or
+    [string]$pages.build_type -ne 'workflow' -or
+    -not [bool]$pages.https_enforced -or
+    ([uri][string]$pages.html_url).Scheme -ne 'https'
+) {
+    throw 'GitHub Pages 공개 주소, HTTPS 강제 또는 배포 방식을 확인할 수 없습니다.'
 }
 $runtimeUrl = Wait-PagesReady `
     -PagesUrl ([string]$pages.html_url) `
