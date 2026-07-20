@@ -246,10 +246,15 @@ test("학생 기록과 교사 활동지는 모두 DOCX로 저장한다", () => {
 });
 
 test("배포 셸은 코드 자산을 네트워크에서 먼저 갱신한다", () => {
-  assert.match(serviceWorkerSource, /climate-web-shell-v18/u);
+  assert.match(serviceWorkerSource, /climate-web-shell-v19/u);
+  assert.match(serviceWorkerSource, /fetch\(SHELL_ASSET_MANIFEST, \{ cache: "no-store" \}\)/u);
+  assert.match(serviceWorkerSource, /cache\.addAll\(\[\.\.\.SHELL_ASSETS, \.\.\.buildAssets\]\)/u);
+  assert.doesNotMatch(serviceWorkerSource, /clients\.claim/u);
   assert.match(serviceWorkerSource, /\["script", "style", "worker"\]\.includes\(request\.destination\)/u);
   assert.match(serviceWorkerSource, /fetch\(request\)[\s\S]*caches\.match\(request\)/u);
   assert.match(source, /updateViaCache: "none"/u);
+  assert.match(source, /document\.readyState === "complete"/u);
+  assert.match(source, /window\.addEventListener\("load", registerServiceWorker, \{ once: true \}\)/u);
 });
 
 test("실제 기후 자료 API는 서비스 워커 캐시에 저장하지 않는다", () => {

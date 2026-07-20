@@ -4141,9 +4141,14 @@ function registerAppShell() {
     }).catch(() => void 0);
     return;
   }
-  window.addEventListener("load", () => {
+  const registerServiceWorker = () => {
     navigator.serviceWorker.register(new URL("sw.js", document.baseURI), { scope: "./", updateViaCache: "none" }).catch(() => void 0);
-  });
+  };
+  if (document.readyState === "complete") {
+    registerServiceWorker();
+    return;
+  }
+  window.addEventListener("load", registerServiceWorker, { once: true });
 }
 createRoot(document.getElementById("root")).render(
   /* @__PURE__ */ jsx(StrictMode, { children: /* @__PURE__ */ jsx(App, {}) })

@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { runInNewContext } from "node:vm";
+
+import { createAppShellAssetManifestPlugin } from "../source/vite.config.js";
 
 const indexBytes = await readFile(new URL("../source/index.html", import.meta.url));
 const manifestBytes = await readFile(new URL("../source/public/app.webmanifest", import.meta.url));
@@ -8,6 +11,8 @@ const indexSource = indexBytes.toString("utf8");
 const manifestSource = manifestBytes.toString("utf8");
 const manifest = JSON.parse(manifestSource);
 const serviceWorkerSource = await readFile(new URL("../source/public/sw.js", import.meta.url), "utf8");
+const viteConfigSource = await readFile(new URL("../source/vite.config.js", import.meta.url), "utf8");
+const deploySyncSource = await readFile(new URL("../scripts/sync-deploy-artifacts.mjs", import.meta.url), "utf8");
 
 test("설치 화면의 한글과 manifest는 BOM 없는 UTF-8 정본이다", () => {
   assert.deepEqual([...indexBytes.subarray(0, 3)], [0x3c, 0x21, 0x64]);
@@ -52,11 +57,110 @@ test("Android 아이콘은 192px, 512px와 마스크형 512px PNG를 갖는다",
 });
 
 test("설치용 셸은 실제 기후자료 API를 오프라인 캐시에 저장하지 않는다", () => {
-  assert.match(serviceWorkerSource, /const CACHE_NAME = "climate-web-shell-v18";/u);
+  assert.match(serviceWorkerSource, /const CACHE_NAME = "climate-web-shell-v19";/u);
+  assert.match(viteConfigSource, /fileName: "app-shell-assets\.json"/u);
+  assert.match(deploySyncSource, /"app-shell-assets\.json"/u);
   assert.match(serviceWorkerSource, /"assets\/icons\/app-icon-192\.png"/u);
   assert.match(serviceWorkerSource, /"assets\/icons\/app-icon-512\.png"/u);
   assert.match(serviceWorkerSource, /"assets\/icons\/app-icon-maskable-512\.png"/u);
   assert.match(serviceWorkerSource, /url\.pathname\.startsWith\("\/api\/climate\/"\)\) return;/u);
   assert.match(serviceWorkerSource, /"app\.webmanifest"/u);
+  assert.match(serviceWorkerSource, /cache\.put\(SHELL_ASSET_MANIFEST, response\)/u);
+  assert.doesNotMatch(serviceWorkerSource, /clients\.claim/u);
   assert.doesNotMatch(serviceWorkerSource, /caches\.put\([^\n]*api\/climate/u);
+});
+
+test("빌드는 해시 실행 자산만 정렬된 앱 셸 목록으로 만든다", () => {
+  const emitted = [];
+  const plugin = createAppShellAssetManifestPlugin();
+  plugin.generateBundle.call({
+    emitFile(asset) {
+      emitted.push(asset);
+    },
+    error(message) {
+      throw new Error(message);
+    }
+  }, {}, {
+    css: { fileName: "assets/app-Z.css" },
+    html: { fileName: "index.html" },
+    js: { fileName: "assets/app-A.js" },
+    map: { fileName: "assets/app-A.js.map" }
+  });
+
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0].fileName, "app-shell-assets.json");
+  assert.deepEqual(JSON.parse(emitted[0].source), {
+    schemaVersion: 1,
+    assets: ["assets/app-A.js", "assets/app-Z.css"]
+  });
+});
+
+test("서비스 워커 설치는 해시 실행 자산을 저장한 뒤에만 활성화된다", async () => {
+  const listeners = new Map();
+  const added = [];
+  const stored = [];
+  let skippedWaiting = false;
+  const response = {
+    ok: true,
+    clone() {
+      return this;
+    },
+    async json() {
+      return {
+        schemaVersion: 1,
+        assets: ["assets/app-A.js", "assets/app-Z.css"]
+      };
+    }
+  };
+  const context = {
+    URL,
+    Promise,
+    Set,
+    Error,
+    self: {
+      location: new URL("https://climate.example/app/sw.js"),
+      async skipWaiting() {
+        skippedWaiting = true;
+      },
+      addEventListener(type, listener) {
+        listeners.set(type, listener);
+      }
+    },
+    caches: {
+      async open() {
+        return {
+          async put(url) {
+            stored.push(url);
+          },
+          async addAll(urls) {
+            added.push(...urls);
+          }
+        };
+      },
+      async keys() {
+        return [];
+      },
+      async delete() {},
+      async match() {}
+    },
+    async fetch() {
+      return response;
+    }
+  };
+  runInNewContext(serviceWorkerSource, context);
+
+  let installWork;
+  listeners.get("install")({
+    waitUntil(promise) {
+      installWork = promise;
+    }
+  });
+  await installWork;
+
+  assert.equal(skippedWaiting, true);
+  assert.deepEqual(stored, ["https://climate.example/app/app-shell-assets.json"]);
+  assert.ok(added.includes("https://climate.example/app/assets/app-A.js"));
+  assert.ok(added.includes("https://climate.example/app/assets/app-Z.css"));
+  assert.ok(added.includes("https://climate.example/app/index.html"));
+  assert.ok(added.includes("https://climate.example/app/assets/icons/app-icon-512.png"));
 });

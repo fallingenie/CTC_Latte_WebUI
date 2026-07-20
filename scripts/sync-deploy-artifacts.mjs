@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 export const DEPLOYMENT_FILES = Object.freeze([
   "Pretendard-LICENSE.txt",
+  "app-shell-assets.json",
   "app.webmanifest",
   "favicon.svg",
   "index.html",

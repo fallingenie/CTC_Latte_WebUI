@@ -16,11 +16,32 @@ const climateProxy = {
   }
 };
 
+export function createAppShellAssetManifestPlugin() {
+  return {
+    name: "ctc-app-shell-asset-manifest",
+    generateBundle(_options, bundle) {
+      const assets = Object.values(bundle)
+        .map((entry) => entry.fileName)
+        .filter((fileName) => fileName.startsWith("assets/") && !fileName.endsWith(".map"))
+        .sort();
+      if (!assets.some((fileName) => fileName.endsWith(".js"))) {
+        this.error("앱 셸 자산 목록에 실행 코드가 없습니다.");
+      }
+      this.emitFile({
+        type: "asset",
+        fileName: "app-shell-assets.json",
+        source: `${JSON.stringify({ schemaVersion: 1, assets }, null, 2)}\n`
+      });
+    }
+  };
+}
+
 export default defineConfig({
   appType: "mpa",
   root: sourceRoot,
   base: "./",
   publicDir: path.join(sourceRoot, "public"),
+  plugins: [createAppShellAssetManifestPlugin()],
   build: {
     outDir: path.resolve(sourceRoot, "..", "dist"),
     emptyOutDir: true
