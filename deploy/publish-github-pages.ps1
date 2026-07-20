@@ -98,12 +98,19 @@ function Wait-WorkflowRun {
             '--json', 'databaseId,headSha,status,conclusion,url,createdAt'
         )
         try {
-            $runs = @($json | ConvertFrom-Json)
+            $parsedRuns = $json | ConvertFrom-Json
+            $runs = @()
+            foreach ($parsedRun in $parsedRuns) {
+                $runs += $parsedRun
+            }
         }
         catch {
             throw 'GitHub Pages 작업 목록을 JSON으로 해석할 수 없습니다.'
         }
-        $run = @($runs | Where-Object { $_.headSha -eq $HeadSha } | Sort-Object createdAt -Descending) | Select-Object -First 1
+        $run = @($runs | Where-Object {
+            $headShaProperty = $_.PSObject.Properties['headSha']
+            $null -ne $headShaProperty -and [string]$headShaProperty.Value -eq $HeadSha
+        } | Sort-Object createdAt -Descending) | Select-Object -First 1
         if ($run) { return $run }
         Start-Sleep -Seconds 2
     }
