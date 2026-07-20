@@ -490,9 +490,8 @@ export function terminateChild(child, { timeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS 
       } catch {
         finish();
       }
-      setTimeout(finish, 250).unref?.();
+      setTimeout(finish, 250);
     }, timeoutMs);
-    timer.unref?.();
     try {
       child.kill("SIGTERM");
     } catch {
