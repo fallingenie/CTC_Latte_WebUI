@@ -404,11 +404,13 @@ try {
         '--quiet'
     )
 
-    $frontendShort = $frontendCommit.Substring(0, 12)
-    $backendShort = $backendCommit.Substring(0, 12)
+    $frontendShort = $frontendCommit.Substring(0, 8)
+    $backendShort = $backendCommit.Substring(0, 8)
     $datasetShort = $datasetVersion.Substring(0, 8)
-    $timestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
-    $revisionTag = "rc-$frontendShort-$backendShort-$datasetShort-$timestamp"
+    $revisionTag = "rc-$frontendShort-$backendShort-$datasetShort"
+    if (($ServiceName.Length + $revisionTag.Length) -gt 46) {
+        throw 'Cloud Run 서비스명과 후보 태그의 합계가 46자를 넘습니다.'
+    }
     $imageName = "$Region-docker.pkg.dev/$ProjectId/$ArtifactRepository/webui"
     $imageTag = "${imageName}:$revisionTag"
     $buildId = Invoke-Captured $gcloud @(
