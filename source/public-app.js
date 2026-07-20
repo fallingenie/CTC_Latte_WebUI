@@ -204,6 +204,13 @@ async function buildClimateReportCanvas(response) {
   context.fillText(`자료 갱신 시각: ${response.datasetUpdatedAt}`, 88, footerY + 186);
   context.fillText(`제작자: ${PUBLIC_ATTRIBUTION_CATALOG.project.creator.displayName} · GitHub ${PUBLIC_ATTRIBUTION_CATALOG.project.creator.githubHandle}`, 88, footerY + 220);
   await drawKmaAttributionMarks(context, response, width);
+  Object.defineProperty(canvas, "pdfPageBreaks", {
+    value: Object.freeze([
+      headerHeight,
+      ...response.metrics.map((_, metricIndex) => headerHeight + (metricIndex + 1) * chartHeight)
+    ]),
+    enumerable: false
+  });
   return canvas;
 }
 function climateReportHeaderLayout(context, response, width) {

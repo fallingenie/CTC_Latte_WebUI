@@ -15,6 +15,7 @@ import {
 import {
   buildClimatePdfBlob,
   buildPdfAttributionContent,
+  pdfCanvasSliceRanges,
   pdfImageDimensionsAtWidth,
   pdfSourceStatement,
   selectPdfAttributionModels,
@@ -24,6 +25,7 @@ import {
 
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const source = await fs.readFile(path.join(root, "source", "climate-pdf.js"), "utf8");
+const publicAppSource = await fs.readFile(path.join(root, "source", "public-app.js"), "utf8");
 const pretendardTtfUrl = new URL(
   "../node_modules/pretendard/dist/public/static/alternative/Pretendard-Regular.ttf",
   import.meta.url
@@ -51,6 +53,20 @@ const tinyJpeg = new Uint8Array(Buffer.from(
   + "9oACAECAQE/EH//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/EH//2Q==",
   "base64"
 ));
+
+test("PDF 보고서 면은 지표 그래프 사이에서만 나뉜다", () => {
+  const ranges = pdfCanvasSliceRanges({
+    width: 1600,
+    height: 1825,
+    pageBreaks: [390, 620, 850, 1080, 1310, 1540]
+  });
+  assert.deepEqual(ranges, [
+    { sourceY: 0, sliceHeight: 1080 },
+    { sourceY: 1080, sliceHeight: 745 }
+  ]);
+  assert.match(publicAppSource, /Object\.defineProperty\(canvas, "pdfPageBreaks"/u);
+  assert.match(source, /pageBreaks:\s*canvas\.pdfPageBreaks/u);
+});
 
 test("PDF 인용 부록은 단일 모델과 전체 앙상블의 DOI 범위를 구분한다", () => {
   assert.equal(selectPdfAttributionModels("MIROC6").length, 1);

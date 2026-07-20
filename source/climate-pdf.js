@@ -154,14 +154,17 @@ async function appendCanvasPages(pdf, canvas) {
   const margin = 22;
   const contentWidth = pageWidth - margin * 2;
   const contentHeight = pageHeight - margin * 2;
-  const sourcePageHeight = Math.max(1, Math.floor(canvas.width * contentHeight / contentWidth));
   const documentObject = globalThis.document;
   if (!documentObject || typeof documentObject.createElement !== "function") {
     throw new Error("PDF 보고서 면을 만들 브라우저 문서가 없습니다.");
   }
 
-  for (let sourceY = 0; sourceY < canvas.height; sourceY += sourcePageHeight) {
-    const sliceHeight = Math.min(sourcePageHeight, canvas.height - sourceY);
+  const slices = pdfCanvasSliceRanges({
+    width: canvas.width,
+    height: canvas.height,
+    pageBreaks: canvas.pdfPageBreaks
+  });
+  for (const { sourceY, sliceHeight } of slices) {
     const slice = documentObject.createElement("canvas");
     slice.width = canvas.width;
     slice.height = sliceHeight;
@@ -181,6 +184,35 @@ async function appendCanvasPages(pdf, canvas) {
       height: drawnHeight
     });
   }
+}
+
+export function pdfCanvasSliceRanges({ width, height, pageBreaks = [] }) {
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+    throw new TypeError("PDF 보고서 캔버스 크기가 올바르지 않습니다.");
+  }
+  const [pageWidth, pageHeight] = A4_LANDSCAPE;
+  const margin = 22;
+  const contentWidth = pageWidth - margin * 2;
+  const contentHeight = pageHeight - margin * 2;
+  const maximumSliceHeight = Math.max(1, Math.floor(width * contentHeight / contentWidth));
+  const safeBreaks = [...new Set((Array.isArray(pageBreaks) ? pageBreaks : [])
+    .filter((point) => Number.isFinite(point))
+    .map((point) => Math.floor(point))
+    .filter((point) => point > 0 && point < height))].sort((left, right) => left - right);
+  const slices = [];
+  let sourceY = 0;
+  while (sourceY < height) {
+    const naturalEnd = Math.min(height, sourceY + maximumSliceHeight);
+    let sourceEnd = naturalEnd;
+    if (naturalEnd < height) {
+      const availableBreaks = safeBreaks.filter((point) => point > sourceY && point <= naturalEnd);
+      if (availableBreaks.length) sourceEnd = availableBreaks.at(-1);
+    }
+    if (sourceEnd <= sourceY) sourceEnd = naturalEnd;
+    slices.push({ sourceY, sliceHeight: sourceEnd - sourceY });
+    sourceY = sourceEnd;
+  }
+  return slices;
 }
 
 function appendAttributionPages(pdf, content, font, markOne, markTwo, rgb) {
