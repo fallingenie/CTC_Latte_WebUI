@@ -28,6 +28,7 @@ import {
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixedDatasetTime = new Date("2026-07-13T16:22:20.121Z");
 const backendDatasetTime = "2026-07-13T16:22:20.121000+00:00";
+const cloudDatasetTime = "2026-07-20T03:13:14.000000+00:00";
 
 test("운영 환경은 GCS 마운트 안의 Web 자료와 GCS 원자료만 허용한다", () => {
   const mountRoot = path.resolve("gcs-mount");
@@ -247,7 +248,7 @@ test("실제 확인서 생성은 metadata, query, series가 같은 자료판일 
   const token = "headersegment.payloadsegment.signaturesegment";
   const tokenPath = path.join(fixture.tempRoot, "iap.jwt");
   await fs.writeFile(tokenPath, token, { encoding: "utf8", mode: 0o600 });
-  const gatewayFetch = createGatewayFetch(fixture, calls);
+  const gatewayFetch = createGatewayFetch(fixture, calls, { externalDatasetUpdatedAt: cloudDatasetTime });
   const fetchImplementation = async (url, options) => {
     const isExternal = new URL(url).hostname !== "127.0.0.1";
     assert.equal(options.headers.Authorization, isExternal ? `Bearer ${token}` : undefined);
@@ -274,7 +275,7 @@ test("실제 확인서 생성은 metadata, query, series가 같은 자료판일 
   });
 
   assert.equal(value.datasetVersion, fixture.datasetVersion);
-  assert.equal(value.datasetUpdatedAt, backendDatasetTime);
+  assert.equal(value.datasetUpdatedAt, cloudDatasetTime);
   assert.equal(value.gateway.seriesVerified, true);
   assert.ok(calls.includes("/api/climate/metadata"));
   assert.ok(calls.includes("/api/climate/query"));
@@ -539,10 +540,13 @@ function createAttestationOptions(fixture, outputPath, fetchImplementation) {
   };
 }
 
-function createGatewayFetch(fixture, calls) {
+function createGatewayFetch(fixture, calls, { externalDatasetUpdatedAt = backendDatasetTime } = {}) {
   return async (url, options) => {
     const parsed = new URL(url);
     calls.push(parsed.pathname);
+    const datasetUpdatedAt = parsed.hostname === "127.0.0.1"
+      ? backendDatasetTime
+      : externalDatasetUpdatedAt;
     let payload;
     if (parsed.pathname === "/api/climate/health") {
       payload = { ok: true, publicSafe: true };
@@ -551,7 +555,7 @@ function createGatewayFetch(fixture, calls) {
         publicSafe: true,
         ready: true,
         datasetVersion: fixture.datasetVersion,
-        datasetUpdatedAt: backendDatasetTime,
+        datasetUpdatedAt,
         dateStart: "2035-01-01",
         dateEnd: "2099-12-31",
         models: ["MIROC6"],
@@ -572,7 +576,7 @@ function createGatewayFetch(fixture, calls) {
         attributionReady: true,
         publicSafe: true,
         datasetVersion: fixture.datasetVersion,
-        datasetUpdatedAt: backendDatasetTime
+        datasetUpdatedAt
       };
     } else if (parsed.pathname === "/api/climate/series") {
       const request = JSON.parse(options.body);
@@ -593,7 +597,7 @@ function createGatewayFetch(fixture, calls) {
         attributionLabels: ["국제기후모델 시나리오 자료"],
         publicSafe: true,
         datasetVersion: fixture.datasetVersion,
-        datasetUpdatedAt: backendDatasetTime
+        datasetUpdatedAt
       };
     } else {
       const relativePath = decodeURIComponent(parsed.pathname.replace(/^\//u, ""));

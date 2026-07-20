@@ -406,13 +406,18 @@ export async function createProductionDataAttestation({
   if (metadata.datasetVersion !== datasetEvidence.datasetVersion) {
     throw new AttestationValidationError("배포 게이트웨이와 .ctwebui 자료 버전이 일치하지 않습니다.");
   }
-  if (metadata.datasetUpdatedAt !== datasetEvidence.datasetUpdatedAt) {
-    throw new AttestationValidationError("배포 게이트웨이와 .ctwebui 자료 갱신 시각이 일치하지 않습니다.");
+  if (localMetadata.datasetVersion !== datasetEvidence.datasetVersion
+    || localMetadata.datasetUpdatedAt !== datasetEvidence.datasetUpdatedAt) {
+    throw new AttestationValidationError("로컬 운영 게이트웨이와 .ctwebui 자료 식별 정보가 일치하지 않습니다.");
   }
 
   const datasetIdentity = {
     datasetVersion: metadata.datasetVersion,
     datasetUpdatedAt: metadata.datasetUpdatedAt
+  };
+  const localDatasetIdentity = {
+    datasetVersion: localMetadata.datasetVersion,
+    datasetUpdatedAt: localMetadata.datasetUpdatedAt
   };
 
   const preparedProbe = await verifyPreparedQuery({
@@ -428,10 +433,10 @@ export async function createProductionDataAttestation({
   });
   const preparedSeriesProbe = await verifySeriesIdentity({ queryProbe: preparedProbe, datasetIdentity, requestContext });
   const rawSeriesProbe = await verifySeriesIdentity({ queryProbe: rawProbe, datasetIdentity, requestContext });
-  await verifyMatchingLocalQuery({ probe: preparedProbe, datasetIdentity, requestContext: localRequestContext });
-  await verifyMatchingLocalQuery({ probe: rawProbe, datasetIdentity, requestContext: localRequestContext });
-  await verifyMatchingLocalSeries({ probe: preparedSeriesProbe, datasetIdentity, requestContext: localRequestContext });
-  await verifyMatchingLocalSeries({ probe: rawSeriesProbe, datasetIdentity, requestContext: localRequestContext });
+  await verifyMatchingLocalQuery({ probe: preparedProbe, datasetIdentity: localDatasetIdentity, requestContext: localRequestContext });
+  await verifyMatchingLocalQuery({ probe: rawProbe, datasetIdentity: localDatasetIdentity, requestContext: localRequestContext });
+  await verifyMatchingLocalSeries({ probe: preparedSeriesProbe, datasetIdentity: localDatasetIdentity, requestContext: localRequestContext });
+  await verifyMatchingLocalSeries({ probe: rawSeriesProbe, datasetIdentity: localDatasetIdentity, requestContext: localRequestContext });
   validateQueryEvidence(preparedProbe.response, "bias-corrected", datasetIdentity);
   validateQueryEvidence(rawProbe.response, "raw-model-grid", datasetIdentity);
 
@@ -1035,7 +1040,7 @@ function stableComparableJson(value) {
 }
 
 function normalizeComparableValue(value, key = "") {
-  if (key === "requestId" || key === "generatedAt") return undefined;
+  if (key === "requestId" || key === "generatedAt" || key === "datasetUpdatedAt") return undefined;
   if (Array.isArray(value)) return value.map((item) => normalizeComparableValue(item));
   if (!isPlainRecord(value)) return value;
   return Object.fromEntries(Object.keys(value).sort().flatMap((nestedKey) => {
