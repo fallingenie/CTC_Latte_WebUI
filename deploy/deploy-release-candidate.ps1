@@ -446,7 +446,13 @@ try {
         "CTC_PUBLIC_WEB_ORIGINS=$PublicWebOrigin",
         'CTC_WEBUI_CMIP6_ZARR_ROOT=gs://cmip6'
     ) -join ','
-    Invoke-Checked $gcloud @(
+    $serviceExists = Test-ExternalSuccess $gcloud @(
+        'run', 'services', 'describe', $ServiceName,
+        '--region', $Region,
+        '--project', $ProjectId,
+        '--quiet'
+    )
+    $deployArguments = @(
         'run', 'deploy', $ServiceName,
         '--image', $imageReference,
         '--region', $Region,
@@ -463,11 +469,16 @@ try {
         '--timeout', '900',
         '--ingress', 'all',
         '--allow-unauthenticated',
-        '--no-iap',
-        '--no-traffic',
+        '--no-iap'
+    )
+    if ($serviceExists) {
+        $deployArguments += '--no-traffic'
+    }
+    $deployArguments += @(
         '--tag', $revisionTag,
         '--quiet'
     )
+    Invoke-Checked $gcloud $deployArguments
 
     $serviceJson = Invoke-Captured $gcloud @(
         'run', 'services', 'describe', $ServiceName,
