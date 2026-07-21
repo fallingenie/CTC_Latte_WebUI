@@ -12,7 +12,13 @@ const hostPolicy = allowedHosts.length > 0 ? { allowedHosts } : {};
 const climateProxy = {
   "/api/climate": {
     target: gatewayTarget,
-    changeOrigin: true
+    changeOrigin: true,
+    configure(proxy) {
+      proxy.on("proxyReq", (proxyRequest) => {
+        // 로컬 브라우저의 Origin은 공개 게이트웨이의 허용 출처가 아니므로 개발 프록시에서만 제거한다.
+        proxyRequest.removeHeader("origin");
+      });
+    }
   }
 };
 

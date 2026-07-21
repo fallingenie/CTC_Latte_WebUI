@@ -51,6 +51,7 @@ import {
   metricDisplayUnit,
   normalizeMetadataOptions,
   normalizePublicAttributionLabels,
+  openNativeDatePicker,
   parseHashLocation,
   sanitizeNote,
   selectClimateSeriesMetrics,
@@ -2944,7 +2945,6 @@ function TeacherPage({ datasetState }) {
     datasetVersion: metadata?.datasetVersion,
     refreshSequence: datasetState.refreshSequence
   });
-  const hasCurrentDatasetResult = isCurrentPublicDatasetResult(remoteState.response, metadata, remoteState.status);
   const lessonMetrics = useMemo(
     () => deriveClimateMetrics({ date: lessonDate, raw: false, remoteState }),
     [lessonDate, remoteState]
@@ -2959,14 +2959,16 @@ function TeacherPage({ datasetState }) {
     () => resolveTeacherQueryStatus(remoteState.status, lessonMetrics, requiredTeacherMetricKeys),
     [remoteState.status, lessonMetrics, requiredTeacherMetricKeys]
   );
-  const currentSnapshot = useMemo(() => hasCurrentDatasetResult ? createMetricSnapshot(lessonMetrics, {
+  const hasCurrentTeacherResult = teacherQueryStatus === TEACHER_QUERY_STATUSES.READY
+    && isMatchingPublicDatasetIdentity(remoteState.response, metadata?.datasetVersion, metadata?.datasetUpdatedAt);
+  const currentSnapshot = useMemo(() => hasCurrentTeacherResult ? createMetricSnapshot(lessonMetrics, {
     date: lessonDate,
     latitude: lessonLocation.latitude,
     longitude: lessonLocation.longitude,
     scenario: lessonScenario,
     model: lessonModel,
     label: lessonLocation.label
-  }) : void 0, [hasCurrentDatasetResult, lessonMetrics, lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonLocation.label, lessonScenario, lessonModel]);
+  }) : void 0, [hasCurrentTeacherResult, lessonMetrics, lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonLocation.label, lessonScenario, lessonModel]);
   useLayoutEffect(() => {
     dispatchTeacherFlow({
       type: TEACHER_FLOW_ACTIONS.UPDATE_CONDITIONS,
@@ -4315,14 +4317,7 @@ function ConfirmedDateInput({ compact = false, label, min = "2035-01-01", max = 
     onConfirm(draftValue);
   };
   const openCalendar = () => {
-    const input = inputRef.current;
-    if (!input) return;
-    input.focus();
-    try {
-      input.showPicker?.();
-    } catch {
-      input.click();
-    }
+    openNativeDatePicker(inputRef.current);
   };
   return /* @__PURE__ */ jsxs(Fragment, { children: [
     /* @__PURE__ */ jsxs("div", { className: `date-input-wrap${showPickerButton ? "" : " without-picker"}${errorMessage ? " invalid" : ""}${compact ? " compact" : ""}`, children: [

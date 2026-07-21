@@ -427,6 +427,21 @@ export function isCompleteDateValue(value, { min, max } = {}) {
   return true;
 }
 
+export function openNativeDatePicker(input) {
+  if (!input || typeof input.focus !== "function" || typeof input.click !== "function") return false;
+  input.focus();
+  if (typeof input.showPicker === "function") {
+    try {
+      input.showPicker();
+      return true;
+    } catch {
+      // 브라우저가 달력 API를 막으면 기본 입력 클릭으로 이어간다.
+    }
+  }
+  input.click();
+  return true;
+}
+
 export function mapZoomAfterWheel(currentZoom, deltaY) {
   const zoom = Number(currentZoom);
   const wheelDelta = Number(deltaY);

@@ -206,7 +206,7 @@ test("배포 검증 명령은 저장된 확인서만 읽지 않고 실시간 확
   const packageJson = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
   assert.equal(
     packageJson.scripts["verify:deployment"],
-    "pnpm build && node scripts/verify-reproducible-build.mjs && pnpm attest:production && node scripts/verify-production-data-policy.mjs --require-attestation"
+    "pnpm build && node scripts/verify-reproducible-build.mjs && pnpm attest:production && pnpm verify:public-data && node scripts/verify-production-data-policy.mjs --require-attestation"
   );
 });
 

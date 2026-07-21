@@ -25,6 +25,7 @@ test("한글 화면 글꼴과 배포 허가문을 함께 제공한다", () => {
 
 test("external gateway proxy rewrites the Host header", () => {
   assert.match(viteConfigSource, /changeOrigin: true/u);
+  assert.match(viteConfigSource, /proxyRequest\.removeHeader\("origin"\)/u);
 });
 
 function createServiceWorkerHarness() {

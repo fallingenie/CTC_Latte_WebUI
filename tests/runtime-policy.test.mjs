@@ -435,7 +435,9 @@ test("버전이 고정된 API 응답은 요청 버전과 정확히 같아야 한
 
 test("저장 가능한 결과는 현재 자료판과 일치하고 조회가 완료된 경우로 제한한다", () => {
   assert.equal(isCurrentPublicDatasetResult(validQueryResponse, validMetadata, "ready"), true);
+  assert.equal(isCurrentPublicDatasetResult(validQueryResponse, validMetadata, "partial"), true);
   assert.equal(isCurrentPublicDatasetResult(validQueryResponse, validMetadata, "loading"), false);
+  assert.equal(isCurrentPublicDatasetResult(validQueryResponse, validMetadata, "missing"), false);
   assert.equal(isCurrentPublicDatasetResult(validQueryResponse, validMetadata, "error"), false);
   assert.equal(isCurrentPublicDatasetResult(
     { ...validQueryResponse, datasetVersion: nextDatasetVersion },

@@ -21,7 +21,8 @@
     "test": "node scripts/run-tests.mjs",
     "verify:reproducible": "pnpm build && node scripts/verify-reproducible-build.mjs",
     "verify:cloud-policy": "node scripts/verify-production-data-policy.mjs",
-    "verify:deployment": "pnpm build && node scripts/verify-reproducible-build.mjs && pnpm attest:production && node scripts/verify-production-data-policy.mjs --require-attestation"
+    "verify:public-data": "node scripts/verify-public-data-consistency.mjs",
+    "verify:deployment": "pnpm build && node scripts/verify-reproducible-build.mjs && pnpm attest:production && pnpm verify:public-data && node scripts/verify-production-data-policy.mjs --require-attestation"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "^1.1.1",

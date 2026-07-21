@@ -280,7 +280,7 @@ export function isMatchingPublicDatasetIdentity(response, expectedVersion, expec
 }
 
 export function isCurrentPublicDatasetResult(response, metadata, status) {
-  return status === "ready"
+  return (status === "ready" || status === "partial")
     && isMatchingPublicDatasetIdentity(response, metadata?.datasetVersion, metadata?.datasetUpdatedAt);
 }
 

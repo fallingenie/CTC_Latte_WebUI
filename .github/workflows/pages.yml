@@ -44,6 +44,10 @@ jobs:
         run: pnpm prepare:pages
       - name: 공개 자료 정책 확인
         run: pnpm verify:cloud-policy
+      - name: 공개 실제자료 무작위 대조
+        env:
+          CTC_PUBLIC_API_ORIGIN: ${{ vars.CTC_PUBLIC_API_ORIGIN }}
+        run: pnpm verify:public-data -- --samples 3 --seed pages-${{ github.sha }}
       - name: Pages 설정
         uses: actions/configure-pages@v5
       - name: Pages 산출물 올리기

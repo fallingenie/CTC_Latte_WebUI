@@ -24,11 +24,40 @@ import {
   mapScaleForZoom,
   mapZoomAfterWheel,
   normalizeMetadataOptions,
+  openNativeDatePicker,
   parseHashLocation,
   resolveExportPercentiles,
   sanitizeNote,
   seriesPointX
 } from "../source/workbench-logic.js";
+
+test("달력 열기는 showPicker 미지원 또는 실패 시 기본 입력 클릭으로 대체한다", () => {
+  const unsupportedCalls = [];
+  assert.equal(openNativeDatePicker({
+    focus: () => unsupportedCalls.push("focus"),
+    click: () => unsupportedCalls.push("click")
+  }), true);
+  assert.deepEqual(unsupportedCalls, ["focus", "click"]);
+
+  const blockedCalls = [];
+  assert.equal(openNativeDatePicker({
+    focus: () => blockedCalls.push("focus"),
+    showPicker: () => {
+      blockedCalls.push("showPicker");
+      throw new Error("blocked");
+    },
+    click: () => blockedCalls.push("click")
+  }), true);
+  assert.deepEqual(blockedCalls, ["focus", "showPicker", "click"]);
+
+  const supportedCalls = [];
+  assert.equal(openNativeDatePicker({
+    focus: () => supportedCalls.push("focus"),
+    showPicker: () => supportedCalls.push("showPicker"),
+    click: () => supportedCalls.push("click")
+  }), true);
+  assert.deepEqual(supportedCalls, ["focus", "showPicker"]);
+});
 
 const context = {
   date: "2050-08-01",
