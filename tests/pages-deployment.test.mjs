@@ -53,6 +53,8 @@ test("Pages 작업 흐름은 검증 뒤 dist만 게시한다", async () => {
   assert.match(workflow, /vars\.CTC_PUBLIC_API_ORIGIN/u);
   assert.match(workflow, /pnpm test/u);
   assert.match(workflow, /verify-reproducible-build\.mjs/u);
+  assert.match(workflow, /pnpm verify:public-data --samples 3 --seed pages-/u);
+  assert.doesNotMatch(workflow, /verify:public-data -- --/u);
   assert.match(workflow, /pnpm prepare:pages/u);
   assert.match(workflow, /actions\/upload-pages-artifact@v4/u);
   assert.match(workflow, /actions\/deploy-pages@v4/u);

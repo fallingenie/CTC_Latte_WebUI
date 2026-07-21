@@ -126,7 +126,7 @@ Frontend와 Backend의 검증된 `origin/main`을 임시 빌드 문맥으로 묶
 
 먼저 출시 자료 관리 폴더만 공개 읽기 전용으로 전환하고 GitHub Pages 출처의 GCS CORS를 설정합니다.
 
-자료판을 교체한 뒤에는 `pnpm verify:public-data -- --base-url <공개 API 출처> --samples 4`를 실행합니다. 이 검사는 같은 난수 시드로 다시 실행할 수 있는 대륙·날짜·모델 표본을 만들고, 단일 날짜 조회 값과 같은 날 기간 자료의 대표값 및 보정 전 값을 대조합니다. 결과는 `.release-evidence`에만 원자적으로 저장하며 공개 배포물에는 포함하지 않습니다.
+자료판을 교체한 뒤에는 `pnpm verify:public-data --base-url <공개 API 출처> --samples 4`를 실행합니다. 이 검사는 같은 난수 시드로 다시 실행할 수 있는 대륙·날짜·모델 표본을 만들고, 단일 날짜 조회 값과 같은 날 기간 자료의 대표값 및 보정 전 값을 대조합니다. 결과는 `.release-evidence`에만 원자적으로 저장하며 공개 배포물에는 포함하지 않습니다.
 
 ```powershell
 .\deploy\configure-public-release-data.ps1 `
