@@ -300,10 +300,29 @@ test("파일 공유 지원 환경은 Blob을 이름과 형식이 있는 File로 
 
   assert.deepEqual(result, { outcome: "shared", filename: "climate-data.csv" });
   assert.equal(sharedPayload.files[0].name, "climate-data.csv");
-  assert.equal(sharedPayload.files[0].type, "text/csv;charset=utf-8");
+  assert.equal(sharedPayload.files[0].type, "text/csv");
   assert.equal(sharedPayload.files[0].lastModified, 1234);
   assert.equal(await sharedPayload.files[0].text(), await blob.text());
   assert.equal(sharedPayload.title, "기후 자료");
+});
+
+test("공유용 File은 Chromium 허용 목록에 맞게 MIME 매개변수를 제거한다", async () => {
+  let sharedFile;
+  const result = await shareBlobFile({
+    filename: "climate-report.html",
+    mimeType: "text/html;charset=utf-8"
+  }, new Blob(["<!doctype html><meta charset=utf-8>"], { type: "text/html;charset=utf-8" }), {
+    File,
+    navigator: {
+      canShare: () => true,
+      async share({ files }) {
+        [sharedFile] = files;
+      }
+    }
+  });
+
+  assert.equal(result.outcome, "shared");
+  assert.equal(sharedFile.type, "text/html");
 });
 
 test("파일 공유 미지원 환경은 기존 저장 경로가 사용할 unsupported 결과를 돌려준다", async () => {

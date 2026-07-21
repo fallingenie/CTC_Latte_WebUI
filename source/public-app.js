@@ -601,7 +601,7 @@ function formatFileSize(bytes) {
   return `${(bytes / 1024 ** 2).toFixed(1)}메가바이트`;
 }
 
-function createDocxDelivery({ blob, filename, label, title, text }) {
+function createDocxDelivery({ blob, filename, googleDocsBlob, googleDocsFilename, label, title, text }) {
   const specification = {
     filename,
     mimeType: DOCX_MIME_TYPE,
@@ -612,14 +612,33 @@ function createDocxDelivery({ blob, filename, label, title, text }) {
     label,
     local: { blob, specification },
     share: {
-      blob,
-      label: "Google 문서로 공유",
-      note: "DOCX 원본을 공유하므로 Google 문서에서 이어서 편집하고 공동 작업할 수 있습니다.",
-      specification,
+      blob: googleDocsBlob,
+      detail: "내 드라이브에서 Google 문서로 열기",
+      label: "Google 문서로 가져오기",
+      note: "공유 창에서 내 드라이브를 선택한 뒤 Google 문서로 열면 함께 편집할 수 있습니다. DOCX 원본은 기기에 저장할 수 있습니다.",
+      specification: {
+        filename: googleDocsFilename,
+        mimeType: "text/html;charset=utf-8",
+        extension: ".html",
+        description: `${label}(Google 문서용 HTML)`
+      },
       text
     },
     title
   };
+}
+
+function describeWorkspaceShareError(error) {
+  if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
+    return "브라우저 보안 정책 때문에 이 파일을 바로 공유할 수 없습니다. 기기에 저장한 뒤 공유 앱에서 열어 주세요.";
+  }
+  if (error?.name === "NotFoundError") {
+    return "파일을 받을 수 있는 공유 앱을 찾지 못했습니다.";
+  }
+  if (error?.name === "TypeError") {
+    return "선택한 파일 형식은 이 브라우저의 공유 기능에서 지원하지 않습니다.";
+  }
+  return "공유 창을 열지 못했습니다. 잠시 후 다시 시도하거나 기기에 저장해 주세요.";
 }
 
 function FileDeliveryDialog({ delivery, onClose, onResult }) {
@@ -688,7 +707,7 @@ function FileDeliveryDialog({ delivery, onClose, onResult }) {
       finish(result);
     } catch (error) {
       setStatus("error");
-      setMessage(error instanceof Error ? error.message : "공유 창을 열지 못했습니다.");
+      setMessage(describeWorkspaceShareError(error));
     }
   };
   const handleKeyDown = (event) => {
@@ -731,7 +750,7 @@ function FileDeliveryDialog({ delivery, onClose, onResult }) {
             ] }),
             delivery.share ? /* @__PURE__ */ jsxs("button", { className: "workspace-share-option", disabled: busy, onClick: shareWithWorkspace, ref: shareButtonRef, type: "button", children: [
               /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(Share2, { size: 22 }) }),
-              /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: delivery.share.label }), /* @__PURE__ */ jsx("small", { children: "Android 공유 창에서 계정과 앱 선택" })] })
+              /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: delivery.share.label }), /* @__PURE__ */ jsx("small", { children: delivery.share.detail ?? "Android 공유 창에서 계정과 앱 선택" })] })
             ] }) : null
           ] }),
           delivery.share?.note ? /* @__PURE__ */ jsxs("p", { className: "file-delivery-note", children: [/* @__PURE__ */ jsx(TriangleAlert, { size: 16 }), /* @__PURE__ */ jsx("span", { children: delivery.share.note })] }) : null,
@@ -2364,7 +2383,10 @@ function QueryPage({ audience, datasetState }) {
     const focus = studentFocusOptions.find((option) => option.key === learningFocus) ?? studentFocusOptions[0];
     try {
       setQueryMessage("탐구 기록 문서를 만들고 있습니다.");
-      const { buildStudentNotebookDocx } = await import("./student-docx.js");
+      const [{ buildStudentNotebookDocx }, { buildGoogleDocsImportHtml }] = await Promise.all([
+        import("./student-docx.js"),
+        import("./docx-google-docs.js")
+      ]);
       const blob = await buildStudentNotebookDocx({
         baseline: comparisonBaseline ?? currentSnapshot,
         comparison: comparisonBaseline ? currentSnapshot : undefined,
@@ -2373,14 +2395,17 @@ function QueryPage({ audience, datasetState }) {
         note: studentNote,
         problem: activePreset.problem
       });
+      const googleDocsBlob = await buildGoogleDocsImportHtml(blob, { title: "기후 탐구 기록" });
       setStudentFileDelivery(createDocxDelivery({
         blob,
         filename: "climate-exploration-note.docx",
+        googleDocsBlob,
+        googleDocsFilename: "climate-exploration-note-google-docs.html",
         label: "탐구 기록",
-        text: "기후 시나리오 자료로 작성한 학생 탐구 기록입니다.",
+        text: "Google 문서로 가져와 함께 편집할 수 있는 학생 탐구 기록입니다.",
         title: "기후 탐구 기록"
       }));
-      setQueryMessage("탐구 기록이 준비되었습니다. 기기에 저장하거나 Google 문서로 공유하세요.");
+      setQueryMessage("탐구 기록이 준비되었습니다. DOCX로 저장하거나 Google 문서로 가져올 수 있습니다.");
     } catch (error) {
       setQueryMessage(error instanceof Error ? error.message : "탐구 기록 문서를 만들지 못했습니다.");
     }
@@ -3085,7 +3110,10 @@ function TeacherPage({ datasetState }) {
     try {
       setSaveOutcome("preparing");
       setTeacherMessage("수업 활동지 문서를 만들고 있습니다.");
-      const { buildTeacherActivityDocx } = await import("./student-docx.js");
+      const [{ buildTeacherActivityDocx }, { buildGoogleDocsImportHtml }] = await Promise.all([
+        import("./student-docx.js"),
+        import("./docx-google-docs.js")
+      ]);
       const blob = await buildTeacherActivityDocx({
         lessonTitle,
         objective: lessonObjective,
@@ -3101,15 +3129,18 @@ function TeacherPage({ datasetState }) {
         interpretationLimit: activeTeacherSample?.guardrail,
         problem: activeTeacherSample?.problem
       });
+      const googleDocsBlob = await buildGoogleDocsImportHtml(blob, { title: "기후 탐구 수업 활동지" });
       setTeacherFileDelivery(createDocxDelivery({
         blob,
         filename: "climate-class-activity.docx",
+        googleDocsBlob,
+        googleDocsFilename: "climate-class-activity-google-docs.html",
         label: "수업 활동지",
-        text: "기후 시나리오 자료를 바탕으로 만든 교사용 수업 활동지입니다.",
+        text: "Google 문서로 가져와 함께 편집할 수 있는 교사용 수업 활동지입니다.",
         title: "기후 탐구 수업 활동지"
       }));
       setSaveOutcome("ready");
-      setTeacherMessage("수업 활동지가 준비되었습니다. 기기에 저장하거나 Google 문서로 공유하세요.");
+      setTeacherMessage("수업 활동지가 준비되었습니다. DOCX로 저장하거나 Google 문서로 가져올 수 있습니다.");
     } catch (error) {
       setSaveOutcome("idle");
       setTeacherMessage(error instanceof Error ? error.message : "수업 활동지 파일을 만들지 못했습니다.");

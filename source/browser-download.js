@@ -22,6 +22,11 @@ function resolveFileConstructor(environment) {
   return Object.hasOwn(environment, "File") ? environment.File : globalThis.File;
 }
 
+function normalizeSharedFileMimeType(mimeType, blobType) {
+  const resolved = String(mimeType || blobType || "application/octet-stream");
+  return resolved.split(";", 1)[0].trim().toLowerCase() || "application/octet-stream";
+}
+
 export async function shareBlobFiles({ files: requestedFiles, title, text }, environment = {}) {
   if (!Array.isArray(requestedFiles) || requestedFiles.length === 0) {
     throw new TypeError("공유할 파일이 하나 이상 필요합니다.");
@@ -36,7 +41,7 @@ export async function shareBlobFiles({ files: requestedFiles, title, text }, env
   const lastModified = environment.now?.() ?? Date.now();
   const files = requestedFiles.map(({ blob, filename: itemFilename, mimeType }) => new FileConstructor([blob], itemFilename, {
     lastModified,
-    type: mimeType || blob.type || "application/octet-stream"
+    type: normalizeSharedFileMimeType(mimeType, blob.type)
   }));
 
   try {
