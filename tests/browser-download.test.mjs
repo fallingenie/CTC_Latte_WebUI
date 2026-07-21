@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   requestSaveTarget,
-  saveBlobToTarget
+  saveBlobToTarget,
+  shareBlobFile,
+  shareBlobFiles
 } from "../source/browser-download.js";
 
 const saveRequest = {
@@ -273,4 +275,125 @@ test("브라우저 download 경로는 앵커를 눌러 실제 저장을 요청�
     "remove",
     "revoke-url"
   ]);
+});
+
+test("파일 공유 지원 환경은 Blob을 이름과 형식이 있는 File로 전달한다", async () => {
+  const blob = new Blob(["날짜,최고기온\n2050-08-01,33.7"], { type: "text/csv;charset=utf-8" });
+  let sharedPayload;
+  const result = await shareBlobFile({
+    filename: "climate-data.csv",
+    mimeType: "text/csv;charset=utf-8",
+    title: "기후 자료",
+    text: "Google 스프레드시트에서 열 수 있는 기후 자료입니다."
+  }, blob, {
+    File,
+    now: () => 1234,
+    navigator: {
+      canShare({ files }) {
+        return files.length === 1 && files[0].name === "climate-data.csv";
+      },
+      async share(payload) {
+        sharedPayload = payload;
+      }
+    }
+  });
+
+  assert.deepEqual(result, { outcome: "shared", filename: "climate-data.csv" });
+  assert.equal(sharedPayload.files[0].name, "climate-data.csv");
+  assert.equal(sharedPayload.files[0].type, "text/csv;charset=utf-8");
+  assert.equal(sharedPayload.files[0].lastModified, 1234);
+  assert.equal(await sharedPayload.files[0].text(), await blob.text());
+  assert.equal(sharedPayload.title, "기후 자료");
+});
+
+test("파일 공유 미지원 환경은 기존 저장 경로가 사용할 unsupported 결과를 돌려준다", async () => {
+  const blob = new Blob(["report"]);
+  let shareCalled = false;
+  const result = await shareBlobFile({ filename: "report.html", mimeType: "text/html" }, blob, {
+    File,
+    navigator: {
+      canShare() {
+        return false;
+      },
+      async share() {
+        shareCalled = true;
+      }
+    }
+  });
+
+  assert.deepEqual(result, { outcome: "unsupported", filename: "report.html" });
+  assert.equal(shareCalled, false);
+});
+
+test("여러 출처 파일은 한 번의 Android 공유 요청으로 함께 전달한다", async () => {
+  let sharedFiles;
+  const result = await shareBlobFiles({
+    files: [
+      { blob: new Blob(["date,value"]), filename: "climate.csv", mimeType: "text/csv" },
+      { blob: new Blob([new Uint8Array([137, 80, 78, 71])]), filename: "kma_mark_1.png", mimeType: "image/png" },
+      { blob: new Blob([new Uint8Array([137, 80, 78, 71])]), filename: "kma_mark_2.png", mimeType: "image/png" }
+    ],
+    title: "기후 자료와 출처 표장"
+  }, {
+    File,
+    navigator: {
+      canShare({ files }) {
+        return files.length === 3;
+      },
+      async share({ files }) {
+        sharedFiles = files;
+      }
+    }
+  });
+
+  assert.deepEqual(result, { outcome: "shared", filename: "climate.csv" });
+  assert.deepEqual(sharedFiles.map((file) => file.name), ["climate.csv", "kma_mark_1.png", "kma_mark_2.png"]);
+  assert.deepEqual(sharedFiles.map((file) => file.type), ["text/csv", "image/png", "image/png"]);
+});
+
+test("navigator 또는 File 생성자가 없으면 공유를 시도하지 않는다", async () => {
+  const request = { filename: "climate.csv", mimeType: "text/csv" };
+  assert.deepEqual(await shareBlobFile(request, new Blob(), { File, navigator: {} }), {
+    outcome: "unsupported",
+    filename: "climate.csv"
+  });
+  assert.deepEqual(await shareBlobFile(request, new Blob(), {
+    File: null,
+    navigator: { async share() {} }
+  }), {
+    outcome: "unsupported",
+    filename: "climate.csv"
+  });
+});
+
+test("사용자가 Android 공유 창을 닫으면 취소 결과를 돌려준다", async () => {
+  const error = new Error("cancelled");
+  error.name = "AbortError";
+  const result = await shareBlobFile({ filename: "lesson.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }, new Blob(), {
+    File,
+    navigator: {
+      canShare: () => true,
+      async share() {
+        throw error;
+      }
+    }
+  });
+
+  assert.deepEqual(result, { outcome: "cancelled", filename: "lesson.docx" });
+});
+
+test("공유 중 실제 오류는 사용자 화면에서 설명할 수 있도록 전달한다", async () => {
+  const error = new Error("share failed");
+  await assert.rejects(
+    shareBlobFile({ filename: "lesson.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }, new Blob(), {
+      File,
+      navigator: {
+        canShare: () => true,
+        async share() {
+          throw error;
+        }
+      }
+    }),
+    error
+  );
 });

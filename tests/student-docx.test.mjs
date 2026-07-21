@@ -31,6 +31,24 @@ const comparison = {
   ]
 };
 
+function assertGoogleDocsCompatibleLayout(documentXml) {
+  assert.doesNotMatch(documentXml, /w:type="pct"/u, "Google 문서에서 접히는 백분율 표 너비가 남아 있습니다.");
+  assert.doesNotMatch(documentXml, /w:pStyle w:val="Title"/u, "Google 문서에서 불안정한 Word 제목 스타일이 남아 있습니다.");
+  assert.match(documentXml, /<w:tblGrid>/u, "고정 표 격자가 DOCX에 없습니다.");
+  assert.match(documentXml, /<w:pgSz[^>]*w:w="11906"[^>]*w:h="16838"/u, "A4 문서 크기가 DOCX에 기록되지 않았습니다.");
+  const tables = [...documentXml.matchAll(/<w:tbl>([\s\S]*?)<\/w:tbl>/gu)];
+  assert.ok(tables.length > 0, "검증할 표가 DOCX에 없습니다.");
+  for (const [, tableXml] of tables) {
+    const grid = [...tableXml.matchAll(/<w:gridCol[^>]*w:w="(\d+)"[^>]*\/>/gu)].map((match) => Number(match[1]));
+    assert.equal(grid.reduce((sum, width) => sum + width, 0), 10100, "표 격자 폭이 A4 본문 폭과 다릅니다.");
+    for (const rowMatch of tableXml.matchAll(/<w:tr[ >][\s\S]*?<\/w:tr>/gu)) {
+      const rowXml = rowMatch[0];
+      const cells = [...rowXml.matchAll(/<w:tcW[^>]*w:w="(\d+)"[^>]*\/>/gu)].map((match) => Number(match[1]));
+      assert.deepEqual(cells, grid, "표 행의 셀 폭이 고정 격자와 다릅니다.");
+    }
+  }
+}
+
 test("학생 탐구 문서는 내용이 있는 DOCX 패키지로 생성된다", async () => {
   const blob = await buildStudentNotebookDocx({
     baseline,
@@ -61,6 +79,7 @@ test("학생 탐구 문서는 내용이 있는 DOCX 패키지로 생성된다", 
   }
 
   const documentXml = await archive.file("word/document.xml").async("string");
+  assertGoogleDocsCompatibleLayout(documentXml);
   assert.match(documentXml, /기후 탐구 기록/u);
   assert.match(documentXml, /더워지는 날/u);
   assert.match(documentXml, /같은 기온에도 체감 더위가 다를까\?/u);
@@ -121,6 +140,7 @@ test("교사용 수업 활동지는 수업 설계와 실제 비교 자료가 들
   }
 
   const documentXml = await archive.file("word/document.xml").async("string");
+  assertGoogleDocsCompatibleLayout(documentXml);
   assert.match(documentXml, /기후 탐구 수업 활동지/u);
   assert.match(documentXml, /남부 지방 강수 집중 시기 탐구/u);
   assert.match(documentXml, /우리가 알고 있던 장마 시기가 달라질 가능성이 있을까\?/u);

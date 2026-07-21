@@ -2180,6 +2180,162 @@ html[data-theme="dark"] .export-dialog-backdrop {
   box-shadow: var(--shadow-high);
 }
 
+.file-delivery-dialog {
+  width: min(38rem, calc(100vw - 36px));
+  max-height: calc(100dvh - 36px);
+  overflow: hidden auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-high);
+}
+
+.file-delivery-dialog > header {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.file-delivery-dialog h2 {
+  margin: 4px 0 5px;
+  color: var(--ink-strong);
+  font-size: 21px;
+  line-height: 1.35;
+  word-break: keep-all;
+}
+
+.file-delivery-dialog header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.file-delivery-body {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+}
+
+.file-delivery-file {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+}
+
+.file-delivery-file > span,
+.file-delivery-options button > span {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--green);
+}
+
+.file-delivery-file > div,
+.file-delivery-options button > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  text-align: left;
+}
+
+.file-delivery-file strong,
+.file-delivery-file small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-delivery-file strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.file-delivery-file small,
+.file-delivery-options small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.file-delivery-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.file-delivery-options button {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 11px;
+  align-items: center;
+  min-width: 0;
+  min-height: 76px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.file-delivery-options button:hover:not(:disabled),
+.file-delivery-options button:focus-visible {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.file-delivery-options .workspace-share-option {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.file-delivery-options strong {
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: keep-all;
+}
+
+.file-delivery-note {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  margin: 0;
+  padding: 10px 11px;
+  border-radius: 7px;
+  background: var(--blue-soft);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.file-delivery-status {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-height: 22px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.file-delivery-status.error {
+  color: var(--coral);
+}
+
 .export-dialog-header,
 .export-dialog-footer {
   display: flex;
@@ -4449,6 +4605,28 @@ html[data-theme="dark"] .public-condition-strip select {
     border-bottom: 0;
     border-left: 0;
     border-radius: 8px 8px 0 0;
+  }
+
+  .file-delivery-dialog {
+    width: 100vw;
+    max-height: 100dvh;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 8px 8px 0 0;
+  }
+
+  .file-delivery-dialog > header,
+  .file-delivery-body {
+    padding: 15px;
+  }
+
+  .file-delivery-dialog h2 {
+    font-size: 18px;
+  }
+
+  .file-delivery-options {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .export-dialog-header,

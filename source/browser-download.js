@@ -14,6 +14,58 @@ function normalizeExtension(extension) {
   return extension.startsWith(".") ? extension : `.${extension}`;
 }
 
+function resolveNavigator(environment) {
+  return Object.hasOwn(environment, "navigator") ? environment.navigator : globalThis.navigator;
+}
+
+function resolveFileConstructor(environment) {
+  return Object.hasOwn(environment, "File") ? environment.File : globalThis.File;
+}
+
+export async function shareBlobFiles({ files: requestedFiles, title, text }, environment = {}) {
+  if (!Array.isArray(requestedFiles) || requestedFiles.length === 0) {
+    throw new TypeError("공유할 파일이 하나 이상 필요합니다.");
+  }
+  const navigatorObject = resolveNavigator(environment);
+  const FileConstructor = resolveFileConstructor(environment);
+  const filename = requestedFiles[0].filename;
+  if (typeof navigatorObject?.share !== "function" || typeof FileConstructor !== "function") {
+    return { outcome: "unsupported", filename };
+  }
+
+  const lastModified = environment.now?.() ?? Date.now();
+  const files = requestedFiles.map(({ blob, filename: itemFilename, mimeType }) => new FileConstructor([blob], itemFilename, {
+    lastModified,
+    type: mimeType || blob.type || "application/octet-stream"
+  }));
+
+  try {
+    if (typeof navigatorObject.canShare === "function" && !navigatorObject.canShare({ files })) {
+      return { outcome: "unsupported", filename };
+    }
+  } catch {
+    return { outcome: "unsupported", filename };
+  }
+
+  try {
+    await navigatorObject.share({ files, text, title });
+    return { outcome: "shared", filename };
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      return { outcome: "cancelled", filename };
+    }
+    throw error;
+  }
+}
+
+export async function shareBlobFile(
+  { filename, mimeType, title, text },
+  blob,
+  environment = {}
+) {
+  return shareBlobFiles({ files: [{ blob, filename, mimeType }], title, text }, environment);
+}
+
 export async function requestSaveTarget(
   { filename, mimeType, extension, description },
   environment = {}

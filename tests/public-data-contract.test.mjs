@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
 
 const source = await readFile(new URL("../source/public-app.js", import.meta.url), "utf8");
+const exportShareSource = await readFile(new URL("../source/export-share.js", import.meta.url), "utf8");
 const styleSource = await readFile(new URL("../source/public-app.css", import.meta.url), "utf8");
 const serviceWorkerSource = await readFile(new URL("../source/public/sw.js", import.meta.url), "utf8");
 const viteConfigSource = await readFile(new URL("../source/vite.config.js", import.meta.url), "utf8");
@@ -20,6 +21,10 @@ test("한글 화면 글꼴과 배포 허가문을 함께 제공한다", () => {
   assert.match(styleSource, /@import "pretendard\/dist\/web\/variable\/pretendardvariable\.css"/u);
   assert.match(pretendardLicense, /SIL OPEN FONT LICENSE Version 1\.1/u);
   assert.match(pretendardLicense, /Reserved Font Name 'Pretendard'/u);
+});
+
+test("external gateway proxy rewrites the Host header", () => {
+  assert.match(viteConfigSource, /changeOrigin: true/u);
 });
 
 function createServiceWorkerHarness() {
@@ -72,7 +77,8 @@ test("프리셋에는 합성 기후 수치가 들어가지 않는다", () => {
 
 test("한글 CSV는 UTF-8 표식과 출처 자료를 묶어 저장한다", () => {
   assert.match(source, /buildAttributionBundle\(\{/u);
-  assert.match(source, /csv: `\\uFEFF\$\{buildClimateCsv\(response\)\}`/u);
+  assert.match(source, /const csv = `\\uFEFF\$\{buildClimateCsv\(response\)\}`/u);
+  assert.match(source, /buildAttributionBundle\(\{\s+csv,/u);
   assert.match(source, /filename: `\$\{stem\}\.zip`/u);
   assert.match(source, /datasetVersion: response\.datasetVersion/u);
   assert.match(source, /datasetUpdatedAt: response\.datasetUpdatedAt/u);
@@ -237,12 +243,26 @@ test("학생 공유 링크에는 개발용 검색 매개변수를 포함하지 �
   assert.match(source, /const url = new URL\(window\.location\.href\);\s+url\.search = "";/u);
 });
 
-test("학생 기록과 교사 활동지는 모두 DOCX로 저장한다", () => {
+test("학생 기록과 교사 활동지는 DOCX 저장과 Google 문서 공유를 함께 제공한다", () => {
   assert.match(source, /buildStudentNotebookDocx/u);
   assert.match(source, /buildTeacherActivityDocx/u);
   assert.match(source, /filename: "climate-exploration-note\.docx"/u);
   assert.match(source, /filename: "climate-class-activity\.docx"/u);
+  assert.match(source, /label: "Google 문서로 공유"/u);
+  assert.match(source, /shareBlobFile/u);
   assert.doesNotMatch(source, /climate-class-activity\.txt|mimeType: "text\/plain"/u);
+});
+
+test("CSV는 스프레드시트 공유를, HTML은 대화형 원본의 Drive 공유를 제공한다", () => {
+  assert.match(source, /label: "Google Workspace로 공유"/u);
+  assert.match(source, /filename: `\$\{stem\}\.csv`/u);
+  assert.match(exportShareSource, /filename: "kma_mark_1\.png"/u);
+  assert.match(exportShareSource, /filename: "kma_mark_2\.png"/u);
+  assert.match(source, /label: "Google Drive에 원본 공유"/u);
+  assert.match(source, /HTML은 문서로 변환하면 그래프의 값 확인과 확대 기능이 사라질 수 있어/u);
+  assert.match(source, /이 브라우저에서는 파일 공유를 지원하지 않아 기기 저장으로 전환합니다/u);
+  assert.match(source, /공유를 취소했습니다\. 다른 방법을 선택할 수 있습니다\./u);
+  assert.match(source, /기기 저장을 취소했습니다\. 다른 방법을 선택할 수 있습니다\./u);
 });
 
 test("배포 셸은 코드 자산을 네트워크에서 먼저 갱신한다", () => {

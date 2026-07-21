@@ -2,12 +2,13 @@ import "./public-app.css";
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 import { useRef, useState, useEffect, useLayoutEffect, useMemo, useReducer, useCallback, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { X, CalendarDays, Download, Table2, FileText, Image as ImageIcon, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge, Mountain, Waves, ArrowLeft, ArrowRight, Sun, Moon, Monitor, BookOpen, BookmarkPlus, ClipboardCopy, Navigation, Plus, Minus, Trash2, NotebookPen, Target, Link, LockKeyhole, RefreshCw } from "lucide-react";
-import { requestSaveTarget, saveBlobToTarget } from "./browser-download.js";
+import { X, CalendarDays, Download, Table2, FileText, Image as ImageIcon, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge, Mountain, Waves, ArrowLeft, ArrowRight, Sun, Moon, Monitor, BookOpen, BookmarkPlus, ClipboardCopy, Navigation, Plus, Minus, Trash2, NotebookPen, Target, Link, LockKeyhole, RefreshCw, Share2 } from "lucide-react";
+import { requestSaveTarget, saveBlobToTarget, shareBlobFiles } from "./browser-download.js";
 import { climateProblemSets } from "./climate-problem-catalog.js";
 import { PUBLIC_ATTRIBUTION_CATALOG, findClimateModelAttribution } from "./attribution-catalog.js";
 import { buildClimatePdfBlob } from "./climate-pdf.js";
 import { buildAttributionBundle, buildPublicExportAttribution } from "./export-attribution.js";
+import { buildCsvWorkspaceShareFiles } from "./export-share.js";
 import {
   PUBLIC_CLIMATE_METADATA_TIMEOUT_MS,
   PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS,
@@ -67,7 +68,9 @@ import {
   validateTeacherLessonConditions,
   validateTeacherReviewReadiness
 } from "./teacher-step-flow.js";
-async function exportClimateSeries(response, format) {
+const DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+async function prepareClimateSeriesExport(response, format) {
   if (!isPublicClimateTextPayloadSafe(response)) {
     throw new TypeError("자료를 안전하게 저장할 수 없어 중단했습니다. 자료를 다시 불러온 뒤 시도하세요.");
   }
@@ -79,12 +82,19 @@ async function exportClimateSeries(response, format) {
     html: { filename: `${stem}.html`, mimeType: "text/html", extension: ".html", description: "대화형 기후 변화 그래프" }
   };
   const specification = specifications[format] ?? specifications.pdf;
-  const target = await requestSaveTarget(specification);
-  if (target.kind === "cancelled") return saveBlobToTarget(target, new Blob());
   let blob;
+  let share;
   if (format === "csv") {
+    const csv = `\uFEFF${buildClimateCsv(response)}`;
+    const csvBlob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const csvSpecification = {
+      filename: `${stem}.csv`,
+      mimeType: "text/csv;charset=utf-8",
+      extension: ".csv",
+      description: "Google 스프레드시트용 날짜별 기후 자료"
+    };
     blob = await buildAttributionBundle({
-      csv: `\uFEFF${buildClimateCsv(response)}`,
+      csv,
       csvFilename: `${stem}.csv`,
       dataMode: response.dataMode,
       model: response.model,
@@ -92,14 +102,39 @@ async function exportClimateSeries(response, format) {
       datasetUpdatedAt: response.datasetUpdatedAt,
       generatedAt: response.generatedAt
     });
+    share = {
+      files: await buildCsvWorkspaceShareFiles(blob, csvBlob, csvSpecification),
+      label: "Google Workspace로 공유",
+      note: "CSV와 기상청 원본 표장 2개를 함께 보냅니다. Google Drive에 보관한 뒤 CSV를 스프레드시트로 열어 공동 편집할 수 있습니다.",
+      text: "Google 스프레드시트에서 열 수 있는 날짜별 기후 자료와 출처 표장입니다."
+    };
   } else if (format === "html") {
     blob = new Blob([buildInteractiveClimateHtml(response, await buildInteractiveAttributionPayload(response))], { type: "text/html;charset=utf-8" });
+    share = {
+      blob,
+      label: "Google Drive에 원본 공유",
+      note: "HTML은 문서로 변환하면 그래프의 값 확인과 확대 기능이 사라질 수 있어 대화형 원본 파일로 공유합니다.",
+      specification,
+      text: "값 확인과 확대 기능을 포함한 대화형 기후 그래프 원본입니다."
+    };
   } else {
     const canvas = await buildClimateReportCanvas(response);
     blob = format === "png" ? await canvasBlob(canvas, "image/png") : await buildClimatePdfBlob(canvas, response);
   }
-  return saveBlobToTarget(target, blob);
+  return {
+    label: `${format.toUpperCase()} 기간 자료`,
+    local: { blob, specification },
+    share,
+    title: `${format.toUpperCase()} 기간 기후 자료`
+  };
 }
+
+async function savePreparedFileLocally(delivery) {
+  const target = await requestSaveTarget(delivery.local.specification);
+  if (target.kind === "cancelled") return saveBlobToTarget(target, new Blob());
+  return saveBlobToTarget(target, delivery.local.blob);
+}
+
 async function buildInteractiveAttributionPayload(response) {
   const record = buildPublicExportAttribution({
     dataMode: response.dataMode,
@@ -559,6 +594,154 @@ const formatOptions = [
   { key: "pdf", label: "인쇄용 보고서(PDF)", detail: "보고서와 그래프", icon: FileText },
   { key: "png", label: "고해상도 이미지(PNG)", detail: "그래프를 이미지로 저장", icon: ImageIcon }
 ];
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, bytes ?? 0)}바이트`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)}킬로바이트`;
+  return `${(bytes / 1024 ** 2).toFixed(1)}메가바이트`;
+}
+
+function createDocxDelivery({ blob, filename, label, title, text }) {
+  const specification = {
+    filename,
+    mimeType: DOCX_MIME_TYPE,
+    extension: ".docx",
+    description: `${label}(DOCX)`
+  };
+  return {
+    label,
+    local: { blob, specification },
+    share: {
+      blob,
+      label: "Google 문서로 공유",
+      note: "DOCX 원본을 공유하므로 Google 문서에서 이어서 편집하고 공동 작업할 수 있습니다.",
+      specification,
+      text
+    },
+    title
+  };
+}
+
+function FileDeliveryDialog({ delivery, onClose, onResult }) {
+  const dialogRef = useRef(null);
+  const shareButtonRef = useRef(null);
+  const [status, setStatus] = useState("idle");
+  const [message, setMessage] = useState("저장하거나 공유할 방법을 선택하세요.");
+  const busy = status === "working";
+  useEffect(() => {
+    if (!delivery) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.setTimeout(() => (shareButtonRef.current ?? dialogRef.current?.querySelector("button"))?.focus(), 40);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [delivery]);
+  if (!delivery) return null;
+
+  const finish = (result) => {
+    onResult(result);
+    onClose();
+  };
+  const saveLocally = async () => {
+    setStatus("working");
+    setMessage("기기에 저장할 파일을 넘기고 있습니다.");
+    try {
+      const result = await savePreparedFileLocally(delivery);
+      if (result.outcome === "cancelled") {
+        setStatus("idle");
+        setMessage("기기 저장을 취소했습니다. 다른 방법을 선택할 수 있습니다.");
+        return;
+      }
+      finish(result);
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "파일을 저장하지 못했습니다.");
+    }
+  };
+  const shareWithWorkspace = async () => {
+    if (!delivery.share) return;
+    setStatus("working");
+    setMessage("Android 공유 창을 열고 있습니다.");
+    try {
+      const files = delivery.share.files ?? [{
+        blob: delivery.share.blob,
+        ...delivery.share.specification
+      }];
+      const result = await shareBlobFiles({ files, text: delivery.share.text, title: delivery.title });
+      if (result.outcome === "unsupported") {
+        setMessage("이 브라우저에서는 파일 공유를 지원하지 않아 기기 저장으로 전환합니다.");
+        const fallback = await savePreparedFileLocally(delivery);
+        if (fallback.outcome === "cancelled") {
+          setStatus("idle");
+          setMessage("기기 저장을 취소했습니다. 다른 방법을 선택할 수 있습니다.");
+          return;
+        }
+        finish({ ...fallback, fallback: true });
+        return;
+      }
+      if (result.outcome === "cancelled") {
+        setStatus("idle");
+        setMessage("공유를 취소했습니다. 다른 방법을 선택할 수 있습니다.");
+        return;
+      }
+      finish(result);
+    } catch (error) {
+      setStatus("error");
+      setMessage(error instanceof Error ? error.message : "공유 창을 열지 못했습니다.");
+    }
+  };
+  const handleKeyDown = (event) => {
+    if (event.key === "Escape" && !busy) {
+      event.preventDefault();
+      onClose();
+    }
+  };
+
+  return /* @__PURE__ */ jsx("div", { className: "export-dialog-backdrop", onMouseDown: (event) => event.target === event.currentTarget && !busy && onClose(), children: /* @__PURE__ */ jsxs(
+    "section",
+    {
+      "aria-labelledby": "file-delivery-title",
+      "aria-modal": "true",
+      className: "file-delivery-dialog",
+      onKeyDown: handleKeyDown,
+      ref: dialogRef,
+      role: "dialog",
+      children: [
+        /* @__PURE__ */ jsxs("header", { children: [
+          /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsx("span", { className: "export-eyebrow", children: "파일 보내기" }),
+            /* @__PURE__ */ jsx("h2", { id: "file-delivery-title", children: `${delivery.label} 준비 완료` }),
+            /* @__PURE__ */ jsx("p", { children: "기기에 보관하거나 Google Workspace에서 함께 사용할 수 있습니다." })
+          ] }),
+          /* @__PURE__ */ jsx("button", { "aria-label": "파일 보내기 창 닫기", className: "icon-button", disabled: busy, onClick: onClose, type: "button", children: /* @__PURE__ */ jsx(X, { size: 20 }) })
+        ] }),
+        /* @__PURE__ */ jsxs("div", { className: "file-delivery-body", children: [
+          /* @__PURE__ */ jsxs("div", { className: "file-delivery-file", children: [
+            /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(FileText, { size: 22 }) }),
+            /* @__PURE__ */ jsxs("div", { children: [
+              /* @__PURE__ */ jsx("strong", { children: delivery.local.specification.filename }),
+              /* @__PURE__ */ jsx("small", { children: formatFileSize(delivery.local.blob.size) })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxs("div", { className: "file-delivery-options", children: [
+            /* @__PURE__ */ jsxs("button", { disabled: busy, onClick: saveLocally, type: "button", children: [
+              /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(HardDriveDownload, { size: 22 }) }),
+              /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: "기기에 저장" }), /* @__PURE__ */ jsx("small", { children: "브라우저의 다운로드 폴더에 보관" })] })
+            ] }),
+            delivery.share ? /* @__PURE__ */ jsxs("button", { className: "workspace-share-option", disabled: busy, onClick: shareWithWorkspace, ref: shareButtonRef, type: "button", children: [
+              /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(Share2, { size: 22 }) }),
+              /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: delivery.share.label }), /* @__PURE__ */ jsx("small", { children: "Android 공유 창에서 계정과 앱 선택" })] })
+            ] }) : null
+          ] }),
+          delivery.share?.note ? /* @__PURE__ */ jsxs("p", { className: "file-delivery-note", children: [/* @__PURE__ */ jsx(TriangleAlert, { size: 16 }), /* @__PURE__ */ jsx("span", { children: delivery.share.note })] }) : null,
+          /* @__PURE__ */ jsxs("div", { className: `file-delivery-status ${status}`, "aria-live": "polite", children: [busy ? /* @__PURE__ */ jsx(LoaderCircle, { className: "spin", size: 16 }) : null, /* @__PURE__ */ jsx("span", { children: message })] })
+        ] })
+      ]
+    }
+  ) });
+}
+
 function ClimateExportDialog({ context, datasetState, onClose }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
@@ -582,6 +765,7 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
   const [message, setMessage] = useState("기간과 자료를 선택한 뒤 미리보기를 불러오세요.");
   const [response, setResponse] = useState();
   const [previewMetric, setPreviewMetric] = useState("tasmax");
+  const [preparedDelivery, setPreparedDelivery] = useState(null);
   useEffect(() => {
     if (!context) return;
     openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -595,6 +779,7 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
     setIncludeRaw(context.includeRaw);
     setFormat(context.initialFormat ?? "csv");
     setResponse(void 0);
+    setPreparedDelivery(null);
     setStatus("idle");
     setMessage("기간과 자료를 선택한 뒤 미리보기를 불러오세요.");
     window.setTimeout(() => closeButtonRef.current?.focus(), 40);
@@ -790,7 +975,14 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
     setStatus("exporting");
     setMessage(`${format.toUpperCase()} 파일을 만들고 있습니다.`);
     try {
-      const result = await exportClimateSeries(response, format);
+      const delivery = await prepareClimateSeriesExport(response, format);
+      if (delivery.share) {
+        setPreparedDelivery(delivery);
+        setStatus("ready");
+        setMessage(`${format.toUpperCase()} 파일이 준비되었습니다. 저장하거나 공유할 방법을 선택하세요.`);
+        return;
+      }
+      const result = await savePreparedFileLocally(delivery);
       setStatus("ready");
       if (result.outcome === "written") {
         setMessage(`${result.filename} 파일을 저장했습니다.`);
@@ -829,6 +1021,16 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
     }
   };
   if (!context) return null;
+  if (preparedDelivery) {
+    return /* @__PURE__ */ jsx(FileDeliveryDialog, {
+      delivery: preparedDelivery,
+      onClose: () => setPreparedDelivery(null),
+      onResult: (result) => {
+        setStatus("ready");
+        setMessage(describeSaveResult(result, preparedDelivery.label));
+      }
+    });
+  }
   return /* @__PURE__ */ jsx("div", { className: "export-dialog-backdrop", onMouseDown: (event) => event.target === event.currentTarget && requestClose(), children: /* @__PURE__ */ jsxs(
     "section",
     {
@@ -1887,6 +2089,7 @@ function QueryPage({ audience, datasetState }) {
   const [latitudeInput, setLatitudeInput] = useState((sharedLessonState?.latitude ?? initialPreset.latitude).toFixed(4));
   const [longitudeInput, setLongitudeInput] = useState((sharedLessonState?.longitude ?? initialPreset.longitude).toFixed(4));
   const [exportContext, setExportContext] = useState(null);
+  const [studentFileDelivery, setStudentFileDelivery] = useState(null);
   const metadata = datasetState.metadata;
   const [learningFocus, setLearningFocus] = useState(sharedLessonState?.focus ?? "heat");
   const [studentNote, setStudentNote] = useState("");
@@ -2160,6 +2363,7 @@ function QueryPage({ audience, datasetState }) {
     }
     const focus = studentFocusOptions.find((option) => option.key === learningFocus) ?? studentFocusOptions[0];
     try {
+      setQueryMessage("탐구 기록 문서를 만들고 있습니다.");
       const { buildStudentNotebookDocx } = await import("./student-docx.js");
       const blob = await buildStudentNotebookDocx({
         baseline: comparisonBaseline ?? currentSnapshot,
@@ -2169,14 +2373,14 @@ function QueryPage({ audience, datasetState }) {
         note: studentNote,
         problem: activePreset.problem
       });
-      const target = await requestSaveTarget({
+      setStudentFileDelivery(createDocxDelivery({
+        blob,
         filename: "climate-exploration-note.docx",
-        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        extension: ".docx",
-        description: "기후 탐구 문서(DOCX)"
-      });
-      const result = await saveBlobToTarget(target, blob);
-      setQueryMessage(describeSaveResult(result, "탐구 기록"));
+        label: "탐구 기록",
+        text: "기후 시나리오 자료로 작성한 학생 탐구 기록입니다.",
+        title: "기후 탐구 기록"
+      }));
+      setQueryMessage("탐구 기록이 준비되었습니다. 기기에 저장하거나 Google 문서로 공유하세요.");
     } catch (error) {
       setQueryMessage(error instanceof Error ? error.message : "탐구 기록 문서를 만들지 못했습니다.");
     }
@@ -2305,6 +2509,11 @@ function QueryPage({ audience, datasetState }) {
       ] })
     ] }),
     /* @__PURE__ */ jsx(ClimateExportDialog, { context: exportContext, datasetState, onClose: () => setExportContext(null) }),
+    /* @__PURE__ */ jsx(FileDeliveryDialog, {
+      delivery: studentFileDelivery,
+      onClose: () => setStudentFileDelivery(null),
+      onResult: (result) => setQueryMessage(describeSaveResult(result, "탐구 기록"))
+    }),
     remoteState.status === "loading" ? /* @__PURE__ */ jsx(ClimateLoadingOverlay, { onCancel: remoteState.cancel }) : null
   ] });
 }
@@ -2676,6 +2885,7 @@ function TeacherPage({ datasetState }) {
   const [comparisonPoints, setComparisonPoints] = useState([]);
   const [teacherMessage, setTeacherMessage] = useState("기후 모델 자료를 확인한 뒤 수업 활동을 시작하세요.");
   const [exportContext, setExportContext] = useState(null);
+  const [teacherFileDelivery, setTeacherFileDelivery] = useState(null);
   const [shareOutcome, setShareOutcome] = useState("idle");
   const activeTeacherSample = teacherLessonSamples.find((sample) => sample.id === activeTeacherSampleId);
   const visibleTeacherSamples = teacherLessonSamples.filter((sample) => teacherProblemCategory === "all" || sample.problem.category === teacherProblemCategory);
@@ -2873,6 +3083,8 @@ function TeacherPage({ datasetState }) {
     if (!currentSnapshot) return;
     const snapshots = comparisonPoints.length > 0 ? comparisonPoints : [currentSnapshot];
     try {
+      setSaveOutcome("preparing");
+      setTeacherMessage("수업 활동지 문서를 만들고 있습니다.");
       const { buildTeacherActivityDocx } = await import("./student-docx.js");
       const blob = await buildTeacherActivityDocx({
         lessonTitle,
@@ -2889,15 +3101,15 @@ function TeacherPage({ datasetState }) {
         interpretationLimit: activeTeacherSample?.guardrail,
         problem: activeTeacherSample?.problem
       });
-      const target = await requestSaveTarget({
+      setTeacherFileDelivery(createDocxDelivery({
+        blob,
         filename: "climate-class-activity.docx",
-        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        extension: ".docx",
-        description: "교사용 기후 탐구 활동지(DOCX)"
-      });
-      const result = await saveBlobToTarget(target, blob);
-      setSaveOutcome(result.outcome);
-      setTeacherMessage(describeSaveResult(result, "수업 활동지"));
+        label: "수업 활동지",
+        text: "기후 시나리오 자료를 바탕으로 만든 교사용 수업 활동지입니다.",
+        title: "기후 탐구 수업 활동지"
+      }));
+      setSaveOutcome("ready");
+      setTeacherMessage("수업 활동지가 준비되었습니다. 기기에 저장하거나 Google 문서로 공유하세요.");
     } catch (error) {
       setSaveOutcome("idle");
       setTeacherMessage(error instanceof Error ? error.message : "수업 활동지 파일을 만들지 못했습니다.");
@@ -3116,7 +3328,7 @@ function TeacherPage({ datasetState }) {
       /* @__PURE__ */ jsx(Stat, { label: "활동 상태", value: evidenceReady ? "근거 준비 완료" : started ? "진행 중" : "준비", sub: evidenceReady ? "필수 비교 조건 충족" : started ? "기후 값 비교 가능" : "비교 자료 선택" }),
       /* @__PURE__ */ jsx(Stat, { label: "선택 지점", value: lessonLocation.label, sub: lessonLocation.detail ?? "지도에서 선택" }),
       /* @__PURE__ */ jsx(Stat, { label: "월별 체감 기준", value: apparentTemperatureBasis(lessonDate).label, sub: `${Number(lessonDate.slice(5, 7))}월 조회` }),
-      /* @__PURE__ */ jsx(Stat, { label: "수업 자료", value: saveOutcome === "written" ? "저장 완료" : saveOutcome === "requested" ? "파일 저장 시작" : "대기", sub: "기후 모델 값과 조건 포함" })
+      /* @__PURE__ */ jsx(Stat, { label: "수업 자료", value: saveOutcome === "shared" ? "공유 완료" : saveOutcome === "written" ? "저장 완료" : saveOutcome === "requested" ? "파일 저장 시작" : saveOutcome === "ready" ? "파일 준비 완료" : saveOutcome === "preparing" ? "문서 만드는 중" : "대기", sub: "기후 모델 값과 조건 포함" })
     ] }) : null,
     /* @__PURE__ */ jsx(TeacherStepNavigation, {
       state: teacherFlowState,
@@ -3125,6 +3337,14 @@ function TeacherPage({ datasetState }) {
     })
     ] }),
     /* @__PURE__ */ jsx(ClimateExportDialog, { context: exportContext, datasetState, onClose: () => setExportContext(null) }),
+    /* @__PURE__ */ jsx(FileDeliveryDialog, {
+      delivery: teacherFileDelivery,
+      onClose: () => setTeacherFileDelivery(null),
+      onResult: (result) => {
+        setSaveOutcome(result.outcome);
+        setTeacherMessage(describeSaveResult(result, "수업 활동지"));
+      }
+    }),
     remoteState.status === "loading" ? /* @__PURE__ */ jsx(ClimateLoadingOverlay, { onCancel: remoteState.cancel }) : null
   ] });
 }
@@ -3968,6 +4188,8 @@ function normalizeLongitude(longitude) {
   return ((longitude + 180) % 360 + 360) % 360 - 180;
 }
 function describeSaveResult(result, label) {
+  if (result.fallback) return `${label}을 공유할 수 없어 기기 저장으로 전환했습니다. 브라우저의 다운로드 목록을 확인하세요.`;
+  if (result.outcome === "shared") return `${label}을 선택한 앱으로 공유했습니다.`;
   if (result.outcome === "written") return `${label} 파일을 저장했습니다.`;
   if (result.outcome === "cancelled") return `${label} 저장을 취소했습니다.`;
   return `${label} 파일 저장을 시작했습니다. 브라우저의 다운로드 목록을 확인하세요.`;

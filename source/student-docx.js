@@ -30,6 +30,11 @@ const colors = {
   white: "FFFFFF"
 };
 
+const A4_PAGE_WIDTH_DXA = 11906;
+const A4_PAGE_HEIGHT_DXA = 16838;
+const PAGE_MARGIN_DXA = 900;
+const TABLE_CONTENT_WIDTH_DXA = 10100;
+
 const tableBorders = {
   top: { style: BorderStyle.SINGLE, size: 4, color: colors.border },
   bottom: { style: BorderStyle.SINGLE, size: 4, color: colors.border },
@@ -92,19 +97,31 @@ function sectionHeading(text) {
   });
 }
 
+function columnWidth(percentage) {
+  return TABLE_CONTENT_WIDTH_DXA * percentage / 100;
+}
+
+function columnWidths(percentages) {
+  const widths = percentages.map(columnWidth);
+  widths[widths.length - 1] += TABLE_CONTENT_WIDTH_DXA - widths.reduce((sum, width) => sum + width, 0);
+  return widths;
+}
+
 function tableCell(text, { fill = colors.white, bold = false, color = colors.ink, width = 50 } = {}) {
   return new TableCell({
     children: [textParagraph(text, { bold, color, size: 19, spacing: { after: 0, line: 280 } })],
     margins: { top: 110, bottom: 110, left: 140, right: 140 },
     shading: { type: ShadingType.CLEAR, color: "auto", fill },
     verticalAlign: VerticalAlign.CENTER,
-    width: { size: width, type: WidthType.PERCENTAGE }
+    width: { size: columnWidth(width), type: WidthType.DXA }
   });
 }
 
 function keyValueTable(rows) {
+  const widths = [25, 75];
   return new Table({
     borders: tableBorders,
+    columnWidths: columnWidths(widths),
     layout: TableLayoutType.FIXED,
     rows: rows.map(([label, value]) => new TableRow({
       children: [
@@ -112,11 +129,12 @@ function keyValueTable(rows) {
         tableCell(value, { width: 75 })
       ]
     })),
-    width: { size: 100, type: WidthType.PERCENTAGE }
+    width: { size: TABLE_CONTENT_WIDTH_DXA, type: WidthType.DXA }
   });
 }
 
 function outputPlanTable(outputs) {
+  const widths = [38, 62];
   const rows = [new TableRow({
     tableHeader: true,
     children: [
@@ -132,13 +150,15 @@ function outputPlanTable(outputs) {
   })));
   return new Table({
     borders: tableBorders,
+    columnWidths: columnWidths(widths),
     layout: TableLayoutType.FIXED,
     rows,
-    width: { size: 100, type: WidthType.PERCENTAGE }
+    width: { size: TABLE_CONTENT_WIDTH_DXA, type: WidthType.DXA }
   });
 }
 
 function metricTable(snapshot) {
+  const widths = [45, 55];
   const rows = [new TableRow({
     tableHeader: true,
     children: [
@@ -156,9 +176,10 @@ function metricTable(snapshot) {
   });
   return new Table({
     borders: tableBorders,
+    columnWidths: columnWidths(widths),
     layout: TableLayoutType.FIXED,
     rows,
-    width: { size: 100, type: WidthType.PERCENTAGE }
+    width: { size: TABLE_CONTENT_WIDTH_DXA, type: WidthType.DXA }
   });
 }
 
@@ -204,6 +225,7 @@ function formatDelta(metric, delta) {
 }
 
 function comparisonTable(baseline, comparison) {
+  const widths = [28, 24, 24, 24];
   const rows = [new TableRow({
     tableHeader: true,
     children: [
@@ -229,9 +251,10 @@ function comparisonTable(baseline, comparison) {
 
   return new Table({
     borders: tableBorders,
+    columnWidths: columnWidths(widths),
     layout: TableLayoutType.FIXED,
     rows,
-    width: { size: 100, type: WidthType.PERCENTAGE }
+    width: { size: TABLE_CONTENT_WIDTH_DXA, type: WidthType.DXA }
   });
 }
 
@@ -272,7 +295,6 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
       spacing: { after: 40 }
     }),
     textParagraph("기후 탐구 기록", {
-      heading: HeadingLevel.TITLE,
       bold: true,
       size: 42,
       spacing: { after: 90 }
@@ -333,6 +355,8 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
     }),
     new Table({
       borders: tableBorders,
+      columnWidths: [TABLE_CONTENT_WIDTH_DXA],
+      layout: TableLayoutType.FIXED,
       rows: [new TableRow({
         children: [new TableCell({
           children: [textParagraph(cleanText(note) || "아직 작성한 내용이 없습니다.", {
@@ -341,10 +365,11 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
           })],
           margins: { top: 180, bottom: 180, left: 180, right: 180 },
           shading: { type: ShadingType.CLEAR, color: "auto", fill: colors.accentSoft },
-          verticalAlign: VerticalAlign.CENTER
+          verticalAlign: VerticalAlign.CENTER,
+          width: { size: TABLE_CONTENT_WIDTH_DXA, type: WidthType.DXA }
         })]
       })],
-      width: { size: 100, type: WidthType.PERCENTAGE }
+      width: { size: TABLE_CONTENT_WIDTH_DXA, type: WidthType.DXA }
     }),
     textParagraph("자료를 읽을 때 주의할 점", {
       bold: true,
@@ -373,7 +398,8 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
     sections: [{
       properties: {
         page: {
-          margin: { top: 900, right: 900, bottom: 900, left: 900 }
+          margin: { top: PAGE_MARGIN_DXA, right: PAGE_MARGIN_DXA, bottom: PAGE_MARGIN_DXA, left: PAGE_MARGIN_DXA },
+          size: { width: A4_PAGE_WIDTH_DXA, height: A4_PAGE_HEIGHT_DXA }
         }
       },
       children
@@ -428,9 +454,10 @@ function structuredTable(headers, rows, widths) {
   })));
   return new Table({
     borders: tableBorders,
+    columnWidths: columnWidths(widths),
     layout: TableLayoutType.FIXED,
     rows: tableRows,
-    width: { size: 100, type: WidthType.PERCENTAGE }
+    width: { size: TABLE_CONTENT_WIDTH_DXA, type: WidthType.DXA }
   });
 }
 
@@ -490,6 +517,7 @@ function teachingFlowTable({ inquiryQuestion, studentPrompt, requirements }) {
 }
 
 function studentResponseTable() {
+  const widths = [38, 62];
   const prompts = [
     "나의 가설과 그렇게 생각한 까닭",
     "비교한 위치·기간·배출 경로·기후 모델",
@@ -512,15 +540,16 @@ function studentResponseTable() {
         children: [textParagraph("", { spacing: { after: 180, line: 320 } }), textParagraph("", { spacing: { after: 180, line: 320 } })],
         margins: { top: 140, bottom: 140, left: 160, right: 160 },
         verticalAlign: VerticalAlign.TOP,
-        width: { size: 62, type: WidthType.PERCENTAGE }
+        width: { size: columnWidth(62), type: WidthType.DXA }
       })
     ]
   })));
   return new Table({
     borders: tableBorders,
+    columnWidths: columnWidths(widths),
     layout: TableLayoutType.FIXED,
     rows,
-    width: { size: 100, type: WidthType.PERCENTAGE }
+    width: { size: TABLE_CONTENT_WIDTH_DXA, type: WidthType.DXA }
   });
 }
 
@@ -628,7 +657,6 @@ export async function buildTeacherActivityDocx({
       spacing: { after: 40 }
     }),
     textParagraph("기후 탐구 수업 활동지", {
-      heading: HeadingLevel.TITLE,
       bold: true,
       size: 42,
       spacing: { after: 90 }
@@ -776,7 +804,8 @@ export async function buildTeacherActivityDocx({
     sections: [{
       properties: {
         page: {
-          margin: { top: 900, right: 900, bottom: 720, left: 900 }
+          margin: { top: PAGE_MARGIN_DXA, right: PAGE_MARGIN_DXA, bottom: 720, left: PAGE_MARGIN_DXA },
+          size: { width: A4_PAGE_WIDTH_DXA, height: A4_PAGE_HEIGHT_DXA }
         }
       },
       children

@@ -12,7 +12,7 @@ const hostPolicy = allowedHosts.length > 0 ? { allowedHosts } : {};
 const climateProxy = {
   "/api/climate": {
     target: gatewayTarget,
-    changeOrigin: false
+    changeOrigin: true
   }
 };
 
