@@ -144,7 +144,7 @@ test("위치 추리 문제는 정답 공개 전 좌표와 내보내기를 가린
   assert.match(source, /function MysteryLocationPanel/u);
   assert.match(source, /const locationConcealed = Boolean/u);
   assert.match(source, /disabled: !hasExportableMetrics \|\| locationConcealed/u);
-  assert.match(source, /locationConcealed \|\| !hasCurrentDatasetResult \? undefined : exportMetric/u);
+  assert.match(source, /locationConcealed \|\| !hasCurrentDatasetResult \|\| datePending \? undefined : exportMetric/u);
   assert.match(source, /정답을 확인하면 위치와 자료가 포함된 탐구 기록을 저장할 수 있습니다/u);
 });
 
@@ -427,16 +427,47 @@ test("날짜 초안은 완전한 날짜를 확인한 뒤에만 조회 조건으�
   const confirmedInputStart = source.indexOf("function ConfirmedDateInput(");
   const confirmedInputEnd = source.indexOf("function DateField", confirmedInputStart);
   const confirmedInputSource = source.slice(confirmedInputStart, confirmedInputEnd);
+  const queryPageStart = source.indexOf("function QueryPage(");
+  const queryPageEnd = source.indexOf("const studentFocusOptions", queryPageStart);
+  const queryPageSource = source.slice(queryPageStart, queryPageEnd);
+  const teacherPageStart = source.indexOf("function TeacherPage(");
+  const teacherPageEnd = source.indexOf("function PublicPage", teacherPageStart);
+  const teacherPageSource = source.slice(teacherPageStart, teacherPageEnd);
   const publicPageStart = source.indexOf("function PublicPage(");
   const publicPageEnd = source.indexOf("function useRemoteMetricResponse", publicPageStart);
   const publicPageSource = source.slice(publicPageStart, publicPageEnd);
 
   assert.match(confirmedInputSource, /const \[draftValue, setDraftValue\] = useState\(value\)/u);
+  assert.match(confirmedInputSource, /const pending = draftValue !== value/u);
   assert.match(confirmedInputSource, /isCompleteDateValue\(draftValue, \{ min, max \}\)/u);
   assert.match(confirmedInputSource, /onInput:/u);
   assert.match(confirmedInputSource, /onChange:/u);
+  assert.match(confirmedInputSource, /onPendingChange\?\.\(nextValue !== value\)/u);
+  assert.match(confirmedInputSource, /disabled: !pending/u);
+  assert.match(confirmedInputSource, /변경한 날짜를 적용하려면 \[적용\]을 누르세요\. 현재 결과는 \$\{value\} 기준입니다\./u);
   assert.match(confirmedInputSource, /onConfirm\(draftValue\)/u);
+  assert.match(queryPageSource, /const \[datePending, setDatePending\] = useState\(false\)/u);
+  assert.match(queryPageSource, /onPendingChange: setDatePending/u);
+  assert.match(queryPageSource, /actionsDisabled: datePending/u);
+  assert.match(teacherPageSource, /const \[lessonDatePending, setLessonDatePending\] = useState\(false\)/u);
+  assert.match(teacherPageSource, /onPendingChange: setLessonDatePending/u);
+  assert.match(teacherPageSource, /nextDisabled: lessonDatePending/u);
   assert.match(publicPageSource, /jsx\(ConfirmedDateInput/u);
+  assert.match(publicPageSource, /const \[publicDatePending, setPublicDatePending\] = useState\(false\)/u);
+  assert.match(publicPageSource, /onPendingChange: setPublicDatePending/u);
+  assert.match(publicPageSource, /disabled: !hasPublicMetrics \|\| publicDatePending/u);
+  assert.match(publicPageSource, /hasCurrentDatasetResult && !publicDatePending/u);
   assert.doesNotMatch(publicPageSource, /onInput: \(event\) => setPublicDate/u);
   assert.doesNotMatch(publicPageSource, /onChange: \(event\) => setPublicDate/u);
+});
+
+test("기간 단축 버튼은 확인된 화면 날짜를 기준으로 계산한다", () => {
+  const exportDialogStart = source.indexOf("function ClimateExportDialog(");
+  const exportDialogEnd = source.indexOf("function parseDate", exportDialogStart);
+  const exportDialogSource = source.slice(exportDialogStart, exportDialogEnd);
+
+  assert.match(exportDialogSource, /let nextStart = context\.date/u);
+  assert.match(exportDialogSource, /calendarPeriodEnd\(context\.date, 1\)/u);
+  assert.match(exportDialogSource, /calendarPeriodEnd\(context\.date, 5\)/u);
+  assert.match(exportDialogSource, /calendarPeriodEnd\(context\.date, 10\)/u);
 });

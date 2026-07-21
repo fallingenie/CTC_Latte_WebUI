@@ -2098,6 +2098,7 @@ function QueryPage({ audience, datasetState }) {
   const [model, setModel] = useState(sharedLessonState?.model ?? initialPreset.model);
   const [raw, setRaw] = useState(sharedProblemPreset?.raw ?? initialPreset.raw);
   const [date, setDate] = useState(sharedLessonState?.date ?? initialPreset.date);
+  const [datePending, setDatePending] = useState(false);
   const [scenario, setScenario] = useState(sharedLessonState?.scenario ?? initialPreset.scenario);
   const [coordinates, setCoordinates] = useState({
     latitude: sharedLessonState?.latitude ?? initialPreset.latitude,
@@ -2276,6 +2277,10 @@ function QueryPage({ audience, datasetState }) {
     setQueryMessage("위치를 바꾸었습니다. 결과와 자료 내보내기 조건도 새 위치에 맞게 바뀌었습니다.");
   };
   const confirmQuery = () => {
+    if (datePending) {
+      setQueryMessage("변경한 날짜를 먼저 적용하세요.");
+      return;
+    }
     const nextLatitude = Number(latitudeInput);
     const nextLongitude = Number(longitudeInput);
     if (!Number.isFinite(nextLatitude) || !Number.isFinite(nextLongitude) || nextLatitude < -mercatorLatitudeLimit || nextLatitude > mercatorLatitudeLimit || nextLongitude < -180 || nextLongitude > 180) {
@@ -2292,6 +2297,10 @@ function QueryPage({ audience, datasetState }) {
   };
   const exportMetric = (metric) => {
     if (!metric.key) return;
+    if (datePending) {
+      setQueryMessage("변경한 날짜를 적용한 뒤 기간 자료를 내보내세요.");
+      return;
+    }
     if (!hasCurrentDatasetResult) {
       setQueryMessage("최신 기후자료 조회가 끝난 뒤 기간 자료를 내보낼 수 있습니다.");
       return;
@@ -2317,6 +2326,10 @@ function QueryPage({ audience, datasetState }) {
     });
   };
   const exportAllMetrics = () => {
+    if (datePending) {
+      setQueryMessage("변경한 날짜를 적용한 뒤 전체 자료를 내보내세요.");
+      return;
+    }
     if (!hasCurrentDatasetResult) {
       setQueryMessage("최신 기후자료 조회가 끝난 뒤 전체 자료를 내보낼 수 있습니다.");
       return;
@@ -2371,11 +2384,19 @@ function QueryPage({ audience, datasetState }) {
     });
   };
   const saveComparisonBaseline = () => {
+    if (datePending) {
+      setQueryMessage("변경한 날짜를 먼저 적용하세요.");
+      return;
+    }
     if (!currentSnapshot) return;
     setComparisonBaseline(currentSnapshot);
     setQueryMessage("현재 자료를 첫 번째 비교 자료로 정했습니다. 위치나 날짜를 바꾸면 두 자료의 차이를 확인할 수 있습니다.");
   };
   const saveStudentNotebook = async () => {
+    if (datePending) {
+      setQueryMessage("변경한 날짜를 적용한 뒤 탐구 기록을 저장하세요.");
+      return;
+    }
     if (!currentSnapshot) return;
     if (locationConcealed) {
       setQueryMessage("정답을 확인하면 위치와 자료가 포함된 탐구 기록을 저장할 수 있습니다.");
@@ -2450,7 +2471,7 @@ function QueryPage({ audience, datasetState }) {
             ]
           }, site.id)) })
         ] }) : null,
-        /* @__PURE__ */ jsx(DateField, { label: "날짜", min: metadata?.dateStart, max: metadata?.dateEnd, value: date, onChange: setDate }),
+        /* @__PURE__ */ jsx(DateField, { label: "날짜", min: metadata?.dateStart, max: metadata?.dateEnd, value: date, onChange: setDate, onPendingChange: setDatePending }),
         locationConcealed ? /* @__PURE__ */ jsxs("div", { className: "concealed-coordinate-field", children: [
           /* @__PURE__ */ jsx(Globe2, { size: 18 }),
           /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx("strong", { children: "위치를 추리해 보세요" }), /* @__PURE__ */ jsx("small", { children: "답을 고를 때까지 위치와 지명을 보여 주지 않습니다." })] })
@@ -2470,7 +2491,7 @@ function QueryPage({ audience, datasetState }) {
           /* @__PURE__ */ jsx("input", { disabled: usesRawModelGrid, type: "checkbox", checked: usesRawModelGrid ? false : raw, onChange: (event) => setRaw(event.target.checked) }),
           usesRawModelGrid ? "이 위치는 기후 모델 원자료로 표시됩니다" : "보정 전 모델 값 함께 보기"
         ] }),
-        /* @__PURE__ */ jsxs("button", { className: "primary-action wide", disabled: locationConcealed, onClick: confirmQuery, type: "button", children: [
+        /* @__PURE__ */ jsxs("button", { className: "primary-action wide", disabled: locationConcealed || datePending, onClick: confirmQuery, type: "button", children: [
           /* @__PURE__ */ jsx(Search, { size: 18 }),
           locationConcealed ? "정답을 확인하면 위치 보기" : "선택한 위치 확인"
         ] }),
@@ -2504,14 +2525,15 @@ function QueryPage({ audience, datasetState }) {
       /* @__PURE__ */ jsxs("section", { className: "result-panel", "data-query-state": remoteState.status, children: [
         /* @__PURE__ */ jsxs("div", { className: "panel-heading-row", children: [
           /* @__PURE__ */ jsx("h2", { children: "주요 기후 지표" }),
-          /* @__PURE__ */ jsxs("button", { className: "secondary-action", disabled: !hasExportableMetrics || locationConcealed, onClick: exportAllMetrics, type: "button", children: [
+          /* @__PURE__ */ jsxs("button", { className: "secondary-action", disabled: !hasExportableMetrics || locationConcealed || datePending, onClick: exportAllMetrics, type: "button", children: [
             /* @__PURE__ */ jsx(HardDriveDownload, { size: 16 }),
             "전체 자료 내보내기"
           ] })
         ] }),
         /* @__PURE__ */ jsx("div", { className: `mini-status ${remoteState.status === "ready" ? "ok" : "warn"}`, "aria-live": "polite", children: remoteState.message }),
-        /* @__PURE__ */ jsx(MetricGrid, { items: metricsForSelection, onExportMetric: locationConcealed || !hasCurrentDatasetResult ? undefined : exportMetric }),
+        /* @__PURE__ */ jsx(MetricGrid, { items: metricsForSelection, onExportMetric: locationConcealed || !hasCurrentDatasetResult || datePending ? undefined : exportMetric }),
         /* @__PURE__ */ jsx(StudentWorkbench, {
+          actionsDisabled: datePending,
           baseline: comparisonBaseline,
           comparisonRows,
           currentSnapshot,
@@ -2632,7 +2654,7 @@ function StudentProblemBrief({ mysteryGuess, mysteryRevealed, onOpenPeriod, prob
     ] }) : null
   ] });
 }
-function StudentWorkbench({ baseline, comparisonRows, conclusion, conclusionOptions, currentSnapshot, focus, mysteryGuess, mysteryRevealed, note, onConclusionChange, onFocusChange, onNoteChange, onOpenProblemPeriod, onSaveBaseline, onSaveNotebook, problem, problemPrompt }) {
+function StudentWorkbench({ actionsDisabled = false, baseline, comparisonRows, conclusion, conclusionOptions, currentSnapshot, focus, mysteryGuess, mysteryRevealed, note, onConclusionChange, onFocusChange, onNoteChange, onOpenProblemPeriod, onSaveBaseline, onSaveNotebook, problem, problemPrompt }) {
   const selectedFocus = studentFocusOptions.find((option) => option.key === focus) ?? studentFocusOptions[0];
   return /* @__PURE__ */ jsxs("section", { className: "student-workbench", children: [
     /* @__PURE__ */ jsxs("div", { className: "workbench-heading", children: [
@@ -2667,7 +2689,7 @@ function StudentWorkbench({ baseline, comparisonRows, conclusion, conclusionOpti
           /* @__PURE__ */ jsx("strong", { children: baseline ? "첫 번째 비교 자료를 정했습니다" : "먼저 비교할 자료를 정하세요" }),
           /* @__PURE__ */ jsx("span", { children: baseline ? `${baseline.label} · ${baseline.date}` : "현재 위치·날짜·기후 모델의 값을 첫 번째 자료로 정할 수 있습니다." })
         ] }),
-        /* @__PURE__ */ jsxs("button", { disabled: !currentSnapshot, onClick: onSaveBaseline, type: "button", children: [
+        /* @__PURE__ */ jsxs("button", { disabled: !currentSnapshot || actionsDisabled, onClick: onSaveBaseline, type: "button", children: [
           /* @__PURE__ */ jsx(BookmarkPlus, { size: 16 }),
           baseline ? "현재 자료로 바꾸기" : "첫 번째 비교 자료로 정하기"
         ] })
@@ -2682,7 +2704,7 @@ function StudentWorkbench({ baseline, comparisonRows, conclusion, conclusionOpti
       /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx(NotebookPen, { size: 16 }), "나의 발견"] }),
       /* @__PURE__ */ jsx("textarea", { maxLength: 2000, onChange: (event) => onNoteChange(event.target.value), placeholder: "두 자료에서 어떤 값이 얼마나 달랐으며, 무엇을 알 수 있는지 적어 보세요.", value: note })
     ] }),
-    /* @__PURE__ */ jsxs("button", { className: "student-save-action", disabled: !currentSnapshot, onClick: onSaveNotebook, type: "button", children: [
+    /* @__PURE__ */ jsxs("button", { className: "student-save-action", disabled: !currentSnapshot || actionsDisabled, onClick: onSaveNotebook, type: "button", children: [
       /* @__PURE__ */ jsx(Download, { size: 16 }),
       "탐구 기록을 문서로 저장"
     ] })
@@ -2864,7 +2886,7 @@ function TeacherStepProgress({ state }) {
   }) }) });
 }
 
-function TeacherStepNavigation({ state, onNext, onPrevious }) {
+function TeacherStepNavigation({ state, onNext, onPrevious, nextDisabled = false }) {
   const navigation = getTeacherStepNavigation(state);
   const currentIndex = TEACHER_STEP_DEFINITIONS.findIndex((step) => step.id === state.currentStep);
   const previousStep = TEACHER_STEP_DEFINITIONS[currentIndex - 1];
@@ -2875,7 +2897,7 @@ function TeacherStepNavigation({ state, onNext, onPrevious }) {
       previousStep ? `이전: ${previousStep.label}` : "이전"
     ] }),
     /* @__PURE__ */ jsx("span", { className: "teacher-step-count", "aria-live": "polite", children: `${currentIndex + 1} / ${TEACHER_STEP_DEFINITIONS.length}` }),
-    nextStep ? /* @__PURE__ */ jsxs("button", { className: "teacher-step-next", disabled: navigation.next.disabled, onClick: onNext, type: "button", "aria-label": navigation.next.ariaLabel, children: [
+    nextStep ? /* @__PURE__ */ jsxs("button", { className: "teacher-step-next", disabled: navigation.next.disabled || nextDisabled, onClick: onNext, type: "button", "aria-label": navigation.next.ariaLabel, children: [
       `다음: ${nextStep.label}`,
       /* @__PURE__ */ jsx(ArrowRight, { size: 17 })
     ] }) : /* @__PURE__ */ jsx("span", { className: "teacher-step-navigation-placeholder", "aria-hidden": "true" })
@@ -2902,6 +2924,7 @@ function TeacherPage({ datasetState }) {
   const [lessonObjective, setLessonObjective] = useState("미래의 기온, 강수량, 풍속, 체감 지표가 장소에 따라 어떻게 달라지는지 설명한다.");
   const [lessonLocation, setLessonLocation] = useState({ id: "school", label: "학교", latitude: 37.57, longitude: 126.98, icon: School });
   const [lessonDate, setLessonDate] = useState("2050-08-01");
+  const [lessonDatePending, setLessonDatePending] = useState(false);
   const [lessonScenario, setLessonScenario] = useState("고배출 경로");
   const [lessonModel, setLessonModel] = useState(cmip6ModelOptions[0]);
   const [lessonFocus, setLessonFocus] = useState("heat");
@@ -3081,6 +3104,10 @@ function TeacherPage({ datasetState }) {
     setTeacherMessage("지도에서 고른 위치의 기후 모델 자료를 불러옵니다.");
   };
   const addComparisonPoint = () => {
+    if (lessonDatePending) {
+      setTeacherMessage("변경한 날짜를 먼저 적용하세요.");
+      return;
+    }
     if (!currentSnapshot || !started) return;
     setComparisonPoints((current) => {
       const withoutDuplicate = current.filter((item) => item.id !== currentSnapshot.id);
@@ -3093,6 +3120,10 @@ function TeacherPage({ datasetState }) {
     });
   };
   const startTeacherActivity = () => {
+    if (lessonDatePending) {
+      setTeacherMessage("변경한 날짜를 먼저 적용하세요.");
+      return;
+    }
     if (!currentSnapshot) return;
     setStarted(true);
     setComparisonPoints((current) => current.some((item) => item.id === currentSnapshot.id) ? current : [currentSnapshot, ...current].slice(0, comparisonLimit));
@@ -3149,6 +3180,10 @@ function TeacherPage({ datasetState }) {
     }
   };
   const exportTeacherData = () => {
+    if (lessonDatePending) {
+      setTeacherMessage("변경한 날짜를 적용한 뒤 수업 자료를 내보내세요.");
+      return;
+    }
     if (!currentSnapshot) return;
     setExportContext({
       date: lessonDate,
@@ -3278,7 +3313,7 @@ function TeacherPage({ datasetState }) {
             lessonLocation.id === location.id ? /* @__PURE__ */ jsx(Check, { size: 16 }) : null
           ] }, location.id);
         }) }),
-        !isReviewAndShare ? /* @__PURE__ */ jsx(DateField, { label: "살펴볼 날짜", min: metadata?.dateStart, max: metadata?.dateEnd, onChange: setLessonDate, value: lessonDate }) : null,
+        !isReviewAndShare ? /* @__PURE__ */ jsx(DateField, { label: "살펴볼 날짜", min: metadata?.dateStart, max: metadata?.dateEnd, onChange: setLessonDate, onPendingChange: setLessonDatePending, value: lessonDate }) : null,
         /* @__PURE__ */ jsxs("div", { className: "teacher-select-grid", hidden: isReviewAndShare, children: [
           /* @__PURE__ */ jsxs("label", { className: "select-field", children: [
             "배출 경로",
@@ -3315,7 +3350,7 @@ function TeacherPage({ datasetState }) {
             /* @__PURE__ */ jsx("span", { children: point.model })
           ] }, point.id)) })
         ] }) : null,
-        isActivityComposition ? /* @__PURE__ */ jsxs("button", { className: "teacher-start-action", disabled: !currentSnapshot || teacherQueryStatus !== TEACHER_QUERY_STATUSES.READY, onClick: startTeacherActivity, type: "button", children: [
+        isActivityComposition ? /* @__PURE__ */ jsxs("button", { className: "teacher-start-action", disabled: !currentSnapshot || teacherQueryStatus !== TEACHER_QUERY_STATUSES.READY || lessonDatePending, onClick: startTeacherActivity, type: "button", children: [
           /* @__PURE__ */ jsx(PlayCircle, { size: 18 }),
           /* @__PURE__ */ jsx("span", { children: started ? "첫 번째 비교 자료 선택 완료" : "현재 자료를 첫 번째 비교 자료로 정하기" }),
           /* @__PURE__ */ jsx(ArrowRight, { size: 17 })
@@ -3332,7 +3367,7 @@ function TeacherPage({ datasetState }) {
             /* @__PURE__ */ jsxs("div", { className: "teacher-action-heading", children: [/* @__PURE__ */ jsx("strong", { children: "비교하고 정리하기" }), /* @__PURE__ */ jsx("small", { children: "위치·날짜·기후 모델이 다른 자료를 비교해 활동지나 기간 자료로 정리합니다." })] }),
             /* @__PURE__ */ jsxs("div", { className: "teacher-actions", children: [
               /* @__PURE__ */ jsxs("button", { disabled: !started || !currentSnapshot, type: "button", onClick: addComparisonPoint, children: [/* @__PURE__ */ jsx(Plus, { size: 16 }), "현재 자료를 비교 목록에 추가"] }),
-              /* @__PURE__ */ jsxs("button", { type: "button", disabled: !currentSnapshot, onClick: exportTeacherData, children: [/* @__PURE__ */ jsx(HardDriveDownload, { size: 16 }), "수업 자료 내보내기"] }),
+              /* @__PURE__ */ jsxs("button", { type: "button", disabled: !currentSnapshot || lessonDatePending, onClick: exportTeacherData, children: [/* @__PURE__ */ jsx(HardDriveDownload, { size: 16 }), "수업 자료 내보내기"] }),
               /* @__PURE__ */ jsxs("button", { type: "button", disabled: !started || !currentSnapshot, onClick: saveTeacherPack, children: [/* @__PURE__ */ jsx(Download, { size: 16 }), "수업 활동지 저장"] })
             ] })
           ] })
@@ -3349,7 +3384,7 @@ function TeacherPage({ datasetState }) {
     isActivityComposition ? /* @__PURE__ */ jsxs("section", { className: "teacher-data-workbench", children: [
       /* @__PURE__ */ jsxs("div", { className: "panel-heading-row", children: [
         /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("h2", { children: "수업에 사용할 기후 모델 자료" }), /* @__PURE__ */ jsx("p", { children: "선택한 위치, 날짜, 배출 경로, 기후 모델에 해당하는 값을 보여 줍니다." })] }),
-        /* @__PURE__ */ jsxs("button", { className: "secondary-action", disabled: !started || !currentSnapshot, onClick: addComparisonPoint, type: "button", children: [/* @__PURE__ */ jsx(BookmarkPlus, { size: 16 }), "비교 목록에 추가"] })
+        /* @__PURE__ */ jsxs("button", { className: "secondary-action", disabled: !started || !currentSnapshot || lessonDatePending, onClick: addComparisonPoint, type: "button", children: [/* @__PURE__ */ jsx(BookmarkPlus, { size: 16 }), "비교 목록에 추가"] })
       ] }),
       /* @__PURE__ */ jsx(MetricGrid, { items: lessonMetrics }),
       comparisonPoints.length > 0 ? /* @__PURE__ */ jsx("div", { className: "teacher-comparison-list", children: comparisonPoints.map((point) => /* @__PURE__ */ jsxs("article", { children: [
@@ -3366,7 +3401,8 @@ function TeacherPage({ datasetState }) {
     /* @__PURE__ */ jsx(TeacherStepNavigation, {
       state: teacherFlowState,
       onPrevious: () => dispatchTeacherFlow({ type: TEACHER_FLOW_ACTIONS.PREVIOUS }),
-      onNext: () => dispatchTeacherFlow({ type: TEACHER_FLOW_ACTIONS.NEXT })
+      onNext: () => dispatchTeacherFlow({ type: TEACHER_FLOW_ACTIONS.NEXT }),
+      nextDisabled: lessonDatePending
     })
     ] }),
     /* @__PURE__ */ jsx(ClimateExportDialog, { context: exportContext, datasetState, onClose: () => setExportContext(null) }),
@@ -3387,6 +3423,7 @@ function PublicPage({ datasetState }) {
   const [exportContext, setExportContext] = useState(null);
   const metadata = datasetState.metadata;
   const [publicDate, setPublicDate] = useState("2050-08-01");
+  const [publicDatePending, setPublicDatePending] = useState(false);
   const [publicScenario, setPublicScenario] = useState("고배출 경로");
   const [publicModel, setPublicModel] = useState(cmip6ModelOptions[0]);
   const [locating, setLocating] = useState(false);
@@ -3478,6 +3515,10 @@ function PublicPage({ datasetState }) {
   };
   const exportPublicMetric = (metric) => {
     if (!metric.key) return;
+    if (publicDatePending) {
+      setMessage("변경한 날짜를 적용한 뒤 기간 자료를 내보내세요.");
+      return;
+    }
     if (!hasCurrentDatasetResult) {
       setMessage("최신 기후자료 조회가 끝난 뒤 기간 자료를 내보낼 수 있습니다.");
       return;
@@ -3494,6 +3535,10 @@ function PublicPage({ datasetState }) {
     });
   };
   const exportPublicMetrics = () => {
+    if (publicDatePending) {
+      setMessage("변경한 날짜를 적용한 뒤 기간 자료를 내보내세요.");
+      return;
+    }
     if (!hasCurrentDatasetResult) {
       setMessage("최신 기후자료 조회가 끝난 뒤 기간 자료를 내보낼 수 있습니다.");
       return;
@@ -3511,6 +3556,10 @@ function PublicPage({ datasetState }) {
     });
   };
   const savePublicSummary = () => {
+    if (publicDatePending) {
+      setMessage("변경한 날짜를 적용한 뒤 결과 이미지를 저장하세요.");
+      return;
+    }
     if (!hasCurrentDatasetResult) {
       setMessage("최신 기후자료 조회가 끝난 뒤 결과 이미지를 저장할 수 있습니다.");
       return;
@@ -3542,7 +3591,7 @@ function PublicPage({ datasetState }) {
           /* @__PURE__ */ jsxs("div", { className: "public-date-control", children: [/* @__PURE__ */ jsx(CalendarDays, { size: 15 }), /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx("small", { children: "살펴볼 날짜" }), /* @__PURE__ */ jsx(ConfirmedDateInput, { compact: true, label: "살펴볼 날짜", max: metadata?.dateEnd, min: metadata?.dateStart, onConfirm: (nextDate) => {
             setPublicDate(nextDate);
             setMessage(`${nextDate}의 실제 기후 자료를 불러옵니다.`);
-          }, showPickerButton: false, value: publicDate })] })] }),
+          }, onPendingChange: setPublicDatePending, showPickerButton: false, value: publicDate })] })] }),
           /* @__PURE__ */ jsxs("label", { className: "public-scenario-control", children: [/* @__PURE__ */ jsx(Globe2, { size: 15 }), /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx("small", { children: "배출 경로" }), /* @__PURE__ */ jsx("select", { onChange: (event) => setPublicScenario(event.target.value), value: publicScenario, children: availableScenarios.map((option) => /* @__PURE__ */ jsx("option", { children: option }, option)) })] })] }),
           /* @__PURE__ */ jsxs("label", { className: "public-model-control", children: [/* @__PURE__ */ jsx(Activity, { size: 15 }), /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx("small", { children: "기후 모델" }), /* @__PURE__ */ jsx("select", { "aria-label": "기후 모델", onChange: (event) => {
             setPublicModel(event.target.value);
@@ -3580,7 +3629,7 @@ function PublicPage({ datasetState }) {
             /* @__PURE__ */ jsx("span", { children: "선택한 곳의 미래" }),
             /* @__PURE__ */ jsx("h2", { children: `${Number(publicDate.slice(0, 4))}년 ${Number(publicDate.slice(5, 7))}월 ${Number(publicDate.slice(8, 10))}일의 기후` })
           ] }),
-          /* @__PURE__ */ jsxs("button", { className: "public-export-action", disabled: !hasPublicMetrics, onClick: exportPublicMetrics, type: "button", children: [
+          /* @__PURE__ */ jsxs("button", { className: "public-export-action", disabled: !hasPublicMetrics || publicDatePending, onClick: exportPublicMetrics, type: "button", children: [
             /* @__PURE__ */ jsx(HardDriveDownload, { size: 16 }),
             "기간 자료 내보내기"
           ] })
@@ -3590,13 +3639,13 @@ function PublicPage({ datasetState }) {
           /* @__PURE__ */ jsx("span", { children: /* @__PURE__ */ jsx(CloudSun, { size: 18 }) }),
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: "쉽게 읽기" }), /* @__PURE__ */ jsx("p", { children: plainLanguageSummary })] })
         ] }),
-        /* @__PURE__ */ jsx(MetricGrid, { items: publicMetrics, onExportMetric: hasCurrentDatasetResult ? exportPublicMetric : undefined }),
+        /* @__PURE__ */ jsx(MetricGrid, { items: publicMetrics, onExportMetric: hasCurrentDatasetResult && !publicDatePending ? exportPublicMetric : undefined }),
         /* @__PURE__ */ jsxs("div", { className: "public-results-footer", children: [
           /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("strong", { children: "현재 화면" }),
             /* @__PURE__ */ jsx("span", { children: message })
           ] }),
-          /* @__PURE__ */ jsxs("button", { disabled: !hasPublicMetrics, onClick: savePublicSummary, type: "button", children: [/* @__PURE__ */ jsx(ImageIcon, { size: 16 }), "결과 이미지 저장"] })
+          /* @__PURE__ */ jsxs("button", { disabled: !hasPublicMetrics || publicDatePending, onClick: savePublicSummary, type: "button", children: [/* @__PURE__ */ jsx(ImageIcon, { size: 16 }), "결과 이미지 저장"] })
         ] })
       ] })
     ] }),
@@ -4299,14 +4348,21 @@ function CoordinateInput({
     ] })
   ] });
 }
-function ConfirmedDateInput({ compact = false, label, min = "2035-01-01", max = "2099-12-31", value, onConfirm, showPickerButton = true }) {
+function ConfirmedDateInput({ compact = false, label, min = "2035-01-01", max = "2099-12-31", value, onConfirm, onPendingChange, showPickerButton = true }) {
   const inputRef = useRef(null);
   const [draftValue, setDraftValue] = useState(value);
   const [errorMessage, setErrorMessage] = useState("");
+  const pending = draftValue !== value;
   useEffect(() => {
     setDraftValue(value);
     setErrorMessage("");
-  }, [value]);
+    onPendingChange?.(false);
+  }, [onPendingChange, value]);
+  const updateDraftValue = (nextValue) => {
+    setDraftValue(nextValue);
+    setErrorMessage("");
+    onPendingChange?.(nextValue !== value);
+  };
   const confirmValue = () => {
     if (!isCompleteDateValue(draftValue, { min, max })) {
       setErrorMessage("연도, 월, 일을 모두 선택한 뒤 확인을 누르세요.");
@@ -4314,13 +4370,14 @@ function ConfirmedDateInput({ compact = false, label, min = "2035-01-01", max = 
       return;
     }
     setErrorMessage("");
+    onPendingChange?.(false);
     onConfirm(draftValue);
   };
   const openCalendar = () => {
     openNativeDatePicker(inputRef.current);
   };
   return /* @__PURE__ */ jsxs(Fragment, { children: [
-    /* @__PURE__ */ jsxs("div", { className: `date-input-wrap${showPickerButton ? "" : " without-picker"}${errorMessage ? " invalid" : ""}${compact ? " compact" : ""}`, children: [
+    /* @__PURE__ */ jsxs("div", { className: `date-input-wrap${showPickerButton ? "" : " without-picker"}${errorMessage ? " invalid" : ""}${pending ? " pending" : ""}${compact ? " compact" : ""}`, children: [
       showPickerButton ? /* @__PURE__ */ jsx(
         "button",
         {
@@ -4340,14 +4397,8 @@ function ConfirmedDateInput({ compact = false, label, min = "2035-01-01", max = 
           min,
           max,
           value: draftValue,
-          onInput: (event) => {
-            setDraftValue(event.currentTarget.value);
-            setErrorMessage("");
-          },
-          onChange: (event) => {
-            setDraftValue(event.currentTarget.value);
-            setErrorMessage("");
-          },
+          onInput: (event) => updateDraftValue(event.currentTarget.value),
+          onChange: (event) => updateDraftValue(event.currentTarget.value),
           onKeyDown: (event) => {
             if (event.key !== "Enter") return;
             event.preventDefault();
@@ -4357,15 +4408,19 @@ function ConfirmedDateInput({ compact = false, label, min = "2035-01-01", max = 
           "aria-label": label
         }
       ),
-      /* @__PURE__ */ jsx("button", { "aria-label": compact ? `${label} 확인` : void 0, className: "date-confirm-button", onClick: confirmValue, title: compact ? "날짜 확인" : void 0, type: "button", children: compact ? /* @__PURE__ */ jsx(Check, { size: 14 }) : "확인" })
+      /* @__PURE__ */ jsx("button", { "aria-label": `${label} 적용`, className: "date-confirm-button", disabled: !pending, onClick: confirmValue, title: pending ? "변경한 날짜 적용" : "현재 적용된 날짜", type: "button", children: "적용" })
     ] }),
-    errorMessage ? /* @__PURE__ */ jsx("small", { className: "date-error-message", role: "alert", children: errorMessage }) : null
+    errorMessage
+      ? /* @__PURE__ */ jsx("small", { className: "date-error-message", role: "alert", children: errorMessage })
+      : pending
+        ? /* @__PURE__ */ jsx("small", { className: "date-pending-message", role: "status", children: `변경한 날짜를 적용하려면 [적용]을 누르세요. 현재 결과는 ${value} 기준입니다.` })
+        : null
   ] });
 }
-function DateField({ label, min = "2035-01-01", max = "2099-12-31", value, onChange }) {
+function DateField({ label, min = "2035-01-01", max = "2099-12-31", value, onChange, onPendingChange }) {
   return /* @__PURE__ */ jsxs("div", { className: "field date-field", children: [
     /* @__PURE__ */ jsx("span", { children: label }),
-    /* @__PURE__ */ jsx(ConfirmedDateInput, { label, max, min, onConfirm: onChange, value })
+    /* @__PURE__ */ jsx(ConfirmedDateInput, { label, max, min, onConfirm: onChange, onPendingChange, value })
   ] });
 }
 function NoticeCard({ title, body }) {

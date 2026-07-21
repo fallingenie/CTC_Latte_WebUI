@@ -914,6 +914,11 @@ svg {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--coral) 16%, transparent);
 }
 
+.date-input-wrap.pending:not(.invalid) {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 13%, transparent);
+}
+
 .date-input-wrap input {
   height: 42px;
   border: 0;
@@ -946,9 +951,15 @@ svg {
   font-weight: 800;
 }
 
-.date-confirm-button:hover {
+.date-confirm-button:hover:not(:disabled) {
   background: var(--green-dark);
   color: #fff;
+}
+
+.date-confirm-button:disabled {
+  background: var(--surface-soft);
+  color: var(--muted);
+  opacity: 1;
 }
 
 .date-error-message {
@@ -958,6 +969,16 @@ svg {
   font-size: 11px;
   font-weight: 700;
   line-height: 1.4;
+}
+
+.date-pending-message {
+  display: block;
+  margin-top: 5px;
+  color: var(--green-dark);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.4;
+  word-break: keep-all;
 }
 
 .toggle-row,
@@ -4045,6 +4066,11 @@ html[data-theme="dark"] .export-dialog-backdrop {
   min-height: 30px;
   padding: 0;
   border-radius: 0 5px 5px 0;
+  font-size: 10px;
+}
+
+.public-condition-strip .date-pending-message {
+  color: var(--green-dark);
   font-size: 10px;
 }
 
