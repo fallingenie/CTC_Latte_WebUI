@@ -1,4 +1,7 @@
-import { PUBLIC_CLIMATE_ATTRIBUTION_LABELS } from "./runtime-policy.js";
+import {
+  PUBLIC_CLIMATE_ATTRIBUTION_LABELS,
+  validatePublicObservationAttribution
+} from "./runtime-policy.js";
 import { CUSTOM_TEACHER_METRIC_KEYS } from "./teacher-lesson-builder.js";
 
 const lessonStateVersion = 3;
@@ -12,18 +15,17 @@ const customTeacherMetricKeySet = new Set(CUSTOM_TEACHER_METRIC_KEYS);
 const publicAttributionLabelSet = new Set(PUBLIC_CLIMATE_ATTRIBUTION_LABELS);
 const publicExportDataModes = new Set(["bias-corrected", "raw-model-grid"]);
 const attributionDocumentName = "LICENSES_AND_ATTRIBUTION.md";
-const kmaAsosUseByDataMode = Object.freeze({
-  "bias-corrected": "used_for_bias_correction",
-  "raw-model-grid": "not_used_raw_model_grid"
-});
-const kmaAsosNoticeByDataMode = Object.freeze({
-  "bias-corrected": "대한민국 기상청 ASOS 보정 사용",
-  "raw-model-grid": "대한민국 기상청 ASOS 보정 미사용"
-});
-const kmaAsosSourceUrl = "https://www.data.go.kr/data/15057210/openapi.do";
-const kmaMarkArchivePaths = Object.freeze([
-  "licenses/kma_mark_1.png",
-  "licenses/kma_mark_2.png"
+const interactiveAttributionFields = Object.freeze([
+  "catalogSchemaVersion",
+  "climateModels",
+  "dataMode",
+  "datasetIdentity",
+  "markDataUrls",
+  "methodologyReferences",
+  "observationAttribution",
+  "project",
+  "publicSafe",
+  "schemaVersion"
 ]);
 const pngSignature = Object.freeze([137, 80, 78, 71, 13, 10, 26, 10]);
 const privateLocatorPatterns = [
@@ -53,7 +55,7 @@ export function normalizePublicAttributionLabels(value) {
 export function isPublicClimateTextPayloadSafe(value) {
   if (!value
     || typeof value !== "object"
-    || value.attributionReady !== true
+    || !hasCanonicalObservationAttribution(value)
     || !Array.isArray(value.metrics)
     || !Array.isArray(value.attributionLabels)) {
     return false;
@@ -79,6 +81,30 @@ export function isPublicClimateTextPayloadSafe(value) {
     value.exploration?.interpretationLimit
   ];
   return visibleText.every(isPublicGatewayTextSafe);
+}
+
+function canonicalObservationAttribution(value) {
+  try {
+    const observationAttribution = validatePublicObservationAttribution(value?.observationAttribution);
+    const matchesRaw = value?.dataMode === "raw-model-grid"
+      && value.attributionReady === false
+      && observationAttribution.ready === true
+      && observationAttribution.usesObservationData === false
+      && observationAttribution.providerIds.length === 0
+      && observationAttribution.providers.length === 0;
+    const matchesBiasCorrection = value?.dataMode === "bias-corrected"
+      && value.attributionReady === true
+      && observationAttribution.ready === true
+      && observationAttribution.usesObservationData === true
+      && observationAttribution.providerIds.length > 0;
+    return matchesRaw || matchesBiasCorrection ? observationAttribution : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasCanonicalObservationAttribution(value) {
+  return canonicalObservationAttribution(value) !== undefined;
 }
 
 export function parseHashLocation(hash) {
@@ -232,7 +258,6 @@ export function isMatchingClimateSeriesResponse(value, expected) {
     || (expectedIncludeRaw !== undefined && typeof expectedIncludeRaw !== "boolean")
     || (expectedDataMode !== undefined && !["bias-corrected", "raw-model-grid"].includes(expectedDataMode))) return false;
   if (value.publicSafe !== true
-    || value.attributionReady !== true
     || !Array.isArray(value.attributionLabels)
     || value.attributionLabels.length === 0
     || typeof value.includeRaw !== "boolean"
@@ -532,6 +557,7 @@ export function buildClimateCsv(response) {
     throw new TypeError("공개할 수 없는 연결 정보가 포함되어 자료 내보내기를 중단했습니다.");
   }
   const dataMode = requirePublicExportDataMode(response.dataMode);
+  const observationAttribution = canonicalObservationAttribution(response);
   const datasetIdentity = requirePublicDatasetIdentity(response);
   const generatedAt = requireOptionalUtcTimestamp(response.generatedAt, "생성 시각");
   const header = [
@@ -558,7 +584,8 @@ export function buildClimateCsv(response) {
     "dataset_version",
     "dataset_updated_at",
     "attribution_document",
-    "kma_asos_use",
+    "observation_provider_ids",
+    "observation_attribution_texts",
     "attribution_labels",
     "problem_id",
     "problem_revision",
@@ -567,6 +594,10 @@ export function buildClimateCsv(response) {
     "season_months"
   ];
   const attribution = normalizePublicAttributionLabels(response.attributionLabels).join(" | ");
+  const observationProviderIds = observationAttribution.providerIds.join(" | ");
+  const observationAttributionTexts = observationAttribution.providers
+    .map((provider) => provider.attributionText)
+    .join(" | ");
   const rows = [header];
   response.dates.forEach((date, dateIndex) => {
     response.metrics.forEach((metric) => {
@@ -595,7 +626,8 @@ export function buildClimateCsv(response) {
         datasetIdentity.datasetVersion,
         datasetIdentity.datasetUpdatedAt,
         attributionDocumentName,
-        kmaAsosUseByDataMode[dataMode],
+        observationProviderIds,
+        observationAttributionTexts,
         attribution,
         response.exploration?.id ?? "",
         response.exploration?.revision ?? "",
@@ -655,6 +687,7 @@ export function buildInteractiveClimateHtml(response, attribution) {
     throw new TypeError("공개할 수 없는 연결 정보가 포함되어 자료 내보내기를 중단했습니다.");
   }
   const dataMode = requirePublicExportDataMode(response.dataMode);
+  const observationAttribution = canonicalObservationAttribution(response);
   const datasetIdentity = requirePublicDatasetIdentity(response);
   const generatedAt = requireOptionalUtcTimestamp(response.generatedAt, "생성 시각");
   const exploration = response.exploration ? {
@@ -670,12 +703,13 @@ export function buildInteractiveClimateHtml(response, attribution) {
       model: safeText(response.model ?? "", 160),
       dateStart: validDate(response.dateStart),
       dateEnd: validDate(response.dateEnd),
-      dataMode: dataMode === "raw-model-grid" ? "기후 모델 원자료 격자값" : "KMA ASOS 관측자료 기반 보정값",
+      dataMode: dataMode === "raw-model-grid" ? "기후 모델 원자료 격자값" : "관측자료 기반 보정값",
       datasetVersion: datasetIdentity.datasetVersion,
       datasetUpdatedAt: datasetIdentity.datasetUpdatedAt,
       generatedAt,
       seasonMonths: Array.isArray(response.seasonMonths) ? response.seasonMonths.filter((month) => Number.isInteger(month) && month >= 1 && month <= 12) : []
     },
+    observationAttribution,
     exploration,
     dates: Array.isArray(response.dates) ? response.dates.map(validDate) : [],
     metrics: Array.isArray(response.metrics) ? response.metrics.map((metric) => ({
@@ -694,7 +728,8 @@ export function buildInteractiveClimateHtml(response, attribution) {
     dataMode,
     datasetVersion: payload.context.datasetVersion,
     datasetUpdatedAt: payload.context.datasetUpdatedAt,
-    generatedAt: payload.context.generatedAt
+    generatedAt: payload.context.generatedAt,
+    observationAttribution
   });
   return `<!doctype html>
 <html lang="ko">
@@ -909,7 +944,7 @@ ${attributionBlock}
 }
 
 function buildInteractiveAttributionHtml(attribution, context) {
-  const record = requireInteractiveAttribution(attribution, context.dataMode);
+  const record = requireInteractiveAttribution(attribution, context);
   const modelItems = record.climateModels.map((model) => {
     const citations = model.citations.map((citation) => (
       `<li>${escapeHtml(citation.activity)}: ${escapeHtml(citation.title)} <a href="${escapeHtml(citation.href)}" target="_blank" rel="noopener noreferrer">DOI ${escapeHtml(citation.doi)}</a></li>`
@@ -919,52 +954,91 @@ function buildInteractiveAttributionHtml(attribution, context) {
   const methodItems = record.methodologyReferences.map((reference) => (
     `<li>${escapeHtml(reference.authors)} (${reference.year}). ${escapeHtml(reference.title)}. ${escapeHtml(reference.sourceTitle)}. <a href="${escapeHtml(reference.href)}" target="_blank" rel="noopener noreferrer">DOI ${escapeHtml(reference.doi)}</a></li>`
   )).join("");
-  const sourceNotice = context.dataMode === "raw-model-grid"
-    ? "기후 모델 원자료 격자값입니다. 대한민국 기상청 ASOS 관측자료를 사용한 보정은 적용하지 않았습니다."
-    : "대한민국 기상청 ASOS 관측자료를 사용해 보정한 값입니다.";
+  const sourceNotice = record.observationAttribution.usesObservationData
+    ? `${record.providers.map((provider) => provider.name).join(", ")} 관측자료를 사용해 보정한 값입니다.`
+    : "기후 모델 원자료 격자값입니다. 관측자료를 사용한 보정은 적용하지 않았습니다.";
   const generatedAt = context.generatedAt ? ` · 생성 ${escapeHtml(context.generatedAt)}` : "";
-  const markItems = record.marks.map((mark) => `<img src="${escapeHtml(mark.dataUrl)}" alt="${escapeHtml(mark.alt)}">`).join("");
+  const providerItems = record.providers.length === 0
+    ? "<p>이 결과에는 관측자료 제공자 자료를 사용하지 않았습니다.</p>"
+    : record.providers.map((provider) => {
+      const license = provider.licenseUrl
+        ? `<a href="${escapeHtml(provider.licenseUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(provider.licenseName)}</a>`
+        : escapeHtml(provider.licenseName);
+      const marks = provider.marks.length === 0
+        ? ""
+        : `<div class="attribution-marks">${provider.marks.map((mark) => `<img src="${escapeHtml(mark.dataUrl)}" alt="${escapeHtml(`${provider.name} ${mark.name} 결과 표장`)}">`).join("")}</div>`;
+      return `<article class="attribution-provider"><h3>${escapeHtml(provider.name)}</h3><p>자료: ${escapeHtml(provider.dataset)} · 라이선스: ${license}</p><p>${escapeHtml(provider.attributionText)}</p><p>인용: ${escapeHtml(provider.citation)}</p><p>재배포 정책: ${escapeHtml(provider.redistributionPolicy)} · 사용 행 수: ${provider.usedRowCount.toLocaleString("ko-KR")}</p>${marks}</article>`;
+    }).join("");
   return `<details class="attribution"><summary>CMIP6/downscaleCMIP6 출처·인용</summary><div class="attribution-content">
 <p class="attribution-meta">${escapeHtml(sourceNotice)} · 자료판 ${escapeHtml(context.datasetVersion)} · 자료 갱신 ${escapeHtml(context.datasetUpdatedAt)}${generatedAt}</p>
-<section><h2>대한민국 기상청 ASOS</h2><p>${escapeHtml(sourceNotice)} (${escapeHtml(record.asosNotice)})</p><p>자료 출처: ${escapeHtml(record.asosSource.organization)} <a href="${escapeHtml(record.asosSource.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(record.asosSource.title)}</a></p><div class="attribution-marks">${markItems}</div></section>
+<section><h2>관측자료 출처 및 라이선스</h2>${providerItems}</section>
 <section><h2>기후 모델 자료</h2><ul class="attribution-models">${modelItems}</ul></section>
 <section><h2>자료 처리 방법</h2><ol class="attribution-methods">${methodItems}</ol></section>
 <section><h2>제작자</h2><p>${escapeHtml(record.project.title)} · ${escapeHtml(record.project.creator.displayName)} · <a href="${escapeHtml(record.project.creator.githubUrl)}" target="_blank" rel="noopener noreferrer">GitHub ${escapeHtml(record.project.creator.githubHandle)}</a> · <a href="${escapeHtml(record.project.repositoryUrl)}" target="_blank" rel="noopener noreferrer">프로젝트 저장소</a> · ${escapeHtml(record.project.license.title)} (${escapeHtml(record.project.license.identifier)})</p></section>
 </div></details>`;
 }
 
-function requireInteractiveAttribution(value, dataMode) {
+function requireInteractiveAttribution(value, context) {
   if (!isRecord(value)
+    || Object.keys(value).sort().some((key, index) => key !== interactiveAttributionFields[index])
+    || Object.keys(value).length !== interactiveAttributionFields.length
     || value.publicSafe !== true
     || value.schemaVersion !== 1
     || value.catalogSchemaVersion !== 1
-    || value.dataMode !== dataMode
+    || value.dataMode !== context.dataMode
     || !isPublicAttributionTreeSafe(value)) {
     throw new TypeError("대화형 HTML에 넣을 공개 출처 정보를 확인할 수 없습니다.");
   }
-  const expectedUsed = dataMode === "bias-corrected";
-  const expectedNotice = kmaAsosNoticeByDataMode[dataMode];
-  const correction = value.asosCorrection;
-  if (!isRecord(correction)
-    || correction.used !== expectedUsed
-    || correction.notice !== expectedNotice
-    || !isRecord(correction.source)
-    || correction.source.url !== kmaAsosSourceUrl
-    || !Array.isArray(correction.marks)
-    || correction.marks.length !== kmaMarkArchivePaths.length
-    || !Array.isArray(value.markDataUrls)
-    || value.markDataUrls.length !== kmaMarkArchivePaths.length) {
-    throw new TypeError("dataMode와 대한민국 기상청 ASOS 출처 표기가 일치하지 않습니다.");
+  if (!isRecord(value.datasetIdentity)
+    || value.datasetIdentity.version !== context.datasetVersion
+    || value.datasetIdentity.updatedAt !== context.datasetUpdatedAt
+    || value.datasetIdentity.generatedAt !== context.generatedAt) {
+    throw new TypeError("대화형 HTML의 자료판 정보가 조회 결과와 일치하지 않습니다.");
   }
-  const marks = correction.marks.map((mark, index) => {
-    if (!isRecord(mark) || mark.archivePath !== kmaMarkArchivePaths[index]) {
+  let observationAttribution;
+  try {
+    observationAttribution = validatePublicObservationAttribution(value.observationAttribution);
+  } catch {
+    throw new TypeError("대화형 HTML에 넣을 관측자료 출처 정보를 확인할 수 없습니다.");
+  }
+  const expectedUsed = context.dataMode === "bias-corrected";
+  const validMode = observationAttribution.ready === true
+    && observationAttribution.usesObservationData === expectedUsed
+    && (expectedUsed
+      ? observationAttribution.providerIds.length > 0
+      : observationAttribution.providerIds.length === 0 && observationAttribution.providers.length === 0);
+  if (!validMode
+    || JSON.stringify(observationAttribution) !== JSON.stringify(context.observationAttribution)) {
+    throw new TypeError("대화형 HTML의 관측자료 출처가 조회 결과와 일치하지 않습니다.");
+  }
+  const markDescriptorByName = new Map();
+  for (const provider of observationAttribution.providers) {
+    if (!provider.requiresResultMark) continue;
+    for (const mark of provider.markAssets) {
+      const previous = markDescriptorByName.get(mark.name);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(mark)) {
+        throw new TypeError("같은 이름의 결과 표장 설명이 서로 일치하지 않습니다.");
+      }
+      if (!previous) markDescriptorByName.set(mark.name, mark);
+    }
+  }
+  const markDescriptors = [...markDescriptorByName.values()];
+  if (!Array.isArray(value.markDataUrls) || value.markDataUrls.length !== markDescriptors.length) {
+    throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
+  }
+  const marks = markDescriptors.map((mark, index) => {
+    const embeddedMark = value.markDataUrls[index];
+    if (!isRecord(embeddedMark)
+      || Object.keys(embeddedMark).sort().join(",") !== "dataUrl,name"
+      || embeddedMark.name !== mark.name) {
       throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
     }
     return {
-      alt: requirePublicAttributionText(mark.alt, 160, "출처 표시 이미지 대체 문구"),
-      dataUrl: requirePngDataUrl(value.markDataUrls[index])
+      name: mark.name,
+      dataUrl: requirePngDataUrl(embeddedMark.dataUrl, mark.sizeBytes)
     };
   });
+  const markByName = new Map(marks.map((mark) => [mark.name, mark]));
   const project = requireInteractiveProjectAttribution(value.project);
   if (!Array.isArray(value.climateModels) || value.climateModels.length === 0) {
     throw new TypeError("기후 모델 인용 정보가 필요합니다.");
@@ -1004,14 +1078,13 @@ function requireInteractiveAttribution(value, dataMode) {
       ...source
     };
   });
+  const providers = observationAttribution.providers.map((provider) => ({
+    ...provider,
+    marks: provider.markAssets.map((mark) => markByName.get(mark.name))
+  }));
   return {
-    asosNotice: expectedNotice,
-    asosSource: {
-      organization: requirePublicAttributionText(correction.source.organization, 120, "ASOS 제공 기관"),
-      title: requirePublicAttributionText(correction.source.title, 200, "ASOS 자료 제목"),
-      href: kmaAsosSourceUrl
-    },
-    marks,
+    observationAttribution,
+    providers,
     project,
     climateModels,
     methodologyReferences
@@ -1076,7 +1149,7 @@ function safeDoiHref(value, doi) {
   return value;
 }
 
-function requirePngDataUrl(value) {
+function requirePngDataUrl(value, expectedSizeBytes) {
   if (typeof value !== "string" || value.length > 4_000_000) {
     throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
   }
@@ -1093,7 +1166,9 @@ function requirePngDataUrl(value) {
   const hasPngHeader = decoded.length >= 24
     && pngSignature.every((byte, index) => decoded.charCodeAt(index) === byte)
     && decoded.slice(12, 16) === "IHDR";
-  if (!hasPngHeader) throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
+  if (!hasPngHeader || decoded.length !== expectedSizeBytes) {
+    throw new TypeError("대화형 HTML에 넣을 원본 출처 표시 이미지를 확인할 수 없습니다.");
+  }
   return value;
 }
 
@@ -1112,7 +1187,7 @@ function isPublicAttributionTreeSafe(value, seen = new WeakSet()) {
     return isPublicGatewayTextSafe(value)
       || /^https:\/\/doi\.org\/10\.\d{4,9}\/[a-z0-9._()\-;/:]+$/iu.test(value)
       || /^https:\/\/github\.com\/[a-z0-9](?:[a-z0-9-]{0,38})(?:\/[a-z0-9._-]+)?$/iu.test(value)
-      || value === kmaAsosSourceUrl
+      || isSafePublicHttpsUrl(value)
       || /^data:image\/png;base64,[a-z0-9+/=]+$/iu.test(value);
   }
   if (typeof value === "number") return Number.isFinite(value);
@@ -1120,6 +1195,23 @@ function isPublicAttributionTreeSafe(value, seen = new WeakSet()) {
   if (typeof value !== "object" || seen.has(value)) return false;
   seen.add(value);
   return Object.values(value).every((item) => isPublicAttributionTreeSafe(item, seen));
+}
+
+function isSafePublicHttpsUrl(value) {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try {
+    const parsed = new URL(value);
+    const hostname = parsed.hostname.toLowerCase();
+    return parsed.protocol === "https:"
+      && !parsed.username
+      && !parsed.password
+      && !parsed.port
+      && hostname.includes(".")
+      && !/^(?:localhost|0\.0\.0\.0|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})$/u.test(hostname)
+      && !/(?:^|\.)(?:local|localhost|internal|invalid|test|example)$/u.test(hostname);
+  } catch {
+    return false;
+  }
 }
 
 function isRecord(value) {

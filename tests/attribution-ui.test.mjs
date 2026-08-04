@@ -11,16 +11,72 @@ const [appSource, styleSource, citationSource] = await Promise.all([
   fs.readFile(path.join(root, "CITATION.cff"), "utf8")
 ]);
 
-test("세 사용자 화면은 공통 제목행에서 출처와 인용을 확인한다", () => {
+test("공통 제목행은 정적 CMIP6 인용만 표시하고 관측자료 사용 여부를 추정하지 않는다", () => {
   assert.match(appSource, /function SourceCitationDisclosure/u);
   assert.match(appSource, /jsx\(SourceCitationDisclosure, \{ metadata \}\)/u);
   assert.match(appSource, /CMIP6\/downscaleCMIP6 자료 출처/u);
-  assert.match(appSource, /\.\/assets\/licenses\/kma_mark_1\.png/u);
-  assert.match(appSource, /\.\/assets\/licenses\/kma_mark_2\.png/u);
-  assert.match(appSource, /https:\/\/www\.data\.go\.kr\/data\/15057210\/openapi\.do/u);
-  assert.match(appSource, /공공누리 제1유형 출처 표시/u);
-  assert.match(appSource, /제3자 권리 포함 저작권 표시/u);
+  assert.match(appSource, /실제 사용된 관측자료 출처는 각 조회 결과에 표시됩니다/u);
+  assert.doesNotMatch(appSource, /대한민국 기상청|\bKMA\b|\bASOS\b|kma_mark_|data\.go\.kr/u);
   assert.match(styleSource, /\.topbar-eyebrow-row\s*\{[\s\S]*?justify-content: space-between/u);
+});
+
+test("관측자료 패널은 canonical query와 series 응답의 실제 provider만 표시한다", () => {
+  assert.match(appSource, /function canonicalObservationAttributionForResult\(response\)/u);
+  assert.match(appSource, /validatePublicObservationAttribution\(response\?\.observationAttribution\)/u);
+  assert.match(appSource, /function ObservationAttributionPanel\(\{ response \}\)/u);
+  assert.match(appSource, /observationAttribution\.providers\.map\(\(provider\)/u);
+  assert.match(appSource, /provider\.name/u);
+  assert.match(appSource, /provider\.dataset/u);
+  assert.match(appSource, /provider\.attributionText/u);
+  assert.match(appSource, /provider\.citation/u);
+  assert.match(appSource, /provider\.licenseUrl \?/u);
+  assert.match(appSource, /resolveVerifiedObservationMarkAssets\(observationAttribution\)/u);
+  assert.match(appSource, /src: asset\.sourceUrl/u);
+  assert.ok((appSource.match(/jsx\(ObservationAttributionPanel, \{ response(?:: remoteState\.response)? \}\)/gu) ?? []).length >= 4);
+  assert.match(styleSource, /\.observation-attribution-panel\s*\{/u);
+  assert.match(styleSource, /\.observation-provider-marks img\s*\{/u);
+});
+
+test("raw 결과는 canonical 무관측 record로 준비 상태를 통과하고 provider와 mark를 만들지 않는다", () => {
+  const canonicalStart = appSource.indexOf("function canonicalObservationAttributionForResult");
+  const canonicalEnd = appSource.indexOf("function ObservationAttributionPanel", canonicalStart);
+  const canonicalSource = appSource.slice(canonicalStart, canonicalEnd);
+  assert.ok(canonicalStart >= 0 && canonicalEnd > canonicalStart);
+  assert.match(canonicalSource, /response\?\.dataMode === "raw-model-grid"[\s\S]*?response\.attributionReady === false/u);
+  assert.match(canonicalSource, /observationAttribution\.usesObservationData === false/u);
+  assert.match(canonicalSource, /observationAttribution\.providerIds\.length === 0/u);
+  assert.match(canonicalSource, /observationAttribution\.providers\.length === 0/u);
+  assert.match(appSource, /const hasAttribution = canonicalObservationAttributionForResult\(response\) !== undefined/u);
+  assert.doesNotMatch(appSource, /const hasAttribution = response\.attributionReady/u);
+  assert.match(appSource, /if \(!observationAttribution\?\.usesObservationData\) return null/u);
+  assert.match(appSource, /if \(!observationAttribution\.usesObservationData\) return;/u);
+});
+
+test("모든 기간 export와 DOCX snapshot은 series 또는 query의 canonical 관측 출처 record를 전달한다", () => {
+  assert.match(appSource, /buildAttributionBundle\(\{[\s\S]*?observationAttribution: response\.observationAttribution/u);
+  assert.match(appSource, /buildCsvWorkspaceShareFiles\(blob, csvBlob, csvSpecification, response\.observationAttribution\)/u);
+  assert.match(appSource, /buildPublicExportAttribution\(\{[\s\S]*?observationAttribution: response\.observationAttribution/u);
+  assert.match(appSource, /resolveVerifiedObservationMarkAssets\(response\.observationAttribution\)/u);
+  assert.match(appSource, /verifyLocalObservationMarkAssetBytes\(asset, await response\.arrayBuffer\(\)\)/u);
+  assert.match(appSource, /name: asset\.name,[\s\S]*?dataUrl: await imageAssetDataUrl\(asset\)/u);
+  assert.match(appSource, /function withSnapshotObservationAttribution\(snapshot, response\)[\s\S]*?dataMode: response\.dataMode,[\s\S]*?observationAttribution/u);
+  assert.equal(appSource.match(/withSnapshotObservationAttribution\(/gu)?.length, 3);
+  assert.match(appSource, /buildStudentNotebookDocx\(\{[\s\S]*?baseline: comparisonBaseline \?\? currentSnapshot/u);
+  assert.match(appSource, /buildTeacherActivityDocx\(\{[\s\S]*?snapshots/u);
+});
+
+test("유효하지 않은 custom lesson 편집은 builder를 호출하지 않고 공유 준비 상태가 되지 않는다", () => {
+  const validationIndex = appSource.indexOf("const customLessonValidation = useMemo");
+  const builderIndex = appSource.indexOf("const sample = buildCustomTeacherLessonSample", validationIndex);
+  assert.ok(validationIndex >= 0 && builderIndex > validationIndex);
+  assert.match(appSource.slice(validationIndex, builderIndex), /if \(!customLessonValidation\.valid\) return lastValidCustomTeacherSampleRef\.current/u);
+  assert.equal(appSource.match(/buildCustomTeacherLessonSample\(/gu)?.length, 1);
+  assert.match(appSource, /const customLessonErrors = isCustomTeacherLesson \? \[\.\.\.customLessonValidation\.errors/u);
+  assert.match(appSource, /const customLessonReadyForShare = isCustomTeacherLesson && teacherConditionValidation\.valid/u);
+  assert.match(appSource, /const teacherShareBlocked = isCustomTeacherLesson && !customLessonReadyForShare/u);
+  assert.match(appSource, /customLesson: customLessonReadyForShare \? customLessonSharePayload\(activeTeacherSample\) : undefined/u);
+  assert.match(appSource, /const copyStudentLink = async \(\) => \{[\s\S]*?if \(teacherShareBlocked\)[\s\S]*?return;/u);
+  assert.match(appSource, /disabled: !started \|\| teacherShareBlocked/u);
 });
 
 test("제작자와 GitHub 정보는 고정되지 않은 공통 하단에 한 번만 표시한다", () => {

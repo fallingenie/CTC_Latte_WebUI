@@ -117,6 +117,37 @@ function encodeLessonFixture(value) {
 const datasetVersion = "a".repeat(64);
 const datasetUpdatedAt = "2026-07-15T01:02:03.123456Z";
 
+const validObservationProvider = Object.freeze({
+  providerId: "dwd",
+  name: "Deutscher Wetterdienst Climate Data Center",
+  dataset: "dwd_cdc_hourly_observations",
+  licenseName: "CC BY 4.0",
+  licenseUrl: "https://www.dwd.de/EN/service/legal_notice/templates_dwd_as_source.html",
+  citation: "Deutscher Wetterdienst, Climate Data Center hourly station observations.",
+  attributionText: "Based on data from Deutscher Wetterdienst (DWD), Climate Data Center; processed by Climate Time Capsule.",
+  redistributionPolicy: "cc_by_4_0_with_source_and_modification_notice",
+  usedRowCount: 24,
+  attributionRequired: true,
+  requiresResultMark: false,
+  markAssets: []
+});
+
+const validObservationAttribution = Object.freeze({
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: true,
+  providerIds: ["dwd"],
+  providers: [validObservationProvider]
+});
+
+const validRawObservationAttribution = Object.freeze({
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: false,
+  providerIds: [],
+  providers: []
+});
+
 function parseQuotedCsvLine(line) {
   return [...line.matchAll(/"((?:[^"]|"")*)"(?:,|$)/gu)]
     .map((match) => match[1].replace(/""/gu, '"'));
@@ -136,6 +167,7 @@ const validSeriesResponse = {
   datasetVersion,
   datasetUpdatedAt,
   attributionReady: true,
+  observationAttribution: validObservationAttribution,
   attributionLabels: ["국제기후모델 시나리오 자료", "관측자료 기반 보정"],
   metrics: [{
     key: "tasmax",
@@ -144,6 +176,17 @@ const validSeriesResponse = {
     modelCounts: [1, 1]
   }]
 };
+
+function rawSeriesResponse(overrides = {}) {
+  return {
+    ...validSeriesResponse,
+    dataMode: "raw-model-grid",
+    attributionReady: false,
+    observationAttribution: validRawObservationAttribution,
+    attributionLabels: ["국제기후모델 시나리오 원자료"],
+    ...overrides
+  };
+}
 
 const validSeriesExpectation = {
   startDate: "2050-08-01",
@@ -502,7 +545,7 @@ test("계절 탐구는 지정한 월만 남기고 모든 지표 배열을 같은
 test("기간 자료 응답은 좌표·기간·시나리오·모델과 배열 길이가 모두 같아야 승인된다", () => {
   assert.equal(isMatchingClimateSeriesResponse(validSeriesResponse, validSeriesExpectation), true);
   assert.equal(isMatchingClimateSeriesResponse(
-    { ...validSeriesResponse, dataMode: "raw-model-grid" },
+    rawSeriesResponse(),
     { ...validSeriesExpectation, dataMode: "raw-model-grid" }
   ), true);
   assert.equal(isMatchingClimateSeriesResponse(
@@ -513,6 +556,23 @@ test("기간 자료 응답은 좌표·기간·시나리오·모델과 배열 길
   assert.equal(isMatchingClimateSeriesResponse({ ...validSeriesResponse, scenario: "다른 경로" }, validSeriesExpectation), false);
   assert.equal(isMatchingClimateSeriesResponse({ ...validSeriesResponse, model: "EC-Earth3" }, validSeriesExpectation), false);
   assert.equal(isMatchingClimateSeriesResponse({ ...validSeriesResponse, attributionReady: false }, validSeriesExpectation), false);
+  assert.equal(isMatchingClimateSeriesResponse({
+    ...validSeriesResponse,
+    observationAttribution: {
+      schemaVersion: 1,
+      ready: false,
+      usesObservationData: false,
+      providerIds: [],
+      providers: []
+    }
+  }, validSeriesExpectation), false);
+  assert.equal(isMatchingClimateSeriesResponse({
+    ...validSeriesResponse,
+    observationAttribution: {
+      ...validObservationAttribution,
+      providerIds: ["unknown"]
+    }
+  }, validSeriesExpectation), false);
   assert.equal(isMatchingClimateSeriesResponse({ ...validSeriesResponse, attributionLabels: [] }, validSeriesExpectation), false);
   assert.equal(isMatchingClimateSeriesResponse({ ...validSeriesResponse, dataMode: "raw-model-grid" }, validSeriesExpectation), false);
   assert.equal(isMatchingClimateSeriesResponse({ ...validSeriesResponse, includeRaw: true }, validSeriesExpectation), false);
@@ -525,11 +585,7 @@ test("기간 자료 응답은 좌표·기간·시나리오·모델과 배열 길
 test("자료판 갱신 뒤에는 같은 조건의 원자료와 보정 자료 전환을 모두 허용한다", () => {
   const refreshedExpectation = { ...validSeriesExpectation, dataMode: undefined, includeRaw: undefined };
   assert.equal(isMatchingClimateSeriesResponse(validSeriesResponse, refreshedExpectation), true);
-  assert.equal(isMatchingClimateSeriesResponse({
-    ...validSeriesResponse,
-    dataMode: "raw-model-grid",
-    includeRaw: false
-  }, refreshedExpectation), true);
+  assert.equal(isMatchingClimateSeriesResponse(rawSeriesResponse({ includeRaw: false }), refreshedExpectation), true);
   assert.equal(isMatchingClimateSeriesResponse({
     ...validSeriesResponse,
     dataMode: "unknown-mode"
@@ -538,11 +594,7 @@ test("자료판 갱신 뒤에는 같은 조건의 원자료와 보정 자료 전
     ...validSeriesResponse,
     dataMode: "raw-model-grid"
   }, validSeriesExpectation), false);
-  assert.equal(isMatchingClimateSeriesResponse({
-    ...validSeriesResponse,
-    dataMode: "raw-model-grid",
-    includeRaw: "false"
-  }, refreshedExpectation), false);
+  assert.equal(isMatchingClimateSeriesResponse(rawSeriesResponse({ includeRaw: "false" }), refreshedExpectation), false);
 });
 
 test("기간 자료 응답은 저장소 주소와 내부 파일 형식을 공개 화면에서 거부한다", () => {
@@ -564,6 +616,18 @@ test("기간 자료 응답은 저장소 주소와 내부 파일 형식을 공개
     }, validSeriesExpectation), false);
   });
   assert.equal(isPublicClimateTextPayloadSafe(validSeriesResponse), true);
+  assert.equal(isPublicClimateTextPayloadSafe(rawSeriesResponse()), true);
+  assert.equal(isPublicClimateTextPayloadSafe({
+    ...rawSeriesResponse(),
+    attributionReady: true
+  }), false);
+  assert.equal(isPublicClimateTextPayloadSafe({
+    ...validSeriesResponse,
+    observationAttribution: {
+      ...validObservationAttribution,
+      providers: [{ ...validObservationProvider, licenseUrl: "http://www.dwd.de/private" }]
+    }
+  }), false);
 });
 
 test("자료 내보내기는 허용하지 않은 출처 문구가 있으면 파일 생성을 중단한다", () => {
@@ -621,6 +685,7 @@ test("기후모델 원자료는 CSV의 raw 열에 기록한다", () => {
 test("연구용 CSV는 생성 시각과 자료 출처 및 월별 체감 기준을 보존한다", () => {
   const csv = buildClimateCsv({
     attributionReady: true,
+    observationAttribution: validObservationAttribution,
     attributionLabels: ["국제기후모델 시나리오 자료", "관측자료 기반 보정"],
     dataMode: "bias-corrected",
     dates: ["2050-01-15", "2050-08-15"],
@@ -645,12 +710,13 @@ test("연구용 CSV는 생성 시각과 자료 출처 및 월별 체감 기준�
   const [header, winter, summer] = csv.split("\r\n");
   const headerCells = parseQuotedCsvLine(header);
   const summerCells = parseQuotedCsvLine(summer);
-  assert.deepEqual(headerCells.slice(19, 25), [
+  assert.deepEqual(headerCells.slice(19, 26), [
     "generated_at",
     "dataset_version",
     "dataset_updated_at",
     "attribution_document",
-    "kma_asos_use",
+    "observation_provider_ids",
+    "observation_attribution_texts",
     "attribution_labels"
   ]);
   assert.match(winter, /"feels_like"/u);
@@ -659,17 +725,16 @@ test("연구용 CSV는 생성 시각과 자료 출처 및 월별 체감 기준�
   assert.equal(summerCells[20], datasetVersion);
   assert.equal(summerCells[21], datasetUpdatedAt);
   assert.equal(summerCells[22], "LICENSES_AND_ATTRIBUTION.md");
-  assert.equal(summerCells[23], "used_for_bias_correction");
-  assert.equal(summerCells[24], "국제기후모델 시나리오 자료 | 관측자료 기반 보정");
+  assert.equal(summerCells[23], "dwd");
+  assert.equal(summerCells[24], validObservationProvider.attributionText);
+  assert.equal(summerCells[25], "국제기후모델 시나리오 자료 | 관측자료 기반 보정");
   assert.match(summer, /"1\.234"/u);
 });
 
-test("CSV attribution 열은 원자료 격자값과 KMA ASOS 보정 사용을 구분하고 비공개 경로를 제외한다", () => {
-  const csv = buildClimateCsv({
-    ...validSeriesResponse,
-    dataMode: "raw-model-grid",
+test("CSV attribution 열은 원자료에서 관측 제공자를 만들지 않고 비공개 경로를 제외한다", () => {
+  const csv = buildClimateCsv(rawSeriesResponse({
     storagePath: "G:\\내 드라이브\\ctc_latte\\비공개"
-  });
+  }));
   const [header, row] = csv.split("\r\n");
   const headerCells = parseQuotedCsvLine(header);
   const rowCells = parseQuotedCsvLine(row);
@@ -677,7 +742,8 @@ test("CSV attribution 열은 원자료 격자값과 KMA ASOS 보정 사용을 �
   assert.equal(rowCells[headerCells.indexOf("dataset_version")], datasetVersion);
   assert.equal(rowCells[headerCells.indexOf("dataset_updated_at")], datasetUpdatedAt);
   assert.equal(rowCells[headerCells.indexOf("attribution_document")], "LICENSES_AND_ATTRIBUTION.md");
-  assert.equal(rowCells[headerCells.indexOf("kma_asos_use")], "not_used_raw_model_grid");
+  assert.equal(rowCells[headerCells.indexOf("observation_provider_ids")], "");
+  assert.equal(rowCells[headerCells.indexOf("observation_attribution_texts")], "");
   assert.doesNotMatch(csv, /G:\\|ctc_latte|내 드라이브|비공개/iu);
 });
 
@@ -693,6 +759,7 @@ test("CSV 자료 갱신 시각은 Backend 계약의 Z와 +00:00 UTC 표기를 �
 test("CSV의 기계 판독용 위경도는 음수 부호를 보존한다", () => {
   const csv = buildClimateCsv({
     attributionReady: true,
+    observationAttribution: validObservationAttribution,
     attributionLabels: ["국제기후모델 시나리오 자료"],
     dataMode: "bias-corrected",
     datasetVersion,

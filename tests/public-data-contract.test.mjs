@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
 
 const source = await readFile(new URL("../source/public-app.js", import.meta.url), "utf8");
+const exportAttributionSource = await readFile(new URL("../source/export-attribution.js", import.meta.url), "utf8");
 const exportShareSource = await readFile(new URL("../source/export-share.js", import.meta.url), "utf8");
 const styleSource = await readFile(new URL("../source/public-app.css", import.meta.url), "utf8");
 const accessGateStyleSource = await readFile(new URL("../source/access-gate.css", import.meta.url), "utf8");
@@ -87,12 +88,14 @@ test("한글 CSV는 UTF-8 표식과 출처 자료를 묶어 저장한다", () =>
   assert.match(source, /datasetUpdatedAt: response\.datasetUpdatedAt/u);
 });
 
-test("기간 자료의 모든 내보내기 형식은 출처 정보와 원본 기상청 표장을 포함한다", () => {
+test("기간 자료의 모든 내보내기 형식은 실제 관측 공급자와 검증된 필수 표장만 포함한다", () => {
   assert.match(source, /buildInteractiveClimateHtml\(response, await buildInteractiveAttributionPayload\(response\)\)/u);
   assert.match(source, /buildClimatePdfBlob\(canvas, response\)/u);
-  assert.match(source, /await drawKmaAttributionMarks\(context, response, width\)/u);
-  assert.match(source, /loadImageAsset\("\.\/assets\/licenses\/kma_mark_1\.png"\)/u);
-  assert.match(source, /loadImageAsset\("\.\/assets\/licenses\/kma_mark_2\.png"\)/u);
+  assert.match(source, /await drawObservationAttributionMarks\(context, response, width\)/u);
+  assert.match(source, /resolveVerifiedObservationMarkAssets\(response\.observationAttribution\)/u);
+  assert.match(source, /verifyLocalObservationMarkAssetBytes\(asset, await response\.arrayBuffer\(\)\)/u);
+  assert.match(exportAttributionSource, /asset\.sha256\s*===\s*descriptor\.sha256/u);
+  assert.match(exportAttributionSource, /if \(!projected\.usesObservationData\) return deepFreeze\(\[\]\)/u);
   assert.match(source, /Image as ImageIcon/u);
   assert.match(source, /const image = new window\.Image\(\)/u);
   assert.doesNotMatch(source, /const image = new Image\(\)/u);
@@ -279,8 +282,10 @@ test("학생 기록과 교사 활동지는 DOCX 저장과 Google 문서 가져�
 test("CSV는 스프레드시트 공유를, HTML은 대화형 원본의 Drive 공유를 제공한다", () => {
   assert.match(source, /label: "Google Workspace로 공유"/u);
   assert.match(source, /filename: `\$\{stem\}\.csv`/u);
-  assert.match(exportShareSource, /filename: "kma_mark_1\.png"/u);
-  assert.match(exportShareSource, /filename: "kma_mark_2\.png"/u);
+  assert.match(exportShareSource, /resolveVerifiedObservationMarkAssets\(observationAttribution\)/u);
+  assert.match(exportShareSource, /if \(markAssets\.length === 0\) return \[csvFile\]/u);
+  assert.match(exportShareSource, /filename: asset\.name/u);
+  assert.match(exportShareSource, /verifyLocalObservationMarkAssetBytes/u);
   assert.match(source, /label: "Google Drive에 원본 공유"/u);
   assert.match(source, /HTML은 문서로 변환하면 그래프의 값 확인과 확대 기능이 사라질 수 있어/u);
   assert.match(source, /이 브라우저에서는 파일 공유를 지원하지 않아 기기 저장으로 전환합니다/u);

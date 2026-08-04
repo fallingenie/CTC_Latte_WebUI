@@ -3,6 +3,7 @@ import {
   BorderStyle,
   Document,
   HeadingLevel,
+  ImageRun,
   Packer,
   Paragraph,
   ShadingType,
@@ -14,6 +15,14 @@ import {
   VerticalAlign,
   WidthType
 } from "docx";
+import {
+  BIAS_CORRECTED_DATA_MODE,
+  RAW_MODEL_GRID_DATA_MODE,
+  buildPublicExportAttribution,
+  resolveVerifiedObservationMarkAssets,
+  verifyLocalObservationMarkAssetBytes
+} from "./export-attribution.js";
+import { validatePublicObservationAttribution } from "./runtime-policy.js";
 import {
   formatCoordinatePair,
   formatPublicMetricValue,
@@ -262,6 +271,8 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
   if (!baseline) {
     throw new TypeError("학생 탐구 기록을 만들려면 먼저 비교할 자료가 필요합니다.");
   }
+  const attributionContent = buildDocxAttributionContent([baseline, comparison].filter(Boolean));
+  const attributionMarks = await loadVerifiedDocxMarks(attributionContent.markAssets);
 
   const overviewRows = [["탐구 주제", cleanText(focusLabel, 80) || "자유 탐구"]];
   if (problem?.presentation?.title) overviewRows.push(["탐구 제목", cleanText(problem.presentation.title, 200)]);
@@ -381,7 +392,8 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
       color: colors.muted,
       size: 18,
       spacing: { after: 0, line: 280 }
-    })
+    }),
+    ...docxAttributionSection(attributionContent, attributionMarks, `${nextSectionNumber + 1}. 자료 출처와 인용`)
   );
 
   const document = new Document({
@@ -609,6 +621,8 @@ export async function buildTeacherActivityDocx({
   if (usableSnapshots.length === 0) {
     throw new TypeError("수업 활동지를 만들려면 비교할 기후 자료가 하나 이상 필요합니다.");
   }
+  const attributionContent = buildDocxAttributionContent(usableSnapshots);
+  const attributionMarks = await loadVerifiedDocxMarks(attributionContent.markAssets);
 
   const resolvedQuestion = cleanText(inquiryQuestion ?? problem?.inquiry?.question, 1000);
   const resolvedObjective = cleanText(objective ?? problem?.inquiry?.objective, 1000) || "기후 자료를 비교하고 근거와 한계를 설명합니다.";
@@ -789,6 +803,13 @@ export async function buildTeacherActivityDocx({
       "기후 모델 자료와 지역 관측 자료가 각각 어느 정도로 넓은 지역을 나타내는지 구분합니다."
     ].map(bulletParagraph)
   );
+  sectionNumber += 1;
+
+  children.push(...docxAttributionSection(
+    attributionContent,
+    attributionMarks,
+    `${sectionNumber}. 자료 출처와 인용`
+  ));
 
   const document = new Document({
     creator: "기후 타임캡슐",
@@ -814,4 +835,210 @@ export async function buildTeacherActivityDocx({
   });
 
   return Packer.toBlob(document);
+}
+
+export function buildDocxAttributionContent(snapshots) {
+  if (!Array.isArray(snapshots) || snapshots.length === 0) {
+    throw new TypeError("DOCX 출처를 확인할 비교 자료가 필요합니다.");
+  }
+  const records = snapshots.map((snapshot) => {
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+      throw new TypeError("DOCX 출처를 확인할 비교 자료가 올바르지 않습니다.");
+    }
+    const observationAttribution = requireDocxObservationAttribution(
+      snapshot.observationAttribution,
+      snapshot.dataMode
+    );
+    return buildPublicExportAttribution({
+      dataMode: snapshot.dataMode,
+      model: snapshot.model,
+      observationAttribution
+    });
+  });
+
+  const providers = [];
+  const providerFingerprints = new Map();
+  const markAssets = [];
+  const markFingerprints = new Map();
+  const climateModels = [];
+  const modelNames = new Set();
+  for (const record of records) {
+    for (const provider of record.observationAttribution.providers) {
+      const fingerprint = observationProviderFingerprint(provider);
+      const previous = providerFingerprints.get(provider.providerId);
+      if (previous && previous !== fingerprint) {
+        throw new TypeError(`DOCX 비교 자료의 관측자료 공급자 정보가 서로 다릅니다: ${provider.providerId}`);
+      }
+      if (!previous) {
+        providerFingerprints.set(provider.providerId, fingerprint);
+        providers.push(provider);
+      }
+    }
+    for (const asset of resolveVerifiedObservationMarkAssets(record.observationAttribution)) {
+      const key = asset.name;
+      const { providerIds, ...staticAsset } = asset;
+      const fingerprint = JSON.stringify(staticAsset);
+      const previous = markFingerprints.get(key);
+      if (previous && previous.fingerprint !== fingerprint) {
+        throw new TypeError(`DOCX 비교 자료의 결과 표시 마크가 서로 다릅니다: ${asset.name}`);
+      }
+      if (!previous) {
+        markFingerprints.set(key, { fingerprint, index: markAssets.length });
+        markAssets.push({ ...asset, providerIds: [...providerIds] });
+      } else {
+        markAssets[previous.index].providerIds = [
+          ...new Set([...markAssets[previous.index].providerIds, ...providerIds])
+        ];
+      }
+    }
+    for (const model of record.climateModels) {
+      if (modelNames.has(model.name)) continue;
+      modelNames.add(model.name);
+      climateModels.push(model);
+    }
+  }
+
+  return deepFreeze({
+    project: records[0].project,
+    providers,
+    markAssets,
+    climateModels,
+    methodologyReferences: records[0].methodologyReferences
+  });
+}
+
+function requireDocxObservationAttribution(value, dataMode) {
+  if (dataMode !== RAW_MODEL_GRID_DATA_MODE && dataMode !== BIAS_CORRECTED_DATA_MODE) {
+    throw new TypeError("DOCX 자료 유형은 raw-model-grid 또는 bias-corrected여야 합니다.");
+  }
+  let attribution;
+  try {
+    attribution = validatePublicObservationAttribution(value);
+  } catch {
+    throw new TypeError("DOCX 관측자료 출처 정보를 확인할 수 없습니다.");
+  }
+  const rawOnly = dataMode === RAW_MODEL_GRID_DATA_MODE
+    && attribution.ready === true
+    && attribution.usesObservationData === false
+    && attribution.providerIds.length === 0
+    && attribution.providers.length === 0;
+  const observationResult = dataMode === BIAS_CORRECTED_DATA_MODE
+    && attribution.ready === true
+    && attribution.usesObservationData === true
+    && attribution.providerIds.length > 0;
+  if (!rawOnly && !observationResult) {
+    throw new TypeError("DOCX 자료 유형과 관측자료 출처 정보가 일치하지 않습니다.");
+  }
+  return attribution;
+}
+
+function observationProviderFingerprint(provider) {
+  const { usedRowCount: _ignored, ...staticFields } = provider;
+  return JSON.stringify(staticFields);
+}
+
+function docxAttributionSection(content, marks, title) {
+  const children = [
+    pageSectionHeading(title),
+    subsectionHeading("실제 사용한 관측자료 공급자")
+  ];
+  if (content.providers.length === 0) {
+    children.push(textParagraph("이 문서의 비교 자료에는 관측자료 공급자 또는 결과 표시 마크가 사용되지 않았습니다.", {
+      color: colors.muted,
+      size: 19,
+      spacing: { after: 140, line: 300 }
+    }));
+  }
+  for (const provider of content.providers) {
+    children.push(
+      textParagraph(`${provider.name} · ${provider.dataset}`, { bold: true, size: 21 }),
+      textParagraph(`인용: ${provider.citation}`, { size: 19 }),
+      textParagraph(`출처 표시: ${provider.attributionText}`, { size: 19 }),
+      textParagraph(`라이선스: ${provider.licenseName}`, { size: 19, color: colors.accent }),
+      ...(provider.licenseUrl ? [textParagraph(provider.licenseUrl, { size: 18, color: colors.muted })] : []),
+      textParagraph(`재배포 조건: ${provider.redistributionPolicy}`, { size: 18, color: colors.muted })
+    );
+    const providerMarks = marks.filter((mark) => mark.providerIds.includes(provider.providerId));
+    if (providerMarks.length > 0) {
+      children.push(new Paragraph({
+        children: providerMarks.map((mark) => new ImageRun({
+          data: mark.bytes,
+          transformation: docxMarkDimensions(mark.bytes, 160),
+          type: "png"
+        })),
+        spacing: { before: 80, after: 160 }
+      }));
+    }
+  }
+
+  children.push(
+    subsectionHeading("프로젝트와 이용 조건"),
+    textParagraph(`프로젝트: ${content.project.title} ${content.project.version}`, { size: 19 }),
+    textParagraph(`공개 제작자: ${content.project.creator.displayName}`, { size: 19 }),
+    textParagraph(`공개 저장소: ${content.project.repositoryUrl}`, { size: 18, color: colors.muted }),
+    textParagraph(`소스 코드 라이선스: ${content.project.license.title} (${content.project.license.identifier})`, { size: 18, color: colors.muted }),
+    subsectionHeading("CMIP6 / ScenarioMIP 데이터셋 인용")
+  );
+  for (const model of content.climateModels) {
+    children.push(textParagraph(`${model.name} · ${model.institution}`, { bold: true, size: 20 }));
+    for (const citation of model.citations) {
+      children.push(textParagraph(formatDocxCatalogCitation(citation), { size: 18, color: colors.muted }));
+    }
+  }
+  children.push(subsectionHeading("자료 처리 방법론 인용"));
+  content.methodologyReferences.forEach((reference) => {
+    children.push(textParagraph(formatDocxCatalogCitation(reference), { size: 18, color: colors.muted }));
+  });
+  return children;
+}
+
+function formatDocxCatalogCitation(citation) {
+  const authors = Array.isArray(citation.authors)
+    ? citation.authors.map((author) => author.name ?? [author.givenNames, author.familyName].filter(Boolean).join(" ")).filter(Boolean).join("; ")
+    : "";
+  const year = Number.isInteger(citation.year) ? ` (${citation.year})` : "";
+  const source = citation.source?.doi ? ` DOI: ${citation.source.doi}` : "";
+  const license = citation.license ? ` 라이선스: ${citation.license}` : "";
+  return `${authors}${year}. ${citation.title}.${source}${license}`;
+}
+
+async function loadVerifiedDocxMarks(markAssets) {
+  return Promise.all(markAssets.map(async (asset) => {
+    const response = await fetch(asset.sourceUrl, {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "force-cache"
+    });
+    if (!response?.ok || typeof response.arrayBuffer !== "function") {
+      throw new Error("출처 표시 자산을 불러오지 못해 DOCX 생성을 중단했습니다.");
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    await assertVerifiedDocxPng(bytes, asset);
+    return { ...asset, bytes };
+  }));
+}
+
+async function assertVerifiedDocxPng(bytes, asset) {
+  await verifyLocalObservationMarkAssetBytes(asset, bytes);
+}
+
+function docxMarkDimensions(bytes, maximumWidth) {
+  const width = readPngUint32(bytes, 16);
+  const height = readPngUint32(bytes, 20);
+  if (width <= 0 || height <= 0) throw new Error("DOCX 출처 표시 PNG 크기를 확인할 수 없습니다.");
+  const targetWidth = Math.min(width, maximumWidth);
+  return { width: targetWidth, height: targetWidth * height / width };
+}
+
+function readPngUint32(bytes, offset) {
+  return bytes[offset] * 0x1000000
+    + bytes[offset + 1] * 0x10000
+    + bytes[offset + 2] * 0x100
+    + bytes[offset + 3];
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nestedValue of Object.values(value)) deepFreeze(nestedValue);
+  return Object.freeze(value);
 }

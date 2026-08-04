@@ -8,7 +8,8 @@ import { promisify } from "node:util";
 import {
   validatePublicClimateQueryResponse,
   validatePublicClimateSeriesResponse,
-  validatePublicDatasetMetadata
+  validatePublicDatasetMetadata,
+  validatePublicObservationAttribution
 } from "../source/runtime-policy.js";
 import {
   DEFAULT_GATEWAY_PORT,
@@ -212,8 +213,11 @@ export function buildProductionAttestation({
   backendCommitSha,
   manifestSha256,
   rawIndexSha256,
+  preparedAttributionReady,
+  rawAttributionReady,
   verifiedAtUtc = new Date().toISOString()
 }) {
+  const attributionReady = preparedAttributionReady === true && rawAttributionReady === true;
   return validateProductionAttestation({
     attestationVersion: ATTESTATION_VERSION,
     datasetUpdatedAt,
@@ -228,7 +232,7 @@ export function buildProductionAttestation({
       queryVerified: true,
       dataMode: "bias-corrected",
       publicSafe: true,
-      attributionReady: true
+      attributionReady: preparedAttributionReady
     },
     rawData: {
       rawIndexSha256,
@@ -237,7 +241,7 @@ export function buildProductionAttestation({
       rawModelGrid: true,
       dataMode: "raw-model-grid",
       publicSafe: true,
-      attributionReady: true
+      attributionReady: rawAttributionReady
     },
     gateway: {
       frontendAssetsVerified: true,
@@ -248,7 +252,7 @@ export function buildProductionAttestation({
       seriesVerified: true
     },
     publicSafe: true,
-    attributionReady: true,
+    attributionReady,
     internalPathExposure: false,
     verifiedAtUtc
   });
@@ -437,8 +441,8 @@ export async function createProductionDataAttestation({
   await verifyMatchingLocalQuery({ probe: rawProbe, datasetIdentity: localDatasetIdentity, requestContext: localRequestContext });
   await verifyMatchingLocalSeries({ probe: preparedSeriesProbe, datasetIdentity: localDatasetIdentity, requestContext: localRequestContext });
   await verifyMatchingLocalSeries({ probe: rawSeriesProbe, datasetIdentity: localDatasetIdentity, requestContext: localRequestContext });
-  validateQueryEvidence(preparedProbe.response, "bias-corrected", datasetIdentity);
-  validateQueryEvidence(rawProbe.response, "raw-model-grid", datasetIdentity);
+  const preparedAttribution = validateQueryEvidence(preparedProbe.response, "bias-corrected", datasetIdentity);
+  const rawAttribution = validateQueryEvidence(rawProbe.response, "raw-model-grid", datasetIdentity);
 
   const verifiedAtUtc = now().toISOString();
   const attestation = buildProductionAttestation({
@@ -448,6 +452,8 @@ export async function createProductionDataAttestation({
     backendCommitSha: backendGit.commitSha,
     manifestSha256: datasetEvidence.manifestSha256,
     rawIndexSha256: datasetEvidence.rawIndexSha256,
+    preparedAttributionReady: preparedAttribution.ready,
+    rawAttributionReady: rawAttribution.ready,
     verifiedAtUtc
   });
   await writeJsonAtomic(outputPath, attestation, { fileSystem });
@@ -835,7 +841,7 @@ async function fetchJson(
     } catch {
       throw new AttestationValidationError(`${label} 응답 JSON 형식이 올바르지 않습니다.`);
     }
-    if (hasInternalPathExposure(payload)) {
+    if (hasPublicResponseInternalExposure(payload)) {
       throw new AttestationValidationError(`${label} 응답에 내부 주소, 경로 또는 인증 정보가 포함되어 있습니다.`);
     }
     if (!response.ok) throw new ProbeHttpError(response.status);
@@ -904,6 +910,10 @@ function validateMetadataResponse(value) {
   let metadata;
   try {
     metadata = validatePublicDatasetMetadata(value);
+    const attribution = validatePublicObservationAttribution(metadata.observationAttribution);
+    if (attribution.ready !== true || attribution.usesObservationData !== false) {
+      throw new TypeError("invalid metadata observation attribution");
+    }
   } catch {
     throw new AttestationValidationError("metadata 응답이 공개 운영 계약과 맞지 않습니다.");
   }
@@ -933,8 +943,9 @@ async function verifyPreparedQuery({ arrayIndex, datasetIdentity, requestContext
     }
     validateQueryContract(response, datasetIdentity);
     validateQueryMatchesRequest(response, request);
+    const attribution = validateResponseObservationAttribution(response, "bias-corrected", "query");
     if (response.dataMode === "bias-corrected"
-      && response.attributionReady === true
+      && attribution.ready === true
       && hasAvailableQueryValue(response)) return { request, response };
   }
   throw new AttestationValidationError("준비된 Web 자료의 실제 조회를 검증하지 못했습니다.");
@@ -956,8 +967,9 @@ async function verifyRawWorldwideQuery({ arrayIndex, rawIndex, datasetIdentity, 
     }
     validateQueryContract(response, datasetIdentity);
     validateQueryMatchesRequest(response, request);
+    const attribution = validateResponseObservationAttribution(response, "raw-model-grid", "query");
     if (response.dataMode === "raw-model-grid"
-      && response.attributionReady === true
+      && attribution.ready === true
       && hasAvailableQueryValue(response)) return { request, response };
   }
   throw new AttestationValidationError("전 세계 CMIP6 원자료의 실제 조회를 검증하지 못했습니다.");
@@ -994,6 +1006,7 @@ async function verifySeriesIdentity({ queryProbe, datasetIdentity, requestContex
   );
   validateSeriesContract(response, datasetIdentity);
   validateSeriesMatchesRequest(response, request, queryResponse.dataMode);
+  requireMatchingObservationAttribution(queryResponse, response);
   return { request, response };
 }
 
@@ -1052,6 +1065,7 @@ function normalizeComparableValue(value, key = "") {
 function validateQueryContract(value, datasetIdentity) {
   try {
     validatePublicClimateQueryResponse(value);
+    validateResponseObservationAttribution(value, value.dataMode, "query");
   } catch {
     throw new AttestationValidationError("기후자료 query 응답이 공개 운영 계약과 맞지 않습니다.");
   }
@@ -1075,6 +1089,7 @@ function validateQueryMatchesRequest(value, request) {
 function validateSeriesContract(value, datasetIdentity) {
   try {
     validatePublicClimateSeriesResponse(value);
+    validateResponseObservationAttribution(value, value.dataMode, "series");
   } catch {
     throw new AttestationValidationError("기후자료 series 응답이 공개 운영 계약과 맞지 않습니다.");
   }
@@ -1114,11 +1129,40 @@ function sameCoordinate(left, right) {
 
 function validateQueryEvidence(value, expectedMode, datasetIdentity) {
   validateQueryContract(value, datasetIdentity);
+  const attribution = validateResponseObservationAttribution(value, expectedMode, "query");
   if (value.dataMode !== expectedMode
     || value.publicSafe !== true
-    || value.attributionReady !== true
     || !hasAvailableQueryValue(value)) {
     throw new AttestationValidationError("기후자료 실제 조회 증거가 운영 기준을 충족하지 못했습니다.");
+  }
+  return attribution;
+}
+
+function validateResponseObservationAttribution(value, expectedMode, label) {
+  let attribution;
+  try {
+    attribution = validatePublicObservationAttribution(value?.observationAttribution);
+  } catch {
+    throw new AttestationValidationError(`${label} 응답의 관측자료 출처 계약이 올바르지 않습니다.`);
+  }
+  const usesObservationData = expectedMode === "bias-corrected";
+  const hasExpectedProviders = usesObservationData
+    ? attribution.providerIds.length > 0
+    : attribution.providerIds.length === 0 && attribution.providers.length === 0;
+  if (attribution.ready !== true
+    || attribution.usesObservationData !== usesObservationData
+    || value.attributionReady !== usesObservationData
+    || !hasExpectedProviders) {
+    throw new AttestationValidationError(`${label} 응답의 관측자료 출처 계약이 자료 방식과 다릅니다.`);
+  }
+  return attribution;
+}
+
+function requireMatchingObservationAttribution(query, series) {
+  const queryAttribution = validateResponseObservationAttribution(query, query.dataMode, "query");
+  const seriesAttribution = validateResponseObservationAttribution(series, series.dataMode, "series");
+  if (stableComparableJson(queryAttribution) !== stableComparableJson(seriesAttribution)) {
+    throw new AttestationValidationError("query와 series 응답의 관측자료 출처 계약이 다릅니다.");
   }
 }
 
@@ -1239,6 +1283,20 @@ function inspectInternalExposure(value, ancestors) {
   const exposed = nestedValues.some((item) => inspectInternalExposure(item, ancestors));
   ancestors.delete(value);
   return exposed;
+}
+
+function hasPublicResponseInternalExposure(value) {
+  if (!isPlainRecord(value) || !("observationAttribution" in value)) {
+    return hasInternalPathExposure(value);
+  }
+  try {
+    validatePublicObservationAttribution(value.observationAttribution);
+  } catch {
+    return true;
+  }
+  const remaining = { ...value };
+  delete remaining.observationAttribution;
+  return hasInternalPathExposure(remaining);
 }
 
 function validateOutputPath(value, platform) {

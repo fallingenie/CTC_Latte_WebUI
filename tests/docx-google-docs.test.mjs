@@ -4,11 +4,19 @@ import { buildGoogleDocsImportHtml } from "../source/docx-google-docs.js";
 import { buildStudentNotebookDocx } from "../source/student-docx.js";
 
 const baseline = {
+  dataMode: "raw-model-grid",
   date: "2050-08-01",
   label: "대전",
   latitude: 36.35,
   longitude: 127.38,
   model: "전체 앙상블",
+  observationAttribution: {
+    schemaVersion: 1,
+    ready: true,
+    usesObservationData: false,
+    providerIds: [],
+    providers: []
+  },
   scenario: "고배출 경로",
   values: [
     { key: "tasmax", label: "최고기온", unit: "degC", value: 36.69 },

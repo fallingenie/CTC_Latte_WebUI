@@ -427,7 +427,6 @@ svg {
 
 .source-model-list a,
 .source-method-list a,
-.source-kma-notice a,
 .source-citation-link,
 .site-footer a {
   color: var(--blue);
@@ -460,28 +459,109 @@ svg {
   line-height: 1.45;
 }
 
-.source-kma-notice > div {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  margin-top: 10px;
-}
-
-.source-kma-notice img {
-  display: block;
-  width: auto;
-  max-width: min(12.5rem, 100%);
-  max-height: 42px;
-  object-fit: contain;
-}
-
 .source-citation-link {
   display: inline-flex;
   min-height: 36px;
   margin-top: 16px;
   align-items: center;
   font-size: 12px;
+}
+
+.observation-attribution-panel {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 12px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-soft);
+}
+
+.observation-attribution-panel.blocked {
+  border-color: var(--amber);
+  color: var(--amber);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.observation-attribution-panel > header {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--green);
+}
+
+.observation-attribution-panel > header > div,
+.observation-provider-heading {
+  display: grid;
+  min-width: 0;
+}
+
+.observation-attribution-panel > header strong,
+.observation-provider-heading strong {
+  color: var(--ink-strong);
+  font-size: 12px;
+}
+
+.observation-attribution-panel > header span,
+.observation-provider-heading span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.observation-provider-list {
+  display: grid;
+  gap: 8px;
+}
+
+.observation-provider {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.observation-provider p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.observation-provider .observation-provider-citation {
+  color: var(--muted);
+}
+
+.observation-provider-license,
+.observation-provider-marks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.observation-provider-license {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.observation-provider-license a {
+  color: var(--blue);
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.observation-provider-marks img {
+  display: block;
+  width: auto;
+  max-width: min(12.5rem, 100%);
+  max-height: 42px;
+  object-fit: contain;
 }
 
 .site-footer {
