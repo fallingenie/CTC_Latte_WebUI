@@ -193,13 +193,6 @@ if (-not (Test-Path -LiteralPath $localDataRoot -PathType Container)) {
 $gcloud = Resolve-GcloudCommand
 
 $sourceRemoteRoot = "gs://$BucketName/$normalizedBucketPrefix/$normalizedRelativePath"
-$comparisonOutput = Invoke-CapturedCombined $gcloud @(
-    'storage', 'rsync', $localDataRoot, $sourceRemoteRoot,
-    '--recursive', '--checksums-only', '--dry-run',
-    '--delete-unmatched-destination-objects',
-    '--project', $ProjectId
-)
-Assert-RsyncDryRunClean -Output $comparisonOutput -FailureMessage 'GCS 업로드가 로컬 정본과 일치하지 않습니다.'
 
 $evidenceRoot = Join-Path $frontendRoot '.release-evidence'
 New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
@@ -226,6 +219,14 @@ try {
     if ($datasetVersion -notmatch '^[0-9a-f]{64}$') {
         throw '자료 포인터의 datasetVersion이 올바르지 않습니다.'
     }
+
+    $comparisonOutput = Invoke-CapturedCombined $gcloud @(
+        'storage', 'rsync', $localDataRoot, $sourceRemoteRoot,
+        '--recursive', '--checksums-only', '--dry-run',
+        '--delete-unmatched-destination-objects',
+        '--project', $ProjectId
+    )
+    Assert-RsyncDryRunClean -Output $comparisonOutput -FailureMessage 'GCS 업로드가 로컬 정본과 일치하지 않습니다.'
 
     $snapshotRelativePath = "release-candidate/datasets/$datasetVersion.ctwebui"
     $snapshotUrl = "gs://$BucketName/$normalizedBucketPrefix/$snapshotRelativePath"
@@ -262,6 +263,22 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw '불변 자료판 포인터 생성이 실패했습니다.'
     }
+    try {
+        $immutablePointer = Get-Content -LiteralPath $temporaryPointerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw '불변 자료판 포인터를 JSON으로 해석할 수 없습니다.'
+    }
+    if ([string]$immutablePointer.datasetVersion -ne $datasetVersion) {
+        throw '자료 업로드 중 로컬 자료판이 변경되었습니다.'
+    }
+    $finalSnapshotComparisonOutput = Invoke-CapturedCombined $gcloud @(
+        'storage', 'rsync', $localDataRoot, $snapshotUrl,
+        '--recursive', '--checksums-only', '--dry-run',
+        '--delete-unmatched-destination-objects',
+        '--project', $ProjectId
+    )
+    Assert-RsyncDryRunClean -Output $finalSnapshotComparisonOutput -FailureMessage '포인터 발행 직전 GCS 자료판이 로컬 정본과 일치하지 않습니다.'
 
     $immutableCreated = $false
     $previousErrorActionPreference = $ErrorActionPreference

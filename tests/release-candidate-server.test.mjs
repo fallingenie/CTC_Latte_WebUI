@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -7,10 +8,13 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  LEGACY_TEST_DATASET_MODE,
   computeMountedDatasetVersion,
   createReleasePointer,
   parseReleasePointer,
-  resolveReleaseDataEnvironment
+  resolveReleaseDataEnvironment,
+  validateMountedDatasetPublication,
+  validateMountedDatasetReady
 } from "../scripts/release-candidate-data.mjs";
 import { createReleasePointerFile } from "../scripts/create-release-pointer.mjs";
 import {
@@ -65,6 +69,77 @@ test("GCS 자료판 포인터의 SHA-256과 실제 자료가 일치할 때만 �
   );
 });
 
+test("구형 비봉인 자료판은 명시적으로 고정한 시험 모드에서만 읽는다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const legacy = await downgradeFixtureToLegacyV2(fixture.webDataRoot);
+  await fs.writeFile(
+    path.join(fixture.webDataRoot, "arrays", "corrected_daily.zarr", "unregistered-test-chunk"),
+    "시험용 무결성 결손",
+    "utf8"
+  );
+  const datasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
+  const testEnvironment = {
+    CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
+    CTC_WEB_DATA_ROOT: fixture.webDataRoot,
+    CTC_TEST_DATASET_MODE: LEGACY_TEST_DATASET_MODE,
+    CTC_TEST_EXPECTED_DATASET_VERSION: datasetVersion,
+    CTC_TEST_EXPECTED_GENERATION_ID: legacy.generationId,
+    CTC_TEST_EXPECTED_MANIFEST_BINDING_SHA256: legacy.manifestBindingSha256,
+    CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES: "69114"
+  };
+
+  const result = await resolveReleaseDataEnvironment(testEnvironment);
+  assert.equal(result.testOnly, true);
+  assert.equal(result.acknowledgedIntegrityGapBytes, 69114);
+  assert.equal(result.pointer.releaseId, `test-${datasetVersion.slice(0, 12)}`);
+  assert.equal(result.pointer.datasetVersion, datasetVersion);
+
+  await assert.rejects(
+    () => resolveReleaseDataEnvironment({
+      ...testEnvironment,
+      CTC_TEST_EXPECTED_DATASET_VERSION: "f".repeat(64)
+    }),
+    /SHA-256이 승인한 값과 일치하지 않습니다/u
+  );
+  await assert.rejects(
+    () => resolveReleaseDataEnvironment({
+      ...testEnvironment,
+      CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES: ""
+    }),
+    /CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES/u
+  );
+});
+
+test("시험 예외는 운영 포인터 또는 봉인된 v3 자료판에 적용하지 않는다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const datasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
+  const environment = {
+    CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
+    CTC_WEB_DATA_ROOT: fixture.webDataRoot,
+    CTC_TEST_DATASET_MODE: LEGACY_TEST_DATASET_MODE,
+    CTC_TEST_EXPECTED_DATASET_VERSION: datasetVersion,
+    CTC_TEST_EXPECTED_GENERATION_ID: "b".repeat(64),
+    CTC_TEST_EXPECTED_MANIFEST_BINDING_SHA256: JSON.parse(
+      await fs.readFile(path.join(fixture.webDataRoot, "meta", "completion.json"), "utf8")
+    ).manifest_binding_sha256,
+    CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES: "1"
+  };
+  await assert.rejects(
+    () => resolveReleaseDataEnvironment(environment),
+    /정상 배포 절차/u
+  );
+  await assert.rejects(
+    () => resolveReleaseDataEnvironment({ ...environment, CTC_RELEASE_POINTER: fixture.pointerPath }),
+    /운영 포인터/u
+  );
+  await assert.rejects(
+    () => resolveReleaseDataEnvironment({ ...environment, CTC_TEST_DATASET_MODE: "anything" }),
+    /실행 방식/u
+  );
+});
+
 test("발행 포인터는 변경 가능한 업로드 경로 대신 자료판별 불변 경로를 가리킨다", async (context) => {
   const fixture = await createMountedReleaseFixture();
   context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
@@ -79,6 +154,191 @@ test("발행 포인터는 변경 가능한 업로드 경로 대신 자료판별 
   });
   assert.equal(result.pointer.relativePath, immutableRelativePath);
   assert.equal(result.pointer.datasetVersion, await computeMountedDatasetVersion(fixture.webDataRoot));
+});
+
+test("부분 압축 해제 자료는 식별 파일이 생겨도 자료판 포인터로 승격하지 않는다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  await fs.rm(path.join(fixture.webDataRoot, "arrays", "coverage_mask.zarr"), {
+    recursive: true,
+    force: true
+  });
+
+  await assert.rejects(
+    () => createReleasePointerFile({
+      mountRoot: fixture.mountRoot,
+      relativePath: fixture.relativePath,
+      releaseId: "ctc-partial",
+      outputPath: path.join(fixture.tempRoot, "partial-pointer.json")
+    }),
+    /artifact가 아직 준비되지 않았습니다/u
+  );
+});
+
+test("실행 시작 검사도 완료 표식 뒤에 누락된 Zarr 청크를 거부한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const datasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
+  const pointer = createReleasePointer({
+    releaseId: "ctc-startup-partial",
+    relativePath: fixture.relativePath,
+    datasetVersion
+  });
+  await fs.mkdir(path.dirname(fixture.pointerPath), { recursive: true });
+  await fs.writeFile(fixture.pointerPath, `${JSON.stringify(pointer)}\n`, "utf8");
+  await fs.rm(path.join(fixture.webDataRoot, "arrays", "coverage_mask.zarr", ".zarray"));
+
+  await assert.rejects(
+    () => resolveReleaseDataEnvironment({
+      CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
+      CTC_RELEASE_POINTER: fixture.pointerPath
+    }),
+    /폴더 해시가 manifest와 일치하지 않습니다/u
+  );
+});
+
+test("자료판 준비 검사는 manifest의 크기·개수와 실제 inventory가 모두 같아야 통과한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const ready = await validateMountedDatasetReady(fixture.webDataRoot);
+  assert.equal(ready.artifactCount, 7);
+  assert.equal(ready.fileCount, 8);
+
+  await fs.writeFile(
+    path.join(fixture.webDataRoot, "data", "scenario_model_predictions", "part-000001.parquet"),
+    "추가 자료",
+    "utf8"
+  );
+  await assert.rejects(
+    () => validateMountedDatasetReady(fixture.webDataRoot),
+    /폴더 해시/u
+  );
+});
+
+test("원자적 v3 자료판은 완료 표식·manifest 결합·정본 봉인이 모두 맞아야 통과한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+
+  const publication = await validateMountedDatasetPublication(fixture.webDataRoot);
+  assert.equal(publication.contract, "atomic-directory-v2");
+  assert.equal(publication.contractVersion, 3);
+  assert.match(publication.manifestBindingSha256, /^[0-9a-f]{64}$/u);
+
+  const markerPath = path.join(fixture.webDataRoot, "meta", "completion.json");
+  const originalMarker = await fs.readFile(markerPath, "utf8");
+  const changedMarker = JSON.parse(originalMarker);
+  changedMarker.artifact_count += 1;
+  await fs.writeFile(markerPath, JSON.stringify(changedMarker), "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot),
+    /완료 표식이 manifest와 일치하지 않습니다/u
+  );
+
+  await fs.writeFile(markerPath, originalMarker, "utf8");
+  const manifestPath = path.join(fixture.webDataRoot, "manifest.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  manifest.artifacts[0].row_count = 1;
+  await fs.writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot),
+    /manifest와 결합되지 않았습니다/u
+  );
+});
+
+test("완료 표식 없는 구형 자료판과 manifest 미등록 파일은 출시하지 않는다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const manifestPath = path.join(fixture.webDataRoot, "manifest.json");
+  const originalManifest = await fs.readFile(manifestPath, "utf8");
+  const manifest = JSON.parse(originalManifest);
+  delete manifest.publication_contract;
+  delete manifest.completion;
+  delete manifest.export_policy;
+  delete manifest.generation_id;
+  await fs.writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot),
+    /원자적 완료 표식/u
+  );
+
+  await fs.writeFile(manifestPath, originalManifest, "utf8");
+  await fs.writeFile(path.join(fixture.webDataRoot, ".env"), "SECRET=blocked", "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot),
+    /manifest에 없는 파일/u
+  );
+});
+
+test("파일 내용과 manifest SHA-256이 다르면 같은 크기라도 출시하지 않는다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const target = path.join(fixture.webDataRoot, "meta", "array_index.json");
+  const original = await fs.readFile(target, "utf8");
+  await fs.writeFile(target, original.replace("2050-01-01", "2050-01-02"), "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot),
+    /SHA-256/u
+  );
+});
+
+test("자료판 내부 junction과 승인되지 않은 미래 형식은 실패 폐쇄한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const outside = path.join(fixture.tempRoot, "outside");
+  await fs.mkdir(outside, { recursive: true });
+  await fs.writeFile(path.join(outside, "secret.txt"), "blocked", "utf8");
+  await fs.symlink(
+    outside,
+    path.join(fixture.webDataRoot, "linked"),
+    process.platform === "win32" ? "junction" : "dir"
+  );
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot),
+    /링크 또는 junction/u
+  );
+  await fs.rm(path.join(fixture.webDataRoot, "linked"), { recursive: true, force: true });
+
+  const manifestPath = path.join(fixture.webDataRoot, "manifest.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  manifest.format_version = 4;
+  await fs.writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot),
+    /원자적 자료 게시 계약/u
+  );
+});
+
+test("부모 junction으로 마운트 밖을 가리키는 자료판 포인터는 만들지 않는다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const releasesPath = path.join(fixture.mountRoot, "releases");
+  const outsideReleasesPath = path.join(fixture.tempRoot, "outside-releases");
+  await fs.rename(releasesPath, outsideReleasesPath);
+  await fs.symlink(
+    outsideReleasesPath,
+    releasesPath,
+    process.platform === "win32" ? "junction" : "dir"
+  );
+
+  await assert.rejects(
+    () => createReleasePointerFile({
+      mountRoot: fixture.mountRoot,
+      relativePath: fixture.relativePath,
+      releaseId: "ctc-parent-junction",
+      outputPath: path.join(fixture.tempRoot, "junction-pointer.json")
+    }),
+    /실제 경로가 마운트 루트를 벗어났습니다/u
+  );
+});
+
+test("부모와 자식 artifact를 함께 등록한 자료판은 거부한다", async (context) => {
+  const fixture = await createMountedReleaseFixture({ includeNestedArtifact: true });
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot),
+    /artifact 경로가 서로 겹칩니다/u
+  );
 });
 
 test("출시 후보 서버는 공개 포트와 내부 게이트웨이 포트를 분리한다", () => {
@@ -303,6 +563,13 @@ test("Cloud Run 배포는 공개 읽기 전용 GCS와 API, 체크섬 승격을 �
   assert.match(publishScript, /public,max-age=31536000,immutable/u);
   assert.match(publishScript, /\$ErrorActionPreference\s*=\s*'Continue'/u);
   assert.match(publishScript, /release-candidate\/current\.json/u);
+  assert.equal((publishScript.match(/create-release-pointer\.mjs/gu) || []).length, 2);
+  assert.match(publishScript, /--pointer-relative-path\s+\$snapshotRelativePath/u);
+  assert.match(publishScript, /로컬 자료판이 변경되었습니다/u);
+  assert.match(
+    publishScript,
+    /\$finalSnapshotComparisonOutput[\s\S]+포인터 발행 직전 GCS 자료판이 로컬 정본과 일치하지 않습니다/u
+  );
   assert.doesNotMatch(promoteScript, /service-accounts', 'sign-jwt/u);
   assert.match(promoteScript, /CTC_PRODUCTION_AUTHORIZATION_TOKEN_FILE\s*=\s*\$null/u);
   assert.match(promoteScript, /Access-Control-Request-Method/u);
@@ -324,24 +591,263 @@ test("Cloud Run 배포는 공개 읽기 전용 GCS와 API, 체크섬 승격을 �
   assert.match(pagesScript, /foreach \(\$parsedRun in \$parsedRuns\)/u);
   assert.match(pagesScript, /PSObject\.Properties\['headSha'\]/u);
   assert.match(cloudBuild, /pnpm test/u);
+  assert.match(cloudBuild, /apt-get install --yes --no-install-recommends python3/u);
   assert.match(cloudBuild, /smoke-container/u);
   assert.match(cloudBuild, /raw_zarr_point_worker/u);
   assert.doesNotMatch(cloudBuild, /id:\s*push-container/u);
+  assert.match(dockerfile, /apt-get install --yes --no-install-recommends python3/u);
   assert.match(dockerfile, /^USER 10001:10001$/mu);
   assert.doesNotMatch(requirements, /[<>~]=?/u);
 });
 
-async function createMountedReleaseFixture() {
+async function createMountedReleaseFixture({ includeNestedArtifact = false } = {}) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ctc-rc-pointer-"));
   const mountRoot = path.join(tempRoot, "gcs");
   const relativePath = "releases/ctc-1000-rc1/data.ctwebui";
   const webDataRoot = path.join(mountRoot, ...relativePath.split("/"));
   const pointerPath = path.join(mountRoot, "release-candidate", "current.json");
   await fs.mkdir(path.join(webDataRoot, "meta"), { recursive: true });
-  await fs.writeFile(path.join(webDataRoot, "manifest.json"), "{\"format\":\"ctwebui\"}", "utf8");
-  await fs.writeFile(path.join(webDataRoot, "meta", "array_index.json"), "{\"dates\":[\"2050-01-01\"]}", "utf8");
-  await fs.writeFile(path.join(webDataRoot, "meta", "raw_cmip6_index.json"), "{\"entry_count\":1}", "utf8");
+  const arrayPaths = {
+    raw_daily: "arrays/raw_daily.zarr",
+    corrected_daily: "arrays/corrected_daily.zarr",
+    coverage_mask: "arrays/coverage_mask.zarr"
+  };
+  for (const relativePath of Object.values(arrayPaths)) {
+    const target = path.join(webDataRoot, ...relativePath.split("/"));
+    await fs.mkdir(target, { recursive: true });
+    await fs.writeFile(path.join(target, ".zarray"), relativePath, "utf8");
+  }
+  const dataRelativePath = "data/scenario_model_predictions";
+  const dataRoot = path.join(webDataRoot, ...dataRelativePath.split("/"));
+  await fs.mkdir(dataRoot, { recursive: true });
+  await fs.writeFile(path.join(dataRoot, "part-000000.parquet"), "fixture", "utf8");
+
+  await fs.writeFile(path.join(webDataRoot, "meta", "array_index.json"), JSON.stringify({
+    arrays: arrayPaths,
+    dates: ["2050-01-01"],
+    locations: [{ lat: 37.5, lon: 127 }],
+    models: ["MODEL-A"],
+    scenarios: ["ssp585"],
+    variables: ["tasmax"]
+  }), "utf8");
+  await fs.writeFile(path.join(webDataRoot, "meta", "raw_cmip6_index.json"), JSON.stringify({
+    entry_count: 1,
+    entries: [{ model: "MODEL-A", path: "model-a", scenario: "ssp585", variable: "tasmax" }],
+    format: "Climate Time Capsule WebUI Raw CMIP6 Connector Index"
+  }), "utf8");
+  const artifactPaths = [
+    "meta/array_index.json",
+    "meta/raw_cmip6_index.json",
+    ...Object.values(arrayPaths),
+    dataRelativePath
+  ];
+  if (includeNestedArtifact) {
+    artifactPaths.push(`${dataRelativePath}/part-000000.parquet`);
+  }
+  const artifacts = [];
+  for (const relativePath of artifactPaths) {
+    const target = path.join(webDataRoot, ...relativePath.split("/"));
+    const stats = await fixtureArtifactStats(target);
+    artifacts.push({
+      arcname: relativePath,
+      file_count: stats.fileCount,
+      hash_mode: stats.hashMode,
+      path: relativePath,
+      sha256: stats.sha256,
+      size_bytes: stats.sizeBytes
+    });
+  }
+  await fs.writeFile(path.join(webDataRoot, "manifest.json"), JSON.stringify({
+    artifacts,
+    format: "Climate Time Capsule WebUI Hybrid Export",
+    format_version: 3,
+    manifest_path: "manifest.json",
+    root: "."
+  }), "utf8");
+  await upgradeFixtureToAtomicV3(webDataRoot);
   return { mountRoot, pointerPath, relativePath, tempRoot, webDataRoot };
+}
+
+async function fixtureArtifactStats(target) {
+  const stat = await fs.stat(target);
+  if (stat.isFile()) {
+    return {
+      fileCount: 1,
+      hashMode: "sha256",
+      sha256: createHash("sha256").update(await fs.readFile(target)).digest("hex"),
+      sizeBytes: stat.size
+    };
+  }
+  const files = [];
+  let sizeBytes = 0;
+  const pending = [target];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+      const child = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(child);
+      } else if (entry.isFile()) {
+        const childStat = await fs.stat(child, { bigint: true });
+        const relativePath = path.relative(target, child).replaceAll("\\", "/");
+        files.push({
+          mtimeNs: childStat.mtimeNs,
+          relativePath,
+          size: Number(childStat.size)
+        });
+        sizeBytes += Number(childStat.size);
+      }
+    }
+  }
+  const digest = createHash("sha256");
+  files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  files.forEach(({ mtimeNs, relativePath, size }) => {
+    digest.update(`${relativePath}\0${size}\0${mtimeNs}\n`, "utf8");
+  });
+  return {
+    fileCount: files.length,
+    hashMode: "directory_listing_v1",
+    sha256: digest.digest("hex"),
+    sizeBytes
+  };
+}
+
+async function upgradeFixtureToAtomicV3(webDataRoot) {
+  const manifestPath = path.join(webDataRoot, "manifest.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  const generationId = "b".repeat(64);
+  const fingerprint = {
+    algorithm: "sha256",
+    component_sha256: {
+      coverage: "c".repeat(64),
+      query_context: "d".repeat(64)
+    },
+    contract: "ctc.immutable-artifact-inputs",
+    contract_version: 2,
+    sha256: "e".repeat(64)
+  };
+  const exportPolicy = {
+    atomic_publish: true,
+    completion_marker: "meta/completion.json"
+  };
+  const tableRowCounts = {};
+  const completionBase = {
+    artifact_count: manifest.artifacts.length + 1,
+    atomic_publish: true,
+    completed_at_unix_ns: 123456789,
+    contract_version: 3,
+    generation_id: generationId,
+    observation_contract_version: 1,
+    status: "complete",
+    table_count: 0
+  };
+  const bindingPayload = {
+    artifacts: manifest.artifacts
+      .map((artifact) => ({
+        file_count: Number(artifact.file_count || 1),
+        hash_mode: String(artifact.hash_mode || ""),
+        path: String(artifact.path || artifact.arcname || ""),
+        row_count: Number(artifact.row_count || 0),
+        sha256: String(artifact.sha256 || "").toLowerCase(),
+        size_bytes: Number(artifact.size_bytes || 0),
+        table_name: String(artifact.table_name || "")
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
+    completion: completionBase,
+    dataset_id: fingerprint.sha256,
+    export_policy: exportPolicy,
+    format: "Climate Time Capsule WebUI Hybrid Export",
+    format_version: 3,
+    generation_id: generationId,
+    immutable_input_fingerprint: fingerprint,
+    observation_contract_version: 1,
+    publication_contract: "atomic-directory-v2",
+    source_fingerprint: fingerprint,
+    table_row_counts: tableRowCounts
+  };
+  const binding = sha256Text(canonicalJson(bindingPayload));
+  const completion = {
+    ...completionBase,
+    manifest_binding_sha256: binding
+  };
+  const markerPath = path.join(webDataRoot, "meta", "completion.json");
+  const markerText = JSON.stringify(completion, null, 2);
+  await fs.writeFile(markerPath, markerText, "utf8");
+  const markerStats = await fixtureArtifactStats(markerPath);
+  const markerArtifact = {
+    arcname: "meta/completion.json",
+    file_count: markerStats.fileCount,
+    hash_mode: "sha256",
+    path: "meta/completion.json",
+    row_count: 0,
+    sha256: sha256Text(markerText),
+    size_bytes: markerStats.sizeBytes,
+    table_name: ""
+  };
+  const datasetSeal = {
+    contract: "ctc.webui.canonical-dataset-seal",
+    contract_version: 1,
+    dataset_id: fingerprint.sha256,
+    manifest_hash: binding,
+    source_fingerprint: fingerprint,
+    status: "sealed"
+  };
+  await fs.writeFile(manifestPath, JSON.stringify({
+    ...manifest,
+    artifacts: [...manifest.artifacts, markerArtifact],
+    completion,
+    dataset_id: fingerprint.sha256,
+    dataset_seal: datasetSeal,
+    export_policy: exportPolicy,
+    generation_id: generationId,
+    immutable_input_fingerprint: fingerprint,
+    manifest_hash: binding,
+    observation_contract_version: 1,
+    publication_contract: "atomic-directory-v2",
+    source_fingerprint: fingerprint,
+    table_row_counts: tableRowCounts
+  }), "utf8");
+}
+
+async function downgradeFixtureToLegacyV2(webDataRoot) {
+  const manifestPath = path.join(webDataRoot, "manifest.json");
+  const markerPath = path.join(webDataRoot, "meta", "completion.json");
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  const generationId = "9".repeat(64);
+  const manifestBindingSha256 = "8".repeat(64);
+  const completion = {
+    ...manifest.completion,
+    contract_version: 2,
+    generation_id: generationId,
+    manifest_binding_sha256: manifestBindingSha256,
+    table_count: 1
+  };
+  const legacyManifest = {
+    ...manifest,
+    completion,
+    generation_id: generationId,
+    table_row_counts: { scenario_model_predictions: 1 }
+  };
+  for (const key of ["dataset_id", "dataset_seal", "manifest_hash", "source_fingerprint"]) {
+    delete legacyManifest[key];
+  }
+  await fs.writeFile(markerPath, JSON.stringify(completion, null, 2), "utf8");
+  await fs.writeFile(manifestPath, JSON.stringify(legacyManifest), "utf8");
+  return { generationId, manifestBindingSha256 };
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(
+      (key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256Text(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function requestLocal(origin, pathname, { method = "GET", headers = {}, body } = {}) {

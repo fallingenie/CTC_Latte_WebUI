@@ -1,13 +1,13 @@
-const CACHE_NAME = "climate-web-shell-v19";
+const CACHE_NAME = "climate-web-shell-v20";
 const SHELL_INDEX = new URL("index.html", self.location.href).toString();
 const SHELL_ASSET_MANIFEST = new URL("app-shell-assets.json", self.location.href).toString();
 const SHELL_ASSET_ROOT = new URL("assets/", self.location.href);
+const RUNTIME_CONFIG = new URL("runtime-config.json", self.location.href).toString();
 const SHELL_ASSETS = [
   "./",
   "index.html",
   "favicon.svg",
   "app.webmanifest",
-  "runtime-config.json",
   "assets/icons/app-icon-192.png",
   "assets/icons/app-icon-512.png",
   "assets/icons/app-icon-maskable-512.png",
@@ -66,12 +66,30 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/climate/")) return;
 
+  if (request.url === RUNTIME_CONFIG) {
+    event.respondWith(
+      fetch(request, { cache: "no-store" })
+        .then(async (response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(request, copy);
+          }
+          return response;
+        })
+        .catch(async (error) => (await caches.match(request)) || Promise.reject(error))
+    );
+    return;
+  }
+
   if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(SHELL_INDEX, copy));
+        .then(async (response) => {
+          if (response.ok) {
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(SHELL_INDEX, response.clone());
+          }
           return response;
         })
         .catch(() => caches.match(SHELL_INDEX))
@@ -84,10 +102,10 @@ self.addEventListener("fetch", (event) => {
   if (refreshBeforeCache) {
     event.respondWith(
       fetch(request)
-        .then((response) => {
+        .then(async (response) => {
           if (response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+            const cache = await caches.open(CACHE_NAME);
+            await cache.put(request, response.clone());
           }
           return response;
         })
@@ -99,10 +117,10 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) return cached;
-      return fetch(request).then((response) => {
+      return fetch(request).then(async (response) => {
         if (response.ok) {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(request, response.clone());
         }
         return response;
       });

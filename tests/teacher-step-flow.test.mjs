@@ -159,6 +159,24 @@ test("이전 단계로 돌아갔다가 다시 와도 입력과 비교 자료를 
   assert.deepEqual(state.comparisonMaterials, savedMaterials);
 });
 
+test("직접 수업의 비교 조건을 바꾸면 기존 자료는 보존하고 최종 단계만 다시 잠근다", () => {
+  let state = createActivityStep();
+  state = reduce(state, TEACHER_FLOW_ACTIONS.SET_COMPARISON_MATERIALS, {
+    materials: [comparisonMaterial()]
+  });
+  state = reduce(state, TEACHER_FLOW_ACTIONS.SET_QUERY_STATUS, {
+    status: TEACHER_QUERY_STATUSES.READY
+  });
+  assert.equal(canEnterTeacherStep(state, TEACHER_STEP_IDS.REVIEW_AND_SHARE), true);
+
+  state = reduce(state, TEACHER_FLOW_ACTIONS.UPDATE_COMPARISON_REQUIREMENTS, {
+    requirements: { minimumSites: 2, minimumModels: 1, includeEnsemble: false }
+  });
+  assert.equal(state.comparisonMaterials.length, 1);
+  assert.equal(state.queryStatus, TEACHER_QUERY_STATUSES.READY);
+  assert.equal(canEnterTeacherStep(state, TEACHER_STEP_IDS.REVIEW_AND_SHARE), false);
+});
+
 test("비교 자료와 실제 조회 성공이 모두 갖춰져야 최종 단계 잠금이 해제된다", () => {
   let state = createActivityStep();
   state = reduce(state, TEACHER_FLOW_ACTIONS.SET_QUERY_STATUS, {

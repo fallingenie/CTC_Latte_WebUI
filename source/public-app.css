@@ -1,5 +1,3 @@
-@import "pretendard/dist/web/variable/pretendardvariable.css";
-
 :root {
   --ink: #16201d;
   --ink-strong: #0d1714;
@@ -688,6 +686,49 @@ svg {
   background: var(--teacher-blue-soft);
 }
 
+.student-problem-library-toggle {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  width: 100%;
+  min-height: 52px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--green);
+  text-align: left;
+}
+
+.student-problem-library-toggle:hover,
+.student-problem-library-toggle:focus-visible,
+.student-problem-library-toggle[aria-expanded="true"] {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.student-problem-library-toggle > span,
+.student-problem-library-toggle strong,
+.student-problem-library-toggle small {
+  display: block;
+  min-width: 0;
+}
+
+.student-problem-library-toggle strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: keep-all;
+}
+
+.student-problem-library-toggle small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .preset-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1281,6 +1322,11 @@ svg {
 .map-controls button:hover {
   background: var(--green-soft);
   color: var(--green-dark);
+}
+
+.map-controls button:disabled {
+  cursor: wait;
+  opacity: 0.68;
 }
 
 .map-marker {
@@ -2671,6 +2717,12 @@ html[data-theme="dark"] .export-dialog-backdrop {
   cursor: crosshair;
   touch-action: none;
   user-select: none;
+}
+
+.chart-plot-shell > svg:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .chart-tool-row {
@@ -5071,6 +5123,34 @@ html[data-theme="dark"] .public-condition-strip select {
   padding: 0 10px;
 }
 
+.query-panel .field-pair {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-theme="dark"] .mini-status.ok {
+  border-color: #4ba98a;
+  background: #163d32;
+  color: #e2fff5;
+}
+
+html[data-theme="dark"] .mini-status.warn {
+  border-color: #b98a37;
+  background: #3d2f16;
+  color: #fff1cf;
+}
+
+html[data-theme="dark"] .mini-status.hold {
+  border-color: #4c91aa;
+  background: #173642;
+  color: #e1f7ff;
+}
+
+html[data-theme="dark"] .preset-grid button.active {
+  border-color: #77d5b7;
+  background: #214b3e;
+  color: #f1fff9;
+}
+
 .public-command-bar {
   grid-template-columns: minmax(20rem, 0.8fr) minmax(0, 2fr);
   grid-template-areas:
@@ -5665,6 +5745,7 @@ html[data-theme="dark"] .public-condition-strip select {
 
 .teacher-step-heading h2:focus {
   outline: 0;
+  box-shadow: none;
 }
 
 .teacher-step-heading p {
@@ -5681,6 +5762,10 @@ html[data-theme="dark"] .public-condition-strip select {
   border-left: 0;
   border-radius: 0;
   background: transparent;
+}
+
+.teacher-page {
+  scroll-margin-top: 78px;
 }
 
 .teacher-layout.teacher-step-content.review {
@@ -6037,4 +6122,261 @@ html[data-theme="dark"] .public-condition-strip select {
 
 .app .teacher-step-heading p {
   font-size: 0.8125rem;
+}
+
+/* 교사가 표본을 고르거나 직접 설계해도 같은 단계 흐름을 사용한다. */
+.teacher-sample-library.teacher-step-content {
+  grid-template-areas:
+    "intro custom"
+    "intro samples";
+  grid-template-columns: minmax(15rem, 0.62fr) minmax(0, 1.38fr);
+  align-items: start;
+}
+
+.teacher-sample-library-heading {
+  grid-area: intro;
+}
+
+.teacher-custom-start {
+  grid-area: custom;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 13px 14px;
+  border-block: 1px solid color-mix(in srgb, var(--teacher-blue) 30%, var(--line));
+  background: color-mix(in srgb, var(--teacher-blue-soft) 65%, var(--surface));
+}
+
+.teacher-custom-start > div {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.teacher-custom-start-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--teacher-blue);
+  color: #fff;
+}
+
+.teacher-custom-start strong,
+.teacher-custom-start p {
+  display: block;
+  margin: 0;
+}
+
+.teacher-custom-start strong {
+  color: var(--ink-strong);
+  font-size: 0.9375rem;
+}
+
+.teacher-custom-start p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  word-break: keep-all;
+}
+
+.teacher-custom-start > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 9px 14px;
+  border: 1px solid var(--teacher-blue);
+  border-radius: 7px;
+  background: var(--teacher-blue);
+  color: #fff;
+  font-size: 0.8125rem;
+  font-weight: 800;
+}
+
+.teacher-custom-start > button:hover {
+  background: var(--teacher-blue-dark);
+}
+
+.teacher-sample-list {
+  grid-area: samples;
+}
+
+.teacher-custom-plan {
+  display: grid;
+  gap: 14px;
+  margin: 4px 0 2px;
+  padding: 16px 0;
+  border-block: 1px solid var(--line);
+}
+
+.teacher-custom-plan-heading {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+}
+
+.teacher-custom-plan-heading > svg {
+  box-sizing: content-box;
+  padding: 7px;
+  border-radius: 7px;
+  background: var(--teacher-blue-soft);
+  color: var(--teacher-blue);
+}
+
+.teacher-custom-plan-heading h3,
+.teacher-custom-plan-heading p {
+  margin: 0;
+}
+
+.teacher-custom-plan-heading h3 {
+  color: var(--ink-strong);
+  font-size: 0.9375rem;
+}
+
+.teacher-custom-plan-heading p {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.teacher-metric-picker {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.teacher-metric-picker legend,
+.teacher-period-fields label,
+.teacher-requirement-fields label {
+  color: var(--ink);
+  font-size: 0.8125rem;
+  font-weight: 800;
+}
+
+.teacher-metric-picker > div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.teacher-metric-picker label {
+  display: grid;
+  grid-template-columns: 20px 20px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.8125rem;
+  font-weight: 750;
+}
+
+.teacher-metric-picker label.selected {
+  border-color: var(--teacher-blue);
+  background: var(--teacher-blue-soft);
+  color: var(--teacher-blue-dark);
+}
+
+.teacher-metric-picker input,
+.teacher-ensemble-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--teacher-blue);
+}
+
+.teacher-period-fields,
+.teacher-requirement-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.teacher-period-fields label,
+.teacher-requirement-fields label {
+  display: grid;
+  gap: 6px;
+}
+
+.teacher-period-fields input,
+.teacher-requirement-fields select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.teacher-advanced-options {
+  border-top: 1px solid var(--line);
+}
+
+.teacher-advanced-options summary {
+  min-height: 44px;
+  padding: 13px 2px 9px;
+  color: var(--teacher-blue-dark);
+  font-size: 0.8125rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.teacher-advanced-options[open] {
+  display: grid;
+  gap: 12px;
+}
+
+.teacher-ensemble-toggle {
+  min-height: 44px;
+  font-size: 0.8125rem;
+}
+
+.teacher-review-brief > div:nth-child(2) {
+  grid-row: auto;
+}
+
+@media (max-width: 960px) {
+  .teacher-sample-library.teacher-step-content {
+    grid-template-areas:
+      "intro"
+      "custom"
+      "samples";
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .teacher-custom-start {
+    display: grid;
+    gap: 11px;
+  }
+
+  .teacher-custom-start > button {
+    width: 100%;
+  }
+
+  .teacher-metric-picker > div,
+  .teacher-period-fields,
+  .teacher-requirement-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

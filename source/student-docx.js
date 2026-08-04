@@ -138,8 +138,8 @@ function outputPlanTable(outputs) {
   const rows = [new TableRow({
     tableHeader: true,
     children: [
-      tableCell("만들 결과물", { fill: colors.accent, bold: true, color: colors.white, width: 38 }),
-      tableCell("자료에서 확인한 내용", { fill: colors.accent, bold: true, color: colors.white, width: 62 })
+      tableCell("완성할 결과물", { fill: colors.accent, bold: true, color: colors.white, width: 38 }),
+      tableCell("자료에서 찾은 근거", { fill: colors.accent, bold: true, color: colors.white, width: 62 })
     ]
   })];
   outputs.forEach((output) => rows.push(new TableRow({
@@ -163,7 +163,7 @@ function metricTable(snapshot) {
     tableHeader: true,
     children: [
       tableCell("기후 지표", { fill: colors.accent, bold: true, color: colors.white, width: 45 }),
-      tableCell("선택한 자료의 값", { fill: colors.accent, bold: true, color: colors.white, width: 55 })
+      tableCell("조회한 값", { fill: colors.accent, bold: true, color: colors.white, width: 55 })
     ]
   })];
   snapshot.values.forEach((metric) => {
@@ -232,7 +232,7 @@ function comparisonTable(baseline, comparison) {
       tableCell("기후 지표", { fill: colors.accent, bold: true, color: colors.white, width: 28 }),
       tableCell("첫 번째 자료", { fill: colors.accent, bold: true, color: colors.white, width: 24 }),
       tableCell("두 번째 자료", { fill: colors.accent, bold: true, color: colors.white, width: 24 }),
-      tableCell("변화", { fill: colors.accent, bold: true, color: colors.white, width: 24 })
+      tableCell("차이", { fill: colors.accent, bold: true, color: colors.white, width: 24 })
     ]
   })];
 
@@ -299,7 +299,7 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
       size: 42,
       spacing: { after: 90 }
     }),
-    textParagraph("실제 기후 시나리오에서 가져온 두 자료를 비교하는 활동", {
+    textParagraph("실제 기후 시나리오 자료 두 가지를 비교하는 활동", {
       color: colors.muted,
       size: 21,
       spacing: { after: 220 }
@@ -333,7 +333,7 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
   let nextSectionNumber = comparison ? 4 : 2;
   if (cleanText(conclusion, 200)) {
     children.push(
-      textParagraph(`${nextSectionNumber}. 자료가 보여주는 가능성`, {
+      textParagraph(`${nextSectionNumber}. 자료로 판단한 가능성`, {
         color: colors.accent,
         heading: HeadingLevel.HEADING_2,
         size: 28,
@@ -346,7 +346,7 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
   }
 
   children.push(
-    textParagraph(`${nextSectionNumber}. 나의 발견`, {
+    textParagraph(`${nextSectionNumber}. 내가 찾은 점`, {
       color: colors.accent,
       heading: HeadingLevel.HEADING_2,
       size: 28,
@@ -507,7 +507,7 @@ function teachingFlowTable({ inquiryQuestion, studentPrompt, requirements }) {
     ["단계", "학생 활동", "교사가 확인할 점"],
     [
       ["질문 이해", cleanText(inquiryQuestion, 1000) || "탐구 질문을 읽고 알고 싶은 점을 정합니다.", "처음 생각과 그 까닭을 먼저 적게 합니다."],
-      ["가설 세우기", "자료를 보기 전에 나타날 수 있는 결과를 예상합니다.", "정답을 고르게 하기보다 여러 가능성을 열어 둡니다."],
+      ["가설 세우기", "자료를 보기 전에 나타날 수 있는 결과를 예상합니다.", "한 가지 답으로 몰아가기보다 여러 가능성을 열어 둡니다."],
       ["자료 비교", cleanText(studentPrompt, 1200) || "위치·기간·기후 모델을 바꾸어 자료를 비교합니다.", `서로 다른 지점 ${minimumSites}곳과 기후 모델 ${minimumModels}개 이상을 확인하게 합니다.`],
       ["근거 정리", "그래프와 표에서 결론을 뒷받침하는 값을 고릅니다.", "자료가 없는 경우를 0으로 바꾸지 않았는지 확인합니다."],
       ["결론 쓰기", "주장·근거·한계가 드러나도록 결과를 정리합니다.", "한 가지 결과를 미래 전체의 확정된 사실처럼 쓰지 않게 합니다."]
@@ -524,7 +524,7 @@ function studentResponseTable() {
     "그래프나 표에서 찾은 가장 중요한 값",
     "다른 기후 모델에서 같거나 다르게 나타난 점",
     "자료만으로 설명하기 어려운 점과 추가로 필요한 자료",
-    "자료가 보여 주는 가능성과 최종 결론"
+    "자료로 판단한 가능성과 결론"
   ];
   const rows = [new TableRow({
     tableHeader: true,
@@ -576,14 +576,14 @@ function extensionSections(problem) {
   }
   if (problem?.mystery) {
     sections.push(
-      subsectionHeading("생각을 바로잡는 수업 진행"),
+      subsectionHeading("선입견을 다시 살펴보는 수업"),
       ...[
         "좌표와 지명을 숨긴 네 가지 기후 지표를 먼저 보여 줍니다.",
         "학생이 후보를 고르고 자료에서 찾은 근거를 말하게 합니다.",
         "두 비교 지점의 계절별 자료를 나란히 살펴봅니다.",
-        `위치를 공개한 뒤 ‘${cleanText(problem.mystery.reveal?.answer, 100)}’이라고 판단할 수 있는 범위와 한계를 구분합니다.`
+        `위치를 공개한 뒤 ‘${cleanText(problem.mystery.reveal?.answer, 100)}’이라고 판단한 근거와 이 자료만으로는 알기 어려운 점을 나눠 확인합니다.`
       ].map(bulletParagraph),
-      subsectionHeading("교사가 먼저 확인한 자료"),
+      subsectionHeading("교사가 미리 확인할 자료"),
       ...Object.values(problem.validationEvidence ?? {}).map((item) => bulletParagraph(item))
     );
   }
@@ -625,7 +625,7 @@ export async function buildTeacherActivityDocx({
   const resolvedSites = problem?.dataPlan?.sites?.length
     ? problem.dataPlan.sites
     : usableSnapshots.map((snapshot) => ({
-      detail: "저장된 비교 자료",
+      detail: "수업 화면에서 저장한 자료",
       label: snapshot.label,
       latitude: snapshot.latitude,
       longitude: snapshot.longitude
@@ -661,7 +661,7 @@ export async function buildTeacherActivityDocx({
       size: 42,
       spacing: { after: 90 }
     }),
-    textParagraph("실제 기후 시나리오 자료를 바탕으로 수업 흐름과 비교 근거를 정리한 문서", {
+    textParagraph("실제 기후 시나리오 자료로 수업 순서와 비교 근거를 정리한 문서", {
       color: colors.muted,
       size: 21,
       spacing: { after: 220 }
@@ -671,7 +671,7 @@ export async function buildTeacherActivityDocx({
     ...[
       "탐구 설계와 비교 기준",
       "기간·지점·기후 지표를 포함한 자료 계획",
-      "현재 수업에서 저장한 실제 기후 자료",
+      "수업 화면에서 저장한 실제 기후 자료",
       "학생 기록지와 교사 평가표",
       "자료 해석 범위와 확장 활동"
     ].map(bulletParagraph),
@@ -684,7 +684,7 @@ export async function buildTeacherActivityDocx({
     ...(resolvedHypotheses.length ? resolvedHypotheses : ["자료를 비교한 뒤 판단합니다."]).map(checkboxParagraph),
     subsectionHeading("결론에 필요한 근거"),
     evidenceRequirementTable(resolvedRequirements),
-    pageSectionHeading("2. 수업 진행 흐름"),
+    pageSectionHeading("2. 수업 진행 순서"),
     teachingFlowTable({ inquiryQuestion: resolvedQuestion, studentPrompt: resolvedStudentPrompt, requirements: resolvedRequirements }),
     pageSectionHeading("3. 자료 준비 계획"),
     subsectionHeading("살펴볼 기간과 기후 지표"),
@@ -700,7 +700,7 @@ export async function buildTeacherActivityDocx({
     ),
     subsectionHeading("비교할 지점"),
     plannedSiteTable(resolvedSites),
-    textParagraph("아래 실제 비교 자료에는 수업 화면에서 직접 확인하고 저장한 값만 들어갑니다. 계획에 있는 다른 지점의 값은 임의로 채우지 않습니다.", {
+    textParagraph("아래 비교 자료에는 수업 화면에서 직접 확인해 저장한 값만 담았습니다. 계획에만 있는 다른 지점의 값은 넣지 않았습니다.", {
       color: colors.muted,
       size: 18,
       spacing: { before: 160, after: 0, line: 280 }
@@ -712,9 +712,9 @@ export async function buildTeacherActivityDocx({
   usableSnapshots.forEach((snapshot, index) => {
     children.push(...conditionSection(`${sectionNumber}. 실제 비교 자료 ${index + 1}`, snapshot, { pageBreakBefore: true }));
     children.push(
-      subsectionHeading("이 자료에서 확인할 내용"),
+      subsectionHeading("이 자료를 볼 때 확인할 점"),
       ...[
-        "선택한 날짜의 값이 탐구 기간 전체를 대표한다고 단정하지 않습니다.",
+        "선택한 날짜의 값 하나로 탐구 기간 전체를 판단하지 않습니다.",
         "같은 지점에서 날짜나 기후 모델을 바꾸었을 때 값이 어떻게 달라지는지 확인합니다.",
         "자료가 제공되지 않은 기후 지표는 0이 아니라 ‘자료 없음’으로 기록합니다."
       ].map(bulletParagraph)
@@ -726,7 +726,7 @@ export async function buildTeacherActivityDocx({
     children.push(
       pageSectionHeading(`${sectionNumber}. 첫 번째 자료와 두 번째 자료의 차이`),
       comparisonTable(usableSnapshots[0], usableSnapshots[1]),
-      subsectionHeading("차이를 읽을 때 확인할 질문"),
+      subsectionHeading("차이를 살펴볼 때 확인할 질문"),
       ...[
         "두 자료에서 같은 기후 지표를 비교했나요?",
         "위치·날짜·배출 경로·기후 모델 가운데 무엇이 달라졌나요?",
@@ -738,7 +738,7 @@ export async function buildTeacherActivityDocx({
 
   children.push(
     pageSectionHeading(`${sectionNumber}. 학생 활동 기록지`),
-    textParagraph("그래프와 표에서 직접 확인한 값을 근거로 작성하세요. 자료가 보여 주지 않는 원인은 추측과 확인된 사실을 구분해 적습니다.", {
+    textParagraph("그래프와 표에서 직접 확인한 값을 근거로 작성하세요. 자료에 나오지 않은 원인을 설명할 때는 추측과 확인된 사실을 구분해 적으세요.", {
       color: colors.muted,
       size: 19,
       spacing: { after: 120, line: 300 }
@@ -749,7 +749,7 @@ export async function buildTeacherActivityDocx({
 
   children.push(
     pageSectionHeading(`${sectionNumber}. 학생 결과물 정리`),
-    textParagraph("각 결과물에는 사용한 위치·기간·배출 경로·기후 모델과 그래프 또는 표에서 확인한 근거를 함께 적습니다.", {
+    textParagraph("결과물마다 사용한 위치·기간·배출 경로·기후 모델과 그래프 또는 표에서 확인한 근거를 함께 적으세요.", {
       color: colors.muted,
       size: 19,
       spacing: { after: 120, line: 300 }
@@ -762,7 +762,7 @@ export async function buildTeacherActivityDocx({
     pageSectionHeading(`${sectionNumber}. 교사 지도와 평가`),
     subsectionHeading("평가 기준"),
     assessmentTable(resolvedAssessment.length ? resolvedAssessment : ["자료에서 확인한 근거와 해석의 한계를 함께 적는다"]),
-    subsectionHeading("학생에게 되물을 질문"),
+    subsectionHeading("학생의 생각을 넓히는 질문"),
     ...[
       "그 결론을 뒷받침하는 날짜와 값은 무엇인가요?",
       "다른 지점이나 기후 모델에서도 같은 결과가 나타났나요?",
@@ -785,8 +785,8 @@ export async function buildTeacherActivityDocx({
     subsectionHeading("다음 탐구로 이어 가기"),
     ...[
       "다른 배출 경로 또는 다른 시기의 자료에서도 같은 경향이 나타나는지 확인합니다.",
-      "여러 기후 모델의 공통점뿐 아니라 서로 다른 결과도 함께 기록합니다.",
-      "기후 모델 자료와 지역 관측 자료가 나타내는 공간 규모의 차이를 구분합니다."
+      "여러 기후 모델의 공통점과 차이점을 모두 기록합니다.",
+      "기후 모델 자료와 지역 관측 자료가 각각 어느 정도로 넓은 지역을 나타내는지 구분합니다."
     ].map(bulletParagraph)
   );
 

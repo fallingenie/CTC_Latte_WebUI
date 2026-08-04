@@ -6,6 +6,7 @@ import { runInNewContext } from "node:vm";
 const source = await readFile(new URL("../source/public-app.js", import.meta.url), "utf8");
 const exportShareSource = await readFile(new URL("../source/export-share.js", import.meta.url), "utf8");
 const styleSource = await readFile(new URL("../source/public-app.css", import.meta.url), "utf8");
+const accessGateStyleSource = await readFile(new URL("../source/access-gate.css", import.meta.url), "utf8");
 const serviceWorkerSource = await readFile(new URL("../source/public/sw.js", import.meta.url), "utf8");
 const viteConfigSource = await readFile(new URL("../source/vite.config.js", import.meta.url), "utf8");
 const productionPolicyVerifierSource = await readFile(new URL("../scripts/verify-production-data-policy.mjs", import.meta.url), "utf8");
@@ -18,7 +19,8 @@ test("해시 기반 Web UI는 미등록 경로를 index로 우회하지 않는�
 });
 
 test("한글 화면 글꼴과 배포 허가문을 함께 제공한다", () => {
-  assert.match(styleSource, /@import "pretendard\/dist\/web\/variable\/pretendardvariable\.css"/u);
+  assert.match(accessGateStyleSource, /@import "pretendard\/dist\/web\/variable\/pretendardvariable\.css"/u);
+  assert.doesNotMatch(styleSource, /pretendardvariable\.css/u);
   assert.match(pretendardLicense, /SIL OPEN FONT LICENSE Version 1\.1/u);
   assert.match(pretendardLicense, /Reserved Font Name 'Pretendard'/u);
 });
@@ -124,7 +126,7 @@ test("학생과 교사 문제는 하나의 기후 모델 자료 문제 모음에
   assert.match(source, /import \{ climateProblemSets \} from "\.\/climate-problem-catalog\.js"/u);
   assert.match(source, /const teacherLessonSamples = climateProblemSets\.map/u);
   assert.match(source, /\.\.\.climateProblemSets\.map\(problemToPreset\)/u);
-  assert.match(source, /function StudentProblemBrief\(\{ mysteryGuess, mysteryRevealed, onOpenPeriod, problem \}\)/u);
+  assert.match(source, /function StudentProblemBrief\(\{ actionsDisabled = false, mysteryGuess, mysteryRevealed, onOpenPeriod, problem \}\)/u);
   assert.match(source, /function TeacherLessonBlueprint\(\{ onOpenPeriod, sample \}\)/u);
   assert.match(source, /initialStartDate: period\.start/u);
   assert.match(source, /initialEndDate: period\.end/u);
@@ -144,7 +146,7 @@ test("위치 추리 문제는 정답 공개 전 좌표와 내보내기를 가린
   assert.match(source, /function MysteryLocationPanel/u);
   assert.match(source, /const locationConcealed = Boolean/u);
   assert.match(source, /disabled: !hasExportableMetrics \|\| locationConcealed/u);
-  assert.match(source, /locationConcealed \|\| !hasCurrentDatasetResult \|\| datePending \? undefined : exportMetric/u);
+  assert.match(source, /locationConcealed \|\| !hasCurrentDatasetResult \|\| datePending \|\| coordinateDraftPending \? undefined : exportMetric/u);
   assert.match(source, /정답을 확인하면 위치와 자료가 포함된 탐구 기록을 저장할 수 있습니다/u);
 });
 
@@ -156,13 +158,30 @@ test("자유 조회는 문제 모음과 별개로 날짜·좌표·배출 경로�
   assert.match(source, /"배출 경로"/u);
   assert.match(source, /"기후 모델"/u);
   assert.match(source, /setSelectedPresetId\("custom"\)/u);
+  assert.match(source, /const \[direction, setDirection\] = useState\(inferredDirection\)/u);
+  assert.match(source, /event\.target\.value === ""[\s\S]*?\["S", "W"\]\.includes\(direction\)/u);
+});
+
+test("좁은 학생 화면은 선택한 문제를 요약하고 문제 목록을 필요할 때만 펼친다", () => {
+  assert.match(source, /const \[problemLibraryOpen, setProblemLibraryOpen\] = useState/u);
+  assert.match(source, /"aria-expanded": problemLibraryOpen/u);
+  assert.match(source, /problemLibraryOpen \? \/\* @__PURE__ \*\/ jsx\(ProblemCategoryControl/u);
+  assert.match(source, /if \(window\.matchMedia\?\.\("\(max-width: 600px\)"\)\.matches\) setProblemLibraryOpen\(false\)/u);
+  assert.match(styleSource, /\.student-problem-library-toggle\s*\{[\s\S]*?min-height: 52px/u);
+});
+
+test("지도 현재 위치 찾기는 실제 브라우저 위치 요청과 실패 안내를 제공한다", () => {
+  assert.match(source, /import \{ currentLocationFailureMessage, requestCurrentBrowserCoordinate \} from "\.\/browser-geolocation\.js"/u);
+  assert.match(source, /"aria-label": "선택한 지점으로 이동"/u);
+  assert.match(source, /"aria-label": "현재 위치 찾기"/u);
+  assert.match(source, /"aria-live": "polite", children: locationNotice/u);
 });
 
 test("문제에서 허용한 좌표 변경은 입력 확인 뒤에도 같은 탐구 문제를 유지한다", () => {
   const confirmStart = source.indexOf("const confirmQuery = () => {");
   const confirmEnd = source.indexOf("const exportMetric", confirmStart);
   const confirmSource = source.slice(confirmStart, confirmEnd);
-  assert.match(confirmSource, /activePreset\.problemSetId && activePreset\.allowCustomLocation \? activePreset\.id : "custom"/u);
+  assert.match(confirmSource, /activeProblem\?\.dataPlan\?\.allowCustomLocation \? selectedPresetId : "custom"/u);
 });
 
 test("같은 학생 화면에서 다른 수업 링크를 열어도 조건을 다시 적용한다", () => {
@@ -271,7 +290,7 @@ test("CSV는 스프레드시트 공유를, HTML은 대화형 원본의 Drive 공
 });
 
 test("배포 셸은 코드 자산을 네트워크에서 먼저 갱신한다", () => {
-  assert.match(serviceWorkerSource, /climate-web-shell-v19/u);
+  assert.match(serviceWorkerSource, /climate-web-shell-v20/u);
   assert.match(serviceWorkerSource, /fetch\(SHELL_ASSET_MANIFEST, \{ cache: "no-store" \}\)/u);
   assert.match(serviceWorkerSource, /cache\.addAll\(\[\.\.\.SHELL_ASSETS, \.\.\.buildAssets\]\)/u);
   assert.doesNotMatch(serviceWorkerSource, /clients\.claim/u);
@@ -353,6 +372,11 @@ test("학생·교사·일반 조회는 같은 자료 버전에 고정되고 변�
   assert.match(source, /expectedDataModeRef\.current = payload\.dataMode/u);
   assert.match(source, /setIncludeRaw\(payload\.includeRaw\)/u);
   assert.match(source, /observedDialogDatasetVersionRef/u);
+  assert.match(source, /observedDialogDatasetUpdatedAtRef/u);
+  assert.match(source, /setPreparedDelivery\(null\)/u);
+  assert.match(source, /latestDialogDatasetIdentityRef\.current !== exportDatasetIdentity/u);
+  assert.match(source, /setStudentFileDelivery\(null\)/u);
+  assert.match(source, /setTeacherFileDelivery\(null\)/u);
   assert.match(source, /completedRefreshSequenceRef/u);
   assert.match(source, /controllerRef\.current\?\.abort\(\)/u);
   assert.equal(source.match(/requestDatasetRefresh: datasetState\.requestRefresh/gu)?.length, 3);
@@ -381,10 +405,24 @@ test("자료 갱신 실패는 같은 조건의 기존 결과를 유지하고 내
   assert.doesNotMatch(messageSource, /datasetVersion|drive\.google|storage\.googleapis|gcs|\.nc\b|\.zarr\b|sha-?256/iu);
 });
 
-test("원자료 조회 중에는 보정 관측지 부재와 대기 방법을 안내한다", () => {
-  assert.match(source, /선택한 위치 주변에 보정에 사용할 관측소가 없어 기후 모델 원자료를 읽고 있습니다/u);
+test("조회 중에는 아직 결정되지 않은 자료 출처를 단정하지 않고 대기 방법을 안내한다", () => {
+  assert.match(source, /선택한 위치와 기간의 실제 기후 자료를 확인하고 있습니다/u);
   assert.match(source, /조회가 끝날 때까지 새로고침하거나 창을 닫지 마세요/u);
+  assert.doesNotMatch(source, /관측소가 없어/u);
   assert.doesNotMatch(source, /원본 기후모델 격자를 읽는 위치는/u);
+});
+
+test("대화형 그래프와 모달 창은 키보드 조작 및 초점 순환을 제공한다", () => {
+  assert.match(source, /"aria-keyshortcuts": "ArrowLeft ArrowRight Home End Plus Minus 0 Enter Space"/u);
+  assert.match(source, /onKeyDown: handleChartKeyDown/u);
+  assert.match(source, /role: "group",\s*tabIndex: 0/u);
+  assert.match(source, /function trapDialogTab\(event, dialog\)/u);
+  assert.ok((source.match(/trapDialogTab\(event, dialogRef\.current\)/gu) || []).length >= 3);
+  assert.match(
+    source,
+    /setPreparedDelivery\(null\);\s*scheduleDialogFocusRestore\(closeButtonRef\);/u
+  );
+  assert.match(styleSource, /\.chart-plot-shell > svg:focus-visible/u);
 });
 
 test("조회 취소는 진행 중인 요청을 중단하고 취소 상태를 남긴다", () => {

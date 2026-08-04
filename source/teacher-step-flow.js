@@ -30,6 +30,7 @@ export const TEACHER_STEP_DEFINITIONS = Object.freeze([
 
 export const TEACHER_FLOW_ACTIONS = Object.freeze({
   SELECT_LESSON: "select-lesson",
+  UPDATE_COMPARISON_REQUIREMENTS: "update-comparison-requirements",
   UPDATE_CONDITIONS: "update-conditions",
   CONFIRM_DATE: "confirm-date",
   SET_COMPARISON_MATERIALS: "set-comparison-materials",
@@ -46,7 +47,7 @@ export const TEACHER_QUERY_STATUSES = Object.freeze({
   ERROR: "error"
 });
 
-/** 수업에 필요한 지표가 확인되면 관련 없는 지표의 결측 때문에 진행을 막지 않는다. */
+/** 수업에 필요한 지표가 확인되면 관련 없는 지표가 빠졌다는 이유로 진행을 막지 않는다. */
 export function resolveTeacherQueryStatus(remoteStatus, metrics, requiredMetricKeys) {
   if (remoteStatus === "ready") return TEACHER_QUERY_STATUSES.READY;
   if (remoteStatus === "loading") return TEACHER_QUERY_STATUSES.LOADING;
@@ -73,7 +74,7 @@ export const TEACHER_NAVIGATION_LABELS = Object.freeze({
   stepList: "교사용 수업 만들기 단계",
   previous: "이전 단계로 이동",
   next: "다음 단계로 이동",
-  locked: "필수 항목을 완료해야 이동할 수 있는 단계"
+  locked: "필수 항목을 입력한 뒤 이동할 수 있는 단계"
 });
 
 const stepIndexById = new Map(TEACHER_STEP_DEFINITIONS.map((step, index) => [step.id, index]));
@@ -120,7 +121,7 @@ export function createTeacherStepFlowState(initial = {}) {
 export function validateTeacherLessonSelection(state) {
   const errors = [];
   if (!isValidText(state?.selectedLessonId, 160)) {
-    errors.push({ field: "selectedLessonId", message: "진행할 수업을 선택하세요." });
+    errors.push({ field: "selectedLessonId", message: "수업 주제를 선택하세요." });
   }
   return validationResult(errors);
 }
@@ -142,7 +143,7 @@ export function validateTeacherLessonConditions(state) {
     errors.push({ field: "objective", message: "학습 목표를 입력하세요." });
   }
   if (!isValidLocation(conditions.location)) {
-    errors.push({ field: "location", message: "수업에 사용할 위치를 선택하세요." });
+    errors.push({ field: "location", message: "수업에서 살펴볼 위치를 선택하세요." });
   }
   if (!isValidText(conditions.scenario, 80)) {
     errors.push({ field: "scenario", message: "기후 시나리오를 선택하세요." });
@@ -160,10 +161,10 @@ export function validateTeacherReviewReadiness(state) {
     ...validateTeacherLessonConditions(state).errors
   ];
   if (!hasRequiredTeacherComparisonMaterials(state?.comparisonMaterials, state?.comparisonRequirements)) {
-    errors.push({ field: "comparisonMaterials", message: "수업에서 요구한 비교 자료를 모두 추가하세요." });
+    errors.push({ field: "comparisonMaterials", message: "이 수업에 필요한 비교 자료를 모두 추가하세요." });
   }
   if (state?.queryStatus !== TEACHER_QUERY_STATUSES.READY) {
-    errors.push({ field: "queryStatus", message: "현재 수업 조건의 실제 기후 자료 조회를 완료하세요." });
+    errors.push({ field: "queryStatus", message: "현재 수업 조건으로 기후 자료를 조회하세요." });
   }
   return validationResult(errors);
 }
@@ -234,6 +235,8 @@ export function teacherStepFlowReducer(state, action) {
   switch (action.type) {
     case TEACHER_FLOW_ACTIONS.SELECT_LESSON:
       return selectLesson(current, action.lessonId, action.requirements);
+    case TEACHER_FLOW_ACTIONS.UPDATE_COMPARISON_REQUIREMENTS:
+      return updateComparisonRequirements(current, action.requirements);
     case TEACHER_FLOW_ACTIONS.UPDATE_CONDITIONS:
       return updateConditions(current, action.patch);
     case TEACHER_FLOW_ACTIONS.CONFIRM_DATE:
@@ -262,6 +265,12 @@ function selectLesson(state, lessonId, requirements) {
     comparisonRequirements: normalizeComparisonRequirements(requirements),
     queryStatus: TEACHER_QUERY_STATUSES.IDLE
   });
+}
+
+function updateComparisonRequirements(state, requirements) {
+  const comparisonRequirements = normalizeComparisonRequirements(requirements);
+  if (sameComparisonRequirements(state.comparisonRequirements, comparisonRequirements)) return state;
+  return reconcileCurrentStep({ ...state, comparisonRequirements });
 }
 
 function updateConditions(state, patch) {
@@ -347,6 +356,12 @@ function sameConditionValue(current, next) {
   return current.label === next.label
     && current.latitude === next.latitude
     && current.longitude === next.longitude;
+}
+
+function sameComparisonRequirements(current, next) {
+  return current?.minimumSites === next.minimumSites
+    && current?.minimumModels === next.minimumModels
+    && current?.includeEnsemble === next.includeEnsemble;
 }
 
 function stepIndex(stepId) {

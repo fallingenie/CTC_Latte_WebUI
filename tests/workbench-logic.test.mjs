@@ -27,6 +27,7 @@ import {
   openNativeDatePicker,
   parseHashLocation,
   resolveExportPercentiles,
+  scheduleDialogFocusRestore,
   sanitizeNote,
   seriesPointX
 } from "../source/workbench-logic.js";
@@ -57,6 +58,28 @@ test("달력 열기는 showPicker 미지원 또는 실패 시 기본 입력 클�
     click: () => supportedCalls.push("click")
   }), true);
   assert.deepEqual(supportedCalls, ["focus", "showPicker"]);
+});
+
+test("하위 파일 전달 창을 닫으면 다시 표시된 내보내기 창으로 초점을 돌린다", () => {
+  let callback;
+  let delay;
+  let focusCount = 0;
+  const targetRef = { current: null };
+  const scheduled = scheduleDialogFocusRestore(targetRef, (next, timeout) => {
+    callback = next;
+    delay = timeout;
+  });
+
+  assert.equal(scheduled, true);
+  assert.equal(delay, 40);
+  targetRef.current = {
+    focus() {
+      focusCount += 1;
+    }
+  };
+  callback();
+  assert.equal(focusCount, 1);
+  assert.equal(scheduleDialogFocusRestore(null, () => {}), false);
 });
 
 const context = {
@@ -143,6 +166,46 @@ test("문제와 비교 기간을 포함한 공유 상태를 같은 판으로 복
   assert.deepEqual(decodeLessonState(encodeLessonState(shared)), shared);
 });
 
+test("교사가 직접 만든 수업의 질문과 결과물을 학생 링크에서 복원한다", () => {
+  const shared = {
+    ...context,
+    focus: "rain",
+    source: "teacher",
+    periodStart: "2060-06-01",
+    periodEnd: "2060-10-31",
+    customLesson: {
+      title: "강수 시기는 어떻게 달라질까",
+      objective: "지역과 모델에 따른 강수 시기를 비교한다.",
+      question: "비가 집중되는 시기는 위치와 기후 모델에 따라 어떻게 달라질까요?",
+      outputs: ["비교표", "근거와 한계를 담은 설명"],
+      metricKeys: ["precipitation", "wind"],
+      interpretationLimit: "미래의 가능성을 살펴보는 자료이며 특정 날짜의 일기예보가 아닙니다.",
+      evidenceRequirements: { minimumSites: 2, minimumModels: 2, includeEnsemble: true }
+    }
+  };
+  assert.deepEqual(decodeLessonState(encodeLessonState(shared)), shared);
+});
+
+test("교사가 입력할 수 있는 최대 분량도 잘리지 않고 학생 링크에서 복원한다", () => {
+  const shared = {
+    ...context,
+    focus: "temperature",
+    source: "teacher",
+    periodStart: "2050-08-01",
+    periodEnd: "2051-07-31",
+    customLesson: {
+      title: "가".repeat(120),
+      objective: "나".repeat(300),
+      question: "다".repeat(500),
+      outputs: Array.from({ length: 6 }, (_, index) => `${index}${"라".repeat(199)}`),
+      metricKeys: ["tasmax", "tasmin", "precipitation", "wind", "apparentTemperature"],
+      interpretationLimit: "마".repeat(1000),
+      evidenceRequirements: { minimumSites: 4, minimumModels: 4, includeEnsemble: true }
+    }
+  };
+  assert.deepEqual(decodeLessonState(encodeLessonState(shared)), shared);
+});
+
 test("이전 판의 공유 상태도 계속 열 수 있다", () => {
   const legacy = Buffer.from(JSON.stringify({ version: 1, ...context, focus: "heat", source: "public" })).toString("base64url");
   assert.deepEqual(decodeLessonState(legacy), { ...context, focus: "heat", source: "public" });
@@ -150,7 +213,7 @@ test("이전 판의 공유 상태도 계속 열 수 있다", () => {
 
 test("손상되거나 범위를 벗어난 공유 상태는 거부한다", () => {
   assert.equal(decodeLessonState("not-valid"), undefined);
-  assert.equal(decodeLessonState("x".repeat(4097)), undefined);
+  assert.equal(decodeLessonState("x".repeat(24577)), undefined);
   assert.throws(() => encodeLessonState({ ...context, latitude: 90 }), RangeError);
   assert.throws(() => encodeLessonState({ ...context, periodStart: "2060-10-31", periodEnd: "2060-06-01" }), RangeError);
 });

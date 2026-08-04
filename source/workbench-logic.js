@@ -1,6 +1,8 @@
 import { PUBLIC_CLIMATE_ATTRIBUTION_LABELS } from "./runtime-policy.js";
+import { CUSTOM_TEACHER_METRIC_KEYS } from "./teacher-lesson-builder.js";
 
-const lessonStateVersion = 2;
+const lessonStateVersion = 3;
+const maximumLessonStateLength = 24576;
 const maximumNoteLength = 2000;
 const publicAttributionLabelSet = new Set(PUBLIC_CLIMATE_ATTRIBUTION_LABELS);
 const publicExportDataModes = new Set(["bias-corrected", "raw-model-grid"]);
@@ -92,6 +94,7 @@ export function encodeLessonState(value) {
   if (periodStart && periodEnd && periodStart > periodEnd) {
     throw new RangeError("탐구 종료일은 시작일보다 빠를 수 없습니다.");
   }
+  const customLesson = normalizeSharedCustomLesson(value.customLesson);
   const payload = JSON.stringify({
     version: lessonStateVersion,
     source,
@@ -104,21 +107,23 @@ export function encodeLessonState(value) {
     ...(problemSetId ? { problemSetId } : {}),
     ...(problemRevision ? { problemRevision } : {}),
     ...(periodStart ? { periodStart } : {}),
-    ...(periodEnd ? { periodEnd } : {})
+    ...(periodEnd ? { periodEnd } : {}),
+    ...(customLesson ? { customLesson: compactSharedCustomLesson(customLesson) } : {})
   });
   return bytesToBase64Url(new TextEncoder().encode(payload));
 }
 
 export function decodeLessonState(encoded) {
   try {
-    if (String(encoded ?? "").length > 4096) return undefined;
+    if (String(encoded ?? "").length > maximumLessonStateLength) return undefined;
     const parsed = JSON.parse(new TextDecoder().decode(base64UrlToBytes(encoded)));
-    if (![1, lessonStateVersion].includes(parsed?.version)) return undefined;
+    if (![1, 2, lessonStateVersion].includes(parsed?.version)) return undefined;
     const problemSetId = safeText(parsed.problemSetId, 80);
     const problemRevision = problemSetId ? boundedInteger(parsed.problemRevision ?? 1, 1, 100000) : undefined;
     const periodStart = parsed.periodStart ? validDate(parsed.periodStart) : undefined;
     const periodEnd = parsed.periodEnd ? validDate(parsed.periodEnd) : undefined;
     if (periodStart && periodEnd && periodStart > periodEnd) return undefined;
+    const customLesson = parsed.version >= 3 ? normalizeSharedCustomLesson(expandSharedCustomLesson(parsed.customLesson)) : undefined;
     return {
       source: parsed.source === "public" ? "public" : "teacher",
       date: validDate(parsed.date),
@@ -130,7 +135,8 @@ export function decodeLessonState(encoded) {
       ...(problemSetId ? { problemSetId } : {}),
       ...(problemRevision ? { problemRevision } : {}),
       ...(periodStart ? { periodStart } : {}),
-      ...(periodEnd ? { periodEnd } : {})
+      ...(periodEnd ? { periodEnd } : {}),
+      ...(customLesson ? { customLesson } : {})
     };
   } catch {
     return undefined;
@@ -439,6 +445,17 @@ export function openNativeDatePicker(input) {
     }
   }
   input.click();
+  return true;
+}
+
+export function scheduleDialogFocusRestore(
+  targetRef,
+  schedule = globalThis.setTimeout
+) {
+  if (!targetRef || typeof targetRef !== "object" || typeof schedule !== "function") {
+    return false;
+  }
+  schedule(() => targetRef.current?.focus?.(), 40);
   return true;
 }
 
@@ -1206,6 +1223,68 @@ function csvCell(value) {
   const numericText = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+\-]?\d+)?$/iu.test(text);
   const protectedText = typeof value === "string" && !numericText && /^[=+\-@\t\r]/u.test(text) ? `'${text}` : text;
   return `"${protectedText.replace(/"/g, '""')}"`;
+}
+
+function normalizeSharedCustomLesson(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const title = safeText(value.title, 120);
+  const objective = safeText(value.objective, 300);
+  const question = safeText(value.question, 500);
+  const outputs = Array.isArray(value.outputs)
+    ? value.outputs.map((item) => safeText(item, 200)).filter(Boolean).slice(0, 6)
+    : [];
+  const allowedMetricKeys = new Set(CUSTOM_TEACHER_METRIC_KEYS);
+  const metricKeys = Array.isArray(value.metricKeys)
+    ? [...new Set(value.metricKeys.filter((key) => allowedMetricKeys.has(key)))]
+    : [];
+  const interpretationLimit = safeText(value.interpretationLimit, 1000);
+  if (!title || !question || outputs.length === 0 || metricKeys.length === 0) return undefined;
+  return {
+    title,
+    objective,
+    question,
+    outputs,
+    metricKeys,
+    interpretationLimit,
+    evidenceRequirements: {
+      minimumSites: boundedInteger(value.evidenceRequirements?.minimumSites ?? 1, 1, 4),
+      minimumModels: boundedInteger(value.evidenceRequirements?.minimumModels ?? 1, 1, 4),
+      includeEnsemble: value.evidenceRequirements?.includeEnsemble === true
+    }
+  };
+}
+
+function compactSharedCustomLesson(value) {
+  return {
+    t: value.title,
+    o: value.objective,
+    q: value.question,
+    r: value.outputs,
+    m: value.metricKeys,
+    l: value.interpretationLimit,
+    e: {
+      s: value.evidenceRequirements.minimumSites,
+      m: value.evidenceRequirements.minimumModels,
+      a: value.evidenceRequirements.includeEnsemble
+    }
+  };
+}
+
+function expandSharedCustomLesson(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return {
+    title: value.t,
+    objective: value.o,
+    question: value.q,
+    outputs: value.r,
+    metricKeys: value.m,
+    interpretationLimit: value.l,
+    evidenceRequirements: {
+      minimumSites: value.e?.s,
+      minimumModels: value.e?.m,
+      includeEnsemble: value.e?.a
+    }
+  };
 }
 
 function safeText(value, maximumLength) {

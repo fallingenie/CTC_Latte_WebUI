@@ -6,6 +6,8 @@ steps:
     args:
       - -ceu
       - |
+        apt-get update
+        apt-get install --yes --no-install-recommends python3
         corepack enable
         corepack prepare pnpm@10.33.2 --activate
         pnpm install --frozen-lockfile
