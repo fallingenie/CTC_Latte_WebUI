@@ -13,6 +13,7 @@ import {
   resolveTeacherQueryStatus,
   teacherStepFlowReducer,
   validateTeacherLessonConditions,
+  validateTeacherLessonSelection,
   validateTeacherReviewReadiness
 } from "../source/teacher-step-flow.js";
 
@@ -104,6 +105,28 @@ test("수업을 선택하기 전에는 수업 조건 단계로 이동할 수 없
   assert.equal(canEnterTeacherStep(state, TEACHER_STEP_IDS.LESSON_CONDITIONS), false);
   assert.equal(getTeacherStepNavigation(state).next.disabled, true);
   assert.equal(reduce(state, TEACHER_FLOW_ACTIONS.NEXT), state);
+});
+
+test("단계 잠금과 입력 안내는 교사 화면의 현재 용어를 그대로 사용한다", () => {
+  assert.equal(TEACHER_NAVIGATION_LABELS.locked, "필수 항목을 입력한 뒤 이동할 수 있는 단계");
+  assert.equal(
+    validateTeacherLessonSelection(createTeacherStepFlowState()).errors.find(({ field }) => field === "selectedLessonId")?.message,
+    "수업 주제를 선택하세요."
+  );
+  assert.equal(
+    validateTeacherLessonConditions(createConditionsStep({ location: null })).errors.find(({ field }) => field === "location")?.message,
+    "수업에서 살펴볼 위치를 선택하세요."
+  );
+
+  const reviewErrors = validateTeacherReviewReadiness(createActivityStep()).errors;
+  assert.equal(
+    reviewErrors.find(({ field }) => field === "comparisonMaterials")?.message,
+    "이 수업에 필요한 비교 자료를 모두 추가하세요."
+  );
+  assert.equal(
+    reviewErrors.find(({ field }) => field === "queryStatus")?.message,
+    "현재 수업 조건으로 기후 자료를 조회하세요."
+  );
 });
 
 test("제목·목표·위치·시나리오·모델은 모두 유효해야 한다", () => {

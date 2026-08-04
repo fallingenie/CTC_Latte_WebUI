@@ -275,7 +275,7 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
     overviewRows.push(["탐구 기간", `${cleanText(problem.dataPlan.periodStart, 20)} ~ ${cleanText(problem.dataPlan.periodEnd, 20)}`]);
   }
   if (problem?.roles?.student?.output?.length) {
-    overviewRows.push(["만들 결과물", problem.roles.student.output.map((item) => cleanText(item, 200)).join(" · ")]);
+    overviewRows.push(["완성할 결과물", problem.roles.student.output.map((item) => cleanText(item, 200)).join(" · ")]);
   }
   if (problem?.inquiry?.interpretationLimit) {
     overviewRows.push(["해석할 때 주의할 점", cleanText(problem.inquiry.interpretationLimit, 1200)]);

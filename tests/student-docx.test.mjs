@@ -95,6 +95,12 @@ test("학생 탐구 문서는 내용이 있는 DOCX 패키지로 생성된다", 
   assert.match(documentXml, /4\.1 m\/s/u);
   assert.match(documentXml, /\+2℃/u);
   assert.match(documentXml, /현재 조건의 최고기온이 비교 기준보다 2℃ 높습니다\./u);
+  assert.match(documentXml, /완성할 결과물/u);
+  assert.match(documentXml, /자료에서 찾은 근거/u);
+  assert.match(documentXml, /조회한 값/u);
+  assert.match(documentXml, /자료로 판단한 가능성/u);
+  assert.match(documentXml, /내가 찾은 점/u);
+  assert.doesNotMatch(documentXml, /만들 결과물|자료에서 확인한 내용|선택한 자료의 값|자료가 보여주는 가능성|나의 발견/u);
   assert.doesNotMatch(documentXml, /Codex/iu);
 });
 
@@ -161,6 +167,10 @@ test("교사용 수업 활동지는 수업 설계와 실제 비교 자료가 들
   assert.match(documentXml, /학생 활동 기록지/u);
   assert.match(documentXml, /교사 지도와 평가/u);
   assert.match(documentXml, /자료 해석 범위와 확장 활동/u);
+  assert.match(documentXml, /수업 진행 순서/u);
+  assert.match(documentXml, /학생의 생각을 넓히는 질문/u);
+  assert.match(documentXml, /완성할 결과물/u);
+  assert.doesNotMatch(documentXml, /수업 진행 흐름|학생에게 되물을 질문|만들 결과물/u);
   assert.ok((documentXml.match(/w:pageBreakBefore/gu) ?? []).length >= 6, "교사용 활동지가 독립된 여러 쪽으로 구성되지 않았습니다.");
   assert.doesNotMatch(documentXml, /Codex|\.ctwebui|\.ctcapsule|drive\.google\.com/iu);
 });

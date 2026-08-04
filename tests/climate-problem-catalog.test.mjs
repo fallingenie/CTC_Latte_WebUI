@@ -4,6 +4,19 @@ import { climateProblemById, climateProblemSets } from "../source/climate-proble
 
 const allowedCategories = new Set(["heat", "rain", "temperature", "wind"]);
 const allowedVariables = new Set(["apparentTemperature", "precipitation", "tasmax", "tasmin", "wind"]);
+const expectedRevisions = {
+  "southern-rain-shift": 2,
+  "regional-diurnal-range": 2,
+  "future-day-night-warming": 2,
+  "island-mountain-wind": 2,
+  "cape-town-seasonal-rain": 2,
+  "daegu-compound-heat": 2,
+  "mokpo-winter-feels-like": 2,
+  "warming-extreme-heat": 2,
+  "same-temperature-different-heat-index": 2,
+  "winter-feels-like-trend": 2,
+  "atlas-climate-mystery": 2
+};
 
 function isCompleteDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(value ?? ""))) return false;
@@ -16,6 +29,13 @@ test("문제 모음은 여러 기후 요소와 역할별 활동을 포함한다"
   assert.deepEqual(new Set(climateProblemSets.map((problem) => problem.category)), allowedCategories);
   const usedVariables = new Set(climateProblemSets.flatMap((problem) => problem.dataPlan.variableKeys));
   for (const variable of allowedVariables) assert.ok(usedVariables.has(variable), `${variable} 지표 문제가 없습니다.`);
+});
+
+test("문구와 활동 의미가 바뀐 문제는 새 revision으로 공유된다", () => {
+  assert.deepEqual(
+    Object.fromEntries(climateProblemSets.map(({ id, revision }) => [id, revision])),
+    expectedRevisions
+  );
 });
 
 test("모든 문제는 고유 식별자와 실제 조회 조건, 학생·교사 검수 기준을 갖는다", () => {

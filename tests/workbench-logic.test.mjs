@@ -90,6 +90,30 @@ const context = {
   model: "전체 앙상블"
 };
 
+const sharedCustomLesson = {
+  title: "강수 시기는 어떻게 달라질까",
+  objective: "지역과 모델에 따른 강수 시기를 비교한다.",
+  question: "비가 집중되는 시기는 위치와 기후 모델에 따라 어떻게 달라질까요?",
+  outputs: ["비교표", "근거와 한계를 담은 설명"],
+  metricKeys: ["precipitation", "wind"],
+  interpretationLimit: "미래의 가능성을 살펴보는 자료이며 특정 날짜의 일기예보가 아닙니다.",
+  evidenceRequirements: { minimumSites: 2, minimumModels: 2, includeEnsemble: true }
+};
+
+const compactSharedCustomLesson = {
+  t: sharedCustomLesson.title,
+  o: sharedCustomLesson.objective,
+  q: sharedCustomLesson.question,
+  r: sharedCustomLesson.outputs,
+  m: sharedCustomLesson.metricKeys,
+  l: sharedCustomLesson.interpretationLimit,
+  e: { s: 2, m: 2, a: true }
+};
+
+function encodeLessonFixture(value) {
+  return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+}
+
 const datasetVersion = "a".repeat(64);
 const datasetUpdatedAt = "2026-07-15T01:02:03.123456Z";
 
@@ -173,15 +197,7 @@ test("교사가 직접 만든 수업의 질문과 결과물을 학생 링크에�
     source: "teacher",
     periodStart: "2060-06-01",
     periodEnd: "2060-10-31",
-    customLesson: {
-      title: "강수 시기는 어떻게 달라질까",
-      objective: "지역과 모델에 따른 강수 시기를 비교한다.",
-      question: "비가 집중되는 시기는 위치와 기후 모델에 따라 어떻게 달라질까요?",
-      outputs: ["비교표", "근거와 한계를 담은 설명"],
-      metricKeys: ["precipitation", "wind"],
-      interpretationLimit: "미래의 가능성을 살펴보는 자료이며 특정 날짜의 일기예보가 아닙니다.",
-      evidenceRequirements: { minimumSites: 2, minimumModels: 2, includeEnsemble: true }
-    }
+    customLesson: sharedCustomLesson
   };
   assert.deepEqual(decodeLessonState(encodeLessonState(shared)), shared);
 });
@@ -206,9 +222,98 @@ test("교사가 입력할 수 있는 최대 분량도 잘리지 않고 학생 �
   assert.deepEqual(decodeLessonState(encodeLessonState(shared)), shared);
 });
 
-test("이전 판의 공유 상태도 계속 열 수 있다", () => {
-  const legacy = Buffer.from(JSON.stringify({ version: 1, ...context, focus: "heat", source: "public" })).toString("base64url");
-  assert.deepEqual(decodeLessonState(legacy), { ...context, focus: "heat", source: "public" });
+test("v1·v2·v3 공유 상태를 각 판의 필드에 맞게 계속 열 수 있다", () => {
+  const fixtures = [
+    {
+      payload: { version: 1, ...context, focus: "heat", source: "public" },
+      expected: { ...context, focus: "heat", source: "public" }
+    },
+    {
+      payload: {
+        version: 2,
+        ...context,
+        focus: "rain",
+        source: "teacher",
+        problemSetId: "southern-rain-shift",
+        problemRevision: 1,
+        periodStart: "2050-06-01",
+        periodEnd: "2050-10-31"
+      },
+      expected: {
+        ...context,
+        focus: "rain",
+        source: "teacher",
+        problemSetId: "southern-rain-shift",
+        problemRevision: 1,
+        periodStart: "2050-06-01",
+        periodEnd: "2050-10-31"
+      }
+    },
+    {
+      payload: {
+        version: 3,
+        ...context,
+        focus: "rain",
+        source: "teacher",
+        periodStart: "2050-06-01",
+        periodEnd: "2050-10-31",
+        customLesson: compactSharedCustomLesson
+      },
+      expected: {
+        ...context,
+        focus: "rain",
+        source: "teacher",
+        periodStart: "2050-06-01",
+        periodEnd: "2050-10-31",
+        customLesson: sharedCustomLesson
+      }
+    }
+  ];
+
+  for (const { payload, expected } of fixtures) {
+    assert.deepEqual(decodeLessonState(encodeLessonFixture(payload)), expected, `v${payload.version} 공유 상태를 복원하지 못했습니다.`);
+  }
+});
+
+test("v3 직접 수업 정보가 있으면 전체 스키마가 올바를 때만 공유 상태를 연다", () => {
+  const invalidCustomLessons = [
+    null,
+    {},
+    { ...compactSharedCustomLesson, o: "" },
+    { ...compactSharedCustomLesson, l: "   " },
+    { ...compactSharedCustomLesson, t: 2026 },
+    { ...compactSharedCustomLesson, o: "가".repeat(301) },
+    { ...compactSharedCustomLesson, r: ["비교표", ""] },
+    { ...compactSharedCustomLesson, r: Array.from({ length: 7 }, (_, index) => `결과물 ${index + 1}`) },
+    { ...compactSharedCustomLesson, m: ["precipitation", "unknown"] },
+    { ...compactSharedCustomLesson, m: ["wind", "wind"] },
+    { ...compactSharedCustomLesson, e: { s: "2", m: 2, a: true } },
+    { ...compactSharedCustomLesson, e: { s: 2, m: 2, a: true, extra: true } },
+    { ...compactSharedCustomLesson, extra: true }
+  ];
+
+  for (const [index, customLesson] of invalidCustomLessons.entries()) {
+    const payload = {
+      version: 3,
+      ...context,
+      focus: "rain",
+      source: "teacher",
+      customLesson
+    };
+    assert.equal(decodeLessonState(encodeLessonFixture(payload)), undefined, `${index + 1}번째 잘못된 직접 수업 상태가 열렸습니다.`);
+  }
+});
+
+test("직접 수업 정보를 인코딩할 때도 잘못된 필드를 조용히 버리지 않는다", () => {
+  assert.throws(
+    () => encodeLessonState({
+      ...context,
+      focus: "rain",
+      source: "teacher",
+      customLesson: { ...sharedCustomLesson, objective: "" }
+    }),
+    /직접 수업 공유 정보가 올바르지 않습니다/u
+  );
 });
 
 test("손상되거나 범위를 벗어난 공유 상태는 거부한다", () => {

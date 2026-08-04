@@ -68,7 +68,11 @@ export function buildCustomTeacherLessonSample({
   scenario,
   title
 }) {
-  const { draft } = validateCustomTeacherLessonDraft(draftValue, date);
+  const validation = validateCustomTeacherLessonDraft(draftValue, date);
+  if (!validation.valid) {
+    throw new TypeError(`직접 수업 초안이 올바르지 않습니다: ${validation.errors.map(({ message }) => message).join(" ")}`);
+  }
+  const { draft } = validation;
   const derivedKeys = draft.metricKeys.includes("apparentTemperature") ? ["apparentTemperature"] : [];
   const variableKeys = draft.metricKeys.filter((key) => key !== "apparentTemperature");
   const output = expectedOutputs(draft.outputText);

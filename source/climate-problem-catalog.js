@@ -4,7 +4,7 @@ const ensembleModel = "전체 앙상블";
 export const climateProblemSets = [
   {
     id: "southern-rain-shift",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "rain",
     presentation: {
@@ -51,7 +51,7 @@ export const climateProblemSets = [
   },
   {
     id: "regional-diurnal-range",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "temperature",
     presentation: {
@@ -97,7 +97,7 @@ export const climateProblemSets = [
   },
   {
     id: "future-day-night-warming",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "temperature",
     presentation: {
@@ -145,7 +145,7 @@ export const climateProblemSets = [
   },
   {
     id: "island-mountain-wind",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "wind",
     presentation: {
@@ -189,7 +189,7 @@ export const climateProblemSets = [
   },
   {
     id: "cape-town-seasonal-rain",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "rain",
     presentation: {
@@ -232,7 +232,7 @@ export const climateProblemSets = [
   },
   {
     id: "daegu-compound-heat",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "heat",
     presentation: {
@@ -279,7 +279,7 @@ export const climateProblemSets = [
   },
   {
     id: "mokpo-winter-feels-like",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "heat",
     presentation: {
@@ -326,7 +326,7 @@ export const climateProblemSets = [
   },
   {
     id: "warming-extreme-heat",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "heat",
     presentation: {
@@ -380,7 +380,7 @@ export const climateProblemSets = [
   },
   {
     id: "same-temperature-different-heat-index",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "heat",
     presentation: {
@@ -432,7 +432,7 @@ export const climateProblemSets = [
   },
   {
     id: "winter-feels-like-trend",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "heat",
     presentation: {
@@ -480,7 +480,7 @@ export const climateProblemSets = [
   },
   {
     id: "atlas-climate-mystery",
-    revision: 1,
+    revision: 2,
     status: "verified",
     category: "temperature",
     presentation: {

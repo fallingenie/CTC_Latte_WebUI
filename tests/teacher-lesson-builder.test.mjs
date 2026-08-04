@@ -48,6 +48,23 @@ test("질문, 지표, 결과물과 올바른 기간이 있어야 직접 수업�
   ]));
 });
 
+test("유효하지 않은 직접 수업 초안으로는 표본을 만들지 않는다", () => {
+  assert.throws(
+    () => buildCustomTeacherLessonSample({
+      ...context,
+      draft: {
+        question: "",
+        outputText: "",
+        metricKeys: [],
+        periodStart: "2060-10-31",
+        periodEnd: "2060-06-01",
+        interpretationLimit: ""
+      }
+    }),
+    /직접 수업 초안이 올바르지 않습니다:.*학생이 살펴볼 질문.*학생이 완성할 결과물.*기후 지표.*탐구 종료일.*자료를 해석할 때 주의할 점/u
+  );
+});
+
 test("직접 수업 표본은 원 지표와 계산 지표를 구분하고 학생 결과물을 보존한다", () => {
   const draft = createCustomTeacherLessonDraft({
     metricKeys: ["tasmax", "precipitation", "apparentTemperature"],
@@ -69,7 +86,9 @@ test("학생 공유용 직접 수업 정보는 허용된 필드만 만든다", (
     ...context,
     draft: createCustomTeacherLessonDraft({
       metricKeys: ["tasmin", "wind"],
-      outputText: "비교표\n설명문"
+      outputText: "비교표\n설명문",
+      periodStart: "2060-06-01",
+      periodEnd: "2060-10-31"
     })
   });
   assert.deepEqual(customLessonSharePayload(sample).metricKeys, ["tasmin", "wind"]);

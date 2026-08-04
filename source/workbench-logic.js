@@ -4,6 +4,11 @@ import { CUSTOM_TEACHER_METRIC_KEYS } from "./teacher-lesson-builder.js";
 const lessonStateVersion = 3;
 const maximumLessonStateLength = 24576;
 const maximumNoteLength = 2000;
+const sharedCustomLessonKeys = Object.freeze(["title", "objective", "question", "outputs", "metricKeys", "interpretationLimit", "evidenceRequirements"]);
+const compactCustomLessonKeys = Object.freeze(["t", "o", "q", "r", "m", "l", "e"]);
+const sharedEvidenceRequirementKeys = Object.freeze(["minimumSites", "minimumModels", "includeEnsemble"]);
+const compactEvidenceRequirementKeys = Object.freeze(["s", "m", "a"]);
+const customTeacherMetricKeySet = new Set(CUSTOM_TEACHER_METRIC_KEYS);
 const publicAttributionLabelSet = new Set(PUBLIC_CLIMATE_ATTRIBUTION_LABELS);
 const publicExportDataModes = new Set(["bias-corrected", "raw-model-grid"]);
 const attributionDocumentName = "LICENSES_AND_ATTRIBUTION.md";
@@ -94,7 +99,11 @@ export function encodeLessonState(value) {
   if (periodStart && periodEnd && periodStart > periodEnd) {
     throw new RangeError("탐구 종료일은 시작일보다 빠를 수 없습니다.");
   }
-  const customLesson = normalizeSharedCustomLesson(value.customLesson);
+  const hasCustomLesson = value.customLesson !== undefined;
+  const customLesson = hasCustomLesson ? normalizeSharedCustomLesson(value.customLesson) : undefined;
+  if (hasCustomLesson && !customLesson) {
+    throw new TypeError("직접 수업 공유 정보가 올바르지 않습니다.");
+  }
   const payload = JSON.stringify({
     version: lessonStateVersion,
     source,
@@ -123,7 +132,10 @@ export function decodeLessonState(encoded) {
     const periodStart = parsed.periodStart ? validDate(parsed.periodStart) : undefined;
     const periodEnd = parsed.periodEnd ? validDate(parsed.periodEnd) : undefined;
     if (periodStart && periodEnd && periodStart > periodEnd) return undefined;
-    const customLesson = parsed.version >= 3 ? normalizeSharedCustomLesson(expandSharedCustomLesson(parsed.customLesson)) : undefined;
+    const hasCustomLesson = parsed.version === lessonStateVersion
+      && Object.prototype.hasOwnProperty.call(parsed, "customLesson");
+    const customLesson = hasCustomLesson ? expandSharedCustomLesson(parsed.customLesson) : undefined;
+    if (hasCustomLesson && !customLesson) return undefined;
     return {
       source: parsed.source === "public" ? "public" : "teacher",
       date: validDate(parsed.date),
@@ -1226,19 +1238,26 @@ function csvCell(value) {
 }
 
 function normalizeSharedCustomLesson(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const title = safeText(value.title, 120);
-  const objective = safeText(value.objective, 300);
-  const question = safeText(value.question, 500);
-  const outputs = Array.isArray(value.outputs)
-    ? value.outputs.map((item) => safeText(item, 200)).filter(Boolean).slice(0, 6)
-    : [];
-  const allowedMetricKeys = new Set(CUSTOM_TEACHER_METRIC_KEYS);
-  const metricKeys = Array.isArray(value.metricKeys)
-    ? [...new Set(value.metricKeys.filter((key) => allowedMetricKeys.has(key)))]
-    : [];
-  const interpretationLimit = safeText(value.interpretationLimit, 1000);
-  if (!title || !question || outputs.length === 0 || metricKeys.length === 0) return undefined;
+  if (!hasExactKeys(value, sharedCustomLessonKeys)) return undefined;
+  const title = normalizeRequiredSharedText(value.title, 120);
+  const objective = normalizeRequiredSharedText(value.objective, 300);
+  const question = normalizeRequiredSharedText(value.question, 500);
+  const interpretationLimit = normalizeRequiredSharedText(value.interpretationLimit, 1000);
+  if (!title || !objective || !question || !interpretationLimit) return undefined;
+  if (!Array.isArray(value.outputs) || value.outputs.length < 1 || value.outputs.length > 6) return undefined;
+  const outputs = value.outputs.map((item) => normalizeRequiredSharedText(item, 200));
+  if (outputs.some((item) => !item)) return undefined;
+  if (!Array.isArray(value.metricKeys) || value.metricKeys.length < 1 || value.metricKeys.length > CUSTOM_TEACHER_METRIC_KEYS.length) {
+    return undefined;
+  }
+  if (!value.metricKeys.every((key) => typeof key === "string" && customTeacherMetricKeySet.has(key))) return undefined;
+  const metricKeys = [...new Set(value.metricKeys)];
+  if (metricKeys.length !== value.metricKeys.length) return undefined;
+  if (!hasExactKeys(value.evidenceRequirements, sharedEvidenceRequirementKeys)) return undefined;
+  const { minimumSites, minimumModels, includeEnsemble } = value.evidenceRequirements;
+  if (!isBoundedInteger(minimumSites, 1, 4) || !isBoundedInteger(minimumModels, 1, 4) || typeof includeEnsemble !== "boolean") {
+    return undefined;
+  }
   return {
     title,
     objective,
@@ -1247,9 +1266,9 @@ function normalizeSharedCustomLesson(value) {
     metricKeys,
     interpretationLimit,
     evidenceRequirements: {
-      minimumSites: boundedInteger(value.evidenceRequirements?.minimumSites ?? 1, 1, 4),
-      minimumModels: boundedInteger(value.evidenceRequirements?.minimumModels ?? 1, 1, 4),
-      includeEnsemble: value.evidenceRequirements?.includeEnsemble === true
+      minimumSites,
+      minimumModels,
+      includeEnsemble
     }
   };
 }
@@ -1271,8 +1290,10 @@ function compactSharedCustomLesson(value) {
 }
 
 function expandSharedCustomLesson(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return {
+  if (!hasExactKeys(value, compactCustomLessonKeys) || !hasExactKeys(value.e, compactEvidenceRequirementKeys)) {
+    return undefined;
+  }
+  return normalizeSharedCustomLesson({
     title: value.t,
     objective: value.o,
     question: value.q,
@@ -1284,7 +1305,23 @@ function expandSharedCustomLesson(value) {
       minimumModels: value.e?.m,
       includeEnsemble: value.e?.a
     }
-  };
+  });
+}
+
+function normalizeRequiredSharedText(value, maximumLength) {
+  if (typeof value !== "string" || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value)) return undefined;
+  const text = value.trim();
+  return text && text.length <= maximumLength ? text : undefined;
+}
+
+function hasExactKeys(value, expectedKeys) {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === expectedKeys.length && expectedKeys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function isBoundedInteger(value, minimum, maximum) {
+  return Number.isInteger(value) && value >= minimum && value <= maximum;
 }
 
 function safeText(value, maximumLength) {
