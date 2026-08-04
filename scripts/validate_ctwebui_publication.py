@@ -20,8 +20,15 @@ SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 FULL_VALIDATION_MODE = "full"
 STARTUP_VALIDATION_MODE = "startup"
 VALIDATION_MODES = (FULL_VALIDATION_MODE, STARTUP_VALIDATION_MODE)
+DIRECTORY_LISTING_HASH_MODE = "directory_listing_v1"
+DIRECTORY_CONTENT_HASH_MODE = "directory_content_sha256_v2"
+DIRECTORY_HASH_MODES = (DIRECTORY_LISTING_HASH_MODE, DIRECTORY_CONTENT_HASH_MODE)
 REQUIRED_ARRAY_KEYS = ("raw_daily", "corrected_daily", "coverage_mask")
 REQUIRED_DATASET_DIRECTORIES = ("meta", "arrays", "data")
+MAX_COUNT = (1 << 63) - 1
+MAX_SIZE_BYTES = (1 << 63) - 1
+MAX_TIMESTAMP_NS = (1 << 63) - 1
+MINIMUM_PYTHON_VERSION = (3, 12)
 
 
 class PublicationValidationError(RuntimeError):
@@ -42,7 +49,9 @@ def validate_ctwebui_publication(
         or _is_junction(root)
     ):
         raise PublicationValidationError("기후자료 폴더를 확인할 수 없습니다.")
-    manifest = _read_json(resolved_root / "manifest.json", "기후자료 manifest")
+    manifest_path = resolved_root / "manifest.json"
+    _assert_safe_existing_path(resolved_root, manifest_path)
+    manifest = _read_json(manifest_path, "기후자료 manifest")
     if manifest.get("format") != WEBUI_FORMAT:
         raise PublicationValidationError("기후자료 manifest 형식이 올바르지 않습니다.")
 
@@ -52,9 +61,15 @@ def validate_ctwebui_publication(
     atomic_publish = isinstance(export_policy, Mapping) and export_policy.get("atomic_publish") is True
     if publication_contract != WEBUI_PUBLICATION_CONTRACT:
         raise PublicationValidationError("원자적 완료 표식이 없는 자료판은 출시할 수 없습니다.")
+    format_version = _integer(
+        manifest.get("format_version"),
+        default=0,
+        minimum=1,
+        maximum=WEBUI_FORMAT_VERSION,
+    )
     if (
         manifest.get("format") != WEBUI_FORMAT
-        or _integer(manifest.get("format_version"), default=0) != WEBUI_FORMAT_VERSION
+        or format_version != WEBUI_FORMAT_VERSION
         or manifest.get("root") != "."
         or manifest.get("manifest_path") != "manifest.json"
         or not atomic_publish
@@ -67,14 +82,36 @@ def validate_ctwebui_publication(
     table_counts = _table_counts(manifest)
     if _text(completion.get("status")).lower() != "complete":
         raise PublicationValidationError("기후자료 완료 상태가 올바르지 않습니다.")
-    if _integer(completion.get("table_count")) != len(table_counts):
+    table_count = _integer(
+        completion.get("table_count"),
+        minimum=0,
+        maximum=MAX_COUNT,
+    )
+    artifact_count = _integer(
+        completion.get("artifact_count"),
+        minimum=1,
+        maximum=MAX_COUNT,
+    )
+    contract_version = _integer(
+        completion.get("contract_version"),
+        minimum=3,
+        maximum=3,
+    )
+    completed_at_unix_ns = _integer(
+        completion.get("completed_at_unix_ns"),
+        minimum=1,
+        maximum=MAX_TIMESTAMP_NS,
+    )
+    if table_count != len(table_counts):
         raise PublicationValidationError("기후자료 완료 표식의 표 수가 일치하지 않습니다.")
-    if _integer(completion.get("artifact_count")) != len(artifacts):
+    if artifact_count != len(artifacts):
         raise PublicationValidationError("기후자료 완료 표식의 파일 수가 일치하지 않습니다.")
     if completion.get("atomic_publish") is not True:
         raise PublicationValidationError("기후자료 완료 표식의 게시 상태가 일치하지 않습니다.")
-    if _integer(completion.get("contract_version")) != 3:
+    if contract_version != 3:
         raise PublicationValidationError("봉인되지 않은 이전 완료 계약은 출시할 수 없습니다.")
+    if completed_at_unix_ns < 1:
+        raise PublicationValidationError("기후자료 완료 시각이 올바르지 않습니다.")
 
     generation_id = _text(manifest.get("generation_id")).lower()
     if (
@@ -85,10 +122,17 @@ def validate_ctwebui_publication(
     observation_contract_version = _integer(
         manifest.get("observation_contract_version"),
         default=0,
+        minimum=1,
+        maximum=1,
     )
     if (
         observation_contract_version != 1
-        or _integer(completion.get("observation_contract_version")) != observation_contract_version
+        or _integer(
+            completion.get("observation_contract_version"),
+            minimum=1,
+            maximum=1,
+        )
+        != observation_contract_version
     ):
         raise PublicationValidationError("관측자료 계약 버전이 일치하지 않습니다.")
 
@@ -101,11 +145,10 @@ def validate_ctwebui_publication(
         for artifact in artifacts
     ):
         raise PublicationValidationError("기후자료 완료 표식이 artifact 목록에 없습니다.")
-    marker = _read_json(
-        resolved_root.joinpath(*PurePosixPath(completion_marker).parts),
-        "기후자료 완료 표식",
-    )
-    if marker != dict(completion):
+    marker_path = resolved_root.joinpath(*PurePosixPath(completion_marker).parts)
+    _assert_safe_existing_path(resolved_root, marker_path)
+    marker = _read_json(marker_path, "기후자료 완료 표식")
+    if not _strict_json_equal(marker, completion):
         raise PublicationValidationError("기후자료 완료 표식이 manifest와 일치하지 않습니다.")
 
     expected_binding = _manifest_binding_sha256(
@@ -121,15 +164,22 @@ def validate_ctwebui_publication(
     fingerprint = manifest.get("immutable_input_fingerprint")
     expected_seal = _canonical_dataset_seal(fingerprint, manifest_hash=actual_binding)
     if (
-        manifest.get("dataset_seal") != expected_seal
+        not _strict_json_equal(manifest.get("dataset_seal"), expected_seal)
         or _text(manifest.get("dataset_id")).lower() != expected_seal["dataset_id"]
         or _text(manifest.get("manifest_hash")).lower() != actual_binding
-        or manifest.get("source_fingerprint") != expected_seal["source_fingerprint"]
+        or not _strict_json_equal(
+            manifest.get("source_fingerprint"),
+            expected_seal["source_fingerprint"],
+        )
     ):
         raise PublicationValidationError("기후자료 정본 봉인이 manifest와 일치하지 않습니다.")
 
-    array_index = _read_json(resolved_root / "meta" / "array_index.json", "기후자료 배열 색인")
-    raw_index = _read_json(resolved_root / "meta" / "raw_cmip6_index.json", "원자료 연결 색인")
+    array_index_path = resolved_root / "meta" / "array_index.json"
+    raw_index_path = resolved_root / "meta" / "raw_cmip6_index.json"
+    _assert_safe_existing_path(resolved_root, array_index_path)
+    _assert_safe_existing_path(resolved_root, raw_index_path)
+    array_index = _read_json(array_index_path, "기후자료 배열 색인")
+    raw_index = _read_json(raw_index_path, "원자료 연결 색인")
     required_paths = _validate_required_structure(array_index, raw_index)
     inventory = _validate_artifact_inventory(
         resolved_root,
@@ -141,7 +191,7 @@ def validate_ctwebui_publication(
     return {
         "artifactCount": len(artifacts),
         "contract": publication_contract,
-        "contractVersion": _integer(completion.get("contract_version")),
+        "contractVersion": contract_version,
         "datasetId": expected_seal["dataset_id"],
         "fileCount": inventory["file_count"],
         "generationId": generation_id,
@@ -162,16 +212,31 @@ def _validate_required_structure(
     arrays = array_index.get("arrays")
     if not isinstance(arrays, Mapping):
         raise PublicationValidationError("기후자료 배열 경로 설명이 올바르지 않습니다.")
-    required_paths = {
+    array_paths = [
         _normalized_relative_path(arrays.get(key))
         for key in REQUIRED_ARRAY_KEYS
-    }
+    ]
+    if (
+        len(set(array_paths)) != len(REQUIRED_ARRAY_KEYS)
+        or any(
+            PurePosixPath(relative_path).parts[0] != "arrays"
+            or not relative_path.endswith(".zarr")
+            for relative_path in array_paths
+        )
+    ):
+        raise PublicationValidationError("기후자료 배열 경로 설명이 올바르지 않습니다.")
+    required_paths = set(array_paths)
     if (
         raw_index.get("format")
         != "Climate Time Capsule WebUI Raw CMIP6 Connector Index"
         or not isinstance(raw_index.get("entries"), list)
         or not raw_index["entries"]
-        or _integer(raw_index.get("entry_count")) != len(raw_index["entries"])
+        or _integer(
+            raw_index.get("entry_count"),
+            minimum=1,
+            maximum=MAX_COUNT,
+        )
+        != len(raw_index["entries"])
     ):
         raise PublicationValidationError("원자료 연결 색인이 비어 있거나 불완전합니다.")
     required_paths.update(
@@ -195,24 +260,38 @@ def _validate_artifact_inventory(
         if not target_directory.exists() or not target_directory.is_dir():
             raise PublicationValidationError("기후자료 필수 폴더가 아직 준비되지 않았습니다.")
         _assert_safe_existing_path(root, target_directory)
-    artifact_by_path = {
-        _normalized_relative_path(item.get("path") or item.get("arcname")): item
-        for item in artifacts
-    }
+    artifact_by_path = {_artifact_relative_path(item): item for item in artifacts}
     if not required_paths.issubset(artifact_by_path):
         raise PublicationValidationError("필수 기후자료가 manifest에 없습니다.")
 
     directory_artifacts: set[str] = set()
     file_artifacts: set[str] = set()
+    required_array_paths = {
+        relative_path
+        for relative_path in required_paths
+        if relative_path.startswith("arrays/")
+    }
+    declared_file_count = 1
     for relative_path, artifact in artifact_by_path.items():
         target = root.joinpath(*PurePosixPath(relative_path).parts)
         if not target.exists():
             raise PublicationValidationError("기후자료 artifact가 아직 준비되지 않았습니다.")
         _assert_safe_existing_path(root, target)
-        expected_size = _integer(artifact.get("size_bytes"), default=-1)
-        expected_count = _integer(artifact.get("file_count"), default=-1)
+        expected_size = _integer(
+            artifact.get("size_bytes"),
+            default=-1,
+            minimum=0,
+            maximum=MAX_SIZE_BYTES,
+        )
+        expected_count = _integer(
+            artifact.get("file_count"),
+            default=-1,
+            minimum=1,
+            maximum=MAX_COUNT,
+        )
         expected_sha256 = _text(artifact.get("sha256")).lower()
         hash_mode = _text(artifact.get("hash_mode"))
+        declared_file_count += expected_count
         if target.is_file():
             if hash_mode != "sha256" or expected_count != 1:
                 raise PublicationValidationError("기후자료 파일 해시 방식이 올바르지 않습니다.")
@@ -223,8 +302,19 @@ def _validate_artifact_inventory(
             if full and _sha256_file(target) != expected_sha256:
                 raise PublicationValidationError("기후자료 파일 SHA-256이 manifest와 일치하지 않습니다.")
             continue
-        if not target.is_dir() or hash_mode != "directory_listing_v1":
+        if not target.is_dir() or hash_mode not in DIRECTORY_HASH_MODES:
             raise PublicationValidationError("기후자료 폴더 해시 방식이 올바르지 않습니다.")
+        if relative_path in required_array_paths:
+            if hash_mode != DIRECTORY_CONTENT_HASH_MODE:
+                raise PublicationValidationError(
+                    "필수 기후자료 배열은 content-v2 해시를 사용해야 합니다."
+                )
+            if expected_count < 1:
+                raise PublicationValidationError("필수 기후자료 배열이 비어 있습니다.")
+            array_metadata = target / ".zarray"
+            if not array_metadata.exists() or not array_metadata.is_file():
+                raise PublicationValidationError("필수 기후자료 배열 metadata가 없습니다.")
+            _assert_safe_existing_path(root, array_metadata)
         directory_artifacts.add(relative_path)
 
     for relative_path in artifact_by_path:
@@ -233,12 +323,22 @@ def _validate_artifact_inventory(
             if "/".join(parts[:index]) in artifact_by_path:
                 raise PublicationValidationError("기후자료 artifact 경로가 서로 겹칩니다.")
     if not any(
-        path.startswith("data/") and _integer(artifact_by_path[path].get("size_bytes"), default=0) > 0
+        path.startswith("data/")
+        and _integer(
+            artifact_by_path[path].get("size_bytes"),
+            default=0,
+            minimum=0,
+            maximum=MAX_SIZE_BYTES,
+        )
+        > 0
         for path in artifact_by_path
     ):
         raise PublicationValidationError("기후자료 테이블이 비어 있습니다.")
-    if any(path not in directory_artifacts for path in required_paths if path.startswith("arrays/")):
+    if any(path not in directory_artifacts for path in required_array_paths):
         raise PublicationValidationError("필수 기후자료 배열이 폴더 artifact가 아닙니다.")
+
+    if not full:
+        return {"file_count": declared_file_count}
 
     actual_files = _walk_files(root)
     directory_files: dict[str, list[tuple[str, os.stat_result]]] = {
@@ -267,10 +367,30 @@ def _validate_artifact_inventory(
         )
     for relative_path in directory_artifacts:
         artifact = artifact_by_path[relative_path]
-        summary = _directory_listing_summary(directory_files[relative_path])
+        hash_mode = _text(artifact.get("hash_mode"))
+        summary = (
+            _directory_content_summary(
+                root.joinpath(*PurePosixPath(relative_path).parts),
+                directory_files[relative_path],
+            )
+            if hash_mode == DIRECTORY_CONTENT_HASH_MODE
+            else _directory_listing_summary(directory_files[relative_path])
+        )
         if (
-            summary["size_bytes"] != _integer(artifact.get("size_bytes"), default=-1)
-            or summary["file_count"] != _integer(artifact.get("file_count"), default=-1)
+            summary["size_bytes"]
+            != _integer(
+                artifact.get("size_bytes"),
+                default=-1,
+                minimum=0,
+                maximum=MAX_SIZE_BYTES,
+            )
+            or summary["file_count"]
+            != _integer(
+                artifact.get("file_count"),
+                default=-1,
+                minimum=0,
+                maximum=MAX_COUNT,
+            )
             or summary["sha256"] != _text(artifact.get("sha256")).lower()
         ):
             raise PublicationValidationError("기후자료 폴더 해시가 manifest와 일치하지 않습니다.")
@@ -313,10 +433,29 @@ def _directory_listing_summary(
         child_size = int(stat.st_size)
         size_bytes += child_size
         digest.update(
-            f"{relative_path}\0{child_size}\0{int(stat.st_mtime_ns)}\n".encode(
-                "utf-8",
-                errors="ignore",
-            )
+            f"{relative_path}\0{child_size}\0{int(stat.st_mtime_ns)}\n".encode("utf-8")
+        )
+    return {
+        "file_count": len(files),
+        "sha256": digest.hexdigest(),
+        "size_bytes": size_bytes,
+    }
+
+
+def _directory_content_summary(
+    directory: Path,
+    files: Sequence[tuple[str, os.stat_result]],
+) -> dict[str, Any]:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    for relative_path, stat in sorted(files, key=lambda item: item[0]):
+        child_size = int(stat.st_size)
+        child_sha256 = _sha256_file(
+            directory.joinpath(*PurePosixPath(relative_path).parts)
+        )
+        size_bytes += child_size
+        digest.update(
+            f"{relative_path}\0{child_size}\0{child_sha256}\n".encode("utf-8")
         )
     return {
         "file_count": len(files),
@@ -370,9 +509,7 @@ def _manifest_binding_sha256(
     completion.pop("manifest_binding_sha256", None)
     artifact_bindings = []
     for artifact in artifacts:
-        relative_path = _normalized_relative_path(
-            artifact.get("path") or artifact.get("arcname")
-        )
+        relative_path = _artifact_relative_path(artifact)
         if relative_path == completion_marker:
             continue
         artifact_bindings.append(
@@ -424,7 +561,13 @@ def _canonical_dataset_seal(
     dataset_id = _text(value.get("sha256")).lower()
     if (
         value.get("contract") != INPUT_FINGERPRINT_CONTRACT
-        or _integer(value.get("contract_version"), default=0) != 2
+        or _integer(
+            value.get("contract_version"),
+            default=0,
+            minimum=2,
+            maximum=2,
+        )
+        != 2
         or _text(value.get("algorithm")).lower() != "sha256"
         or not SHA256_PATTERN.fullmatch(dataset_id)
         or not isinstance(component_sha256, Mapping)
@@ -458,12 +601,35 @@ def _artifact_rows(manifest: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     for raw in raw_artifacts:
         if not isinstance(raw, Mapping):
             raise PublicationValidationError("기후자료 artifact 항목이 올바르지 않습니다.")
-        relative_path = _normalized_relative_path(raw.get("path") or raw.get("arcname"))
+        relative_path = _artifact_relative_path(raw)
         if relative_path in seen_paths:
             raise PublicationValidationError("기후자료 artifact 경로가 중복되었습니다.")
+        row_count = (
+            _integer(
+                raw.get("row_count"),
+                default=-1,
+                minimum=0,
+                maximum=MAX_COUNT,
+            )
+            if "row_count" in raw
+            else 0
+        )
         if (
-            _integer(raw.get("size_bytes"), default=-1) < 0
-            or _integer(raw.get("file_count"), default=-1) < 0
+            _integer(
+                raw.get("size_bytes"),
+                default=-1,
+                minimum=0,
+                maximum=MAX_SIZE_BYTES,
+            )
+            < 0
+            or _integer(
+                raw.get("file_count"),
+                default=-1,
+                minimum=1,
+                maximum=MAX_COUNT,
+            )
+            < 0
+            or row_count < 0
             or not SHA256_PATTERN.fullmatch(_text(raw.get("sha256")).lower())
         ):
             raise PublicationValidationError("기후자료 artifact 설명이 올바르지 않습니다.")
@@ -479,7 +645,12 @@ def _table_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
     result: dict[str, int] = {}
     for key, value in raw.items():
         name = _text(key)
-        count = _integer(value, default=-1)
+        count = _integer(
+            value,
+            default=-1,
+            minimum=0,
+            maximum=MAX_COUNT,
+        )
         if not name or count < 0:
             raise PublicationValidationError("기후자료 표 행수 설명이 올바르지 않습니다.")
         result[name] = count
@@ -516,7 +687,9 @@ def _raise_json_constant(value: str) -> None:
 
 
 def _normalized_relative_path(value: Any) -> str:
-    relative_path = _text(value)
+    if type(value) is not str:
+        raise PublicationValidationError("기후자료 내부 경로가 올바르지 않습니다.")
+    relative_path = value
     posix_path = PurePosixPath(relative_path)
     if (
         not relative_path
@@ -529,15 +702,67 @@ def _normalized_relative_path(value: Any) -> str:
     return relative_path
 
 
-def _integer(value: Any, *, default: int = -1) -> int:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return default
+def _artifact_relative_path(artifact: Mapping[str, Any]) -> str:
+    has_path = "path" in artifact
+    has_arcname = "arcname" in artifact
+    if not has_path and not has_arcname:
+        raise PublicationValidationError("기후자료 artifact 경로가 없습니다.")
+    path_value = artifact.get("path") if has_path else None
+    arcname_value = artifact.get("arcname") if has_arcname else None
+    if (
+        has_path
+        and has_arcname
+        and (
+            type(path_value) is not str
+            or type(arcname_value) is not str
+            or path_value != arcname_value
+        )
+    ):
+        raise PublicationValidationError("기후자료 artifact 경로가 일치하지 않습니다.")
+    return _normalized_relative_path(path_value if has_path else arcname_value)
+
+
+def _strict_json_equal(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _strict_json_equal(left[key], right[key])
+            for key in left
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _strict_json_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+    return left == right
+
+
+def _require_supported_python(version_info: Any = sys.version_info) -> None:
     try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
+        version = tuple(version_info[:2])
+    except (TypeError, ValueError) as exc:
+        raise PublicationValidationError("Python 버전을 확인할 수 없습니다.") from exc
+    if version < MINIMUM_PYTHON_VERSION:
+        raise PublicationValidationError(
+            "기후자료 검증에는 Python 3.12 이상이 필요합니다."
+        )
+
+
+def _integer(
+    value: Any,
+    *,
+    default: int = -1,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    if type(value) is not int:
         return default
+    if minimum is not None and value < minimum:
+        return default
+    if maximum is not None and value > maximum:
+        return default
+    return value
 
 
 def _text(value: Any) -> str:
@@ -571,6 +796,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     try:
+        _require_supported_python()
         arguments = _parser().parse_args()
         result = validate_ctwebui_publication(
             Path(arguments.root),

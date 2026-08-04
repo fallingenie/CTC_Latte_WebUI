@@ -33,19 +33,23 @@ export async function resolveReleaseDataEnvironment(
 ) {
   const requestedTestMode = optionalText(env.CTC_TEST_DATASET_MODE);
   if (requestedTestMode) {
-    if (requestedTestMode !== LEGACY_TEST_DATASET_MODE) {
-      throw new ProductionDeploymentError("시험 자료판 실행 방식이 올바르지 않습니다.");
-    }
-    return resolveLegacyTestDataEnvironment(env, { fileSystem, platform });
+    throw new ProductionDeploymentError("시험 전용 자료판 모드는 공개 출시 경로에서 사용할 수 없습니다.");
   }
 
   const mountRoot = requiredText(env.CTC_PREPARED_DATA_MOUNT_ROOT, "CTC_PREPARED_DATA_MOUNT_ROOT");
   const pointerPath = requiredText(env.CTC_RELEASE_POINTER, "CTC_RELEASE_POINTER");
+  const releaseToken = requiredSha256(env.CTC_RELEASE_TOKEN, "CTC_RELEASE_TOKEN");
   if (!isAbsolutePathForPlatform(mountRoot, platform) || !isAbsolutePathForPlatform(pointerPath, platform)) {
     throw new ProductionDeploymentError("GCS 마운트와 자료판 포인터는 절대경로여야 합니다.");
   }
   if (!isPathWithin(mountRoot, pointerPath, platform)) {
     throw new ProductionDeploymentError("자료판 포인터는 지정된 GCS 마운트 안에 있어야 합니다.");
+  }
+  const pathApi = pathForPlatform(platform);
+  const expectedPointerRelativePath = `release-candidate/releases/${releaseToken}.json`;
+  const pointerRelativePath = relativePosixPath(pathApi, mountRoot, pointerPath);
+  if (pointerRelativePath !== expectedPointerRelativePath) {
+    throw new ProductionDeploymentError("불변 자료 포인터 경로와 출시 토큰이 일치하지 않습니다.");
   }
   if (String(env.CTC_WEB_DATA_ROOT || "").trim()) {
     throw new ProductionDeploymentError("자료판 포인터와 CTC_WEB_DATA_ROOT를 동시에 지정할 수 없습니다.");
@@ -59,8 +63,16 @@ export async function resolveReleaseDataEnvironment(
   if (!isPathWithin(mountRealPath, pointerRealPath, platform)) {
     throw new ProductionDeploymentError("자료판 포인터의 실제 경로가 GCS 마운트를 벗어났습니다.");
   }
+  if (relativePosixPath(pathApi, mountRealPath, pointerRealPath) !== expectedPointerRelativePath) {
+    throw new ProductionDeploymentError("불변 자료 포인터의 실제 경로가 출시 토큰과 일치하지 않습니다.");
+  }
 
   const pointer = parseReleasePointer(await readText(fileSystem, pointerPath));
+  const expectedDatasetRelativePath = `release-candidate/datasets/${releaseToken}.ctwebui`;
+  if (pointer.datasetVersion !== releaseToken
+    || pointer.relativePath !== expectedDatasetRelativePath) {
+    throw new ProductionDeploymentError("불변 자료 포인터와 출시 토큰의 자료판 식별자가 일치하지 않습니다.");
+  }
   const webDataRoot = pathForPlatform(platform).resolve(
     mountRoot,
     ...pointer.relativePath.split("/")
@@ -77,8 +89,11 @@ export async function resolveReleaseDataEnvironment(
   if (!isPathWithin(mountRealPath, webDataRealPath, platform)) {
     throw new ProductionDeploymentError("자료판 실제 경로가 GCS 마운트를 벗어났습니다.");
   }
+  if (relativePosixPath(pathApi, mountRealPath, webDataRealPath) !== expectedDatasetRelativePath) {
+    throw new ProductionDeploymentError("불변 자료판의 실제 경로가 출시 토큰과 일치하지 않습니다.");
+  }
 
-  await validateMountedDatasetPublication(webDataRealPath, { mode: "startup" });
+  const publication = await validateMountedDatasetPublication(webDataRealPath, { mode: "startup" });
   const actualDatasetVersion = await computeMountedDatasetVersion(webDataRealPath, { fileSystem });
   if (actualDatasetVersion !== pointer.datasetVersion) {
     throw new ProductionDeploymentError("자료판 포인터와 실제 .ctwebui SHA-256이 일치하지 않습니다.");
@@ -88,6 +103,7 @@ export async function resolveReleaseDataEnvironment(
     env: Object.freeze({ ...env, CTC_WEB_DATA_ROOT: webDataRealPath }),
     pointer,
     pointerPath,
+    publication,
     webDataRoot: webDataRealPath
   });
 }
@@ -360,7 +376,10 @@ export function validateMountedDatasetPublication(
       }
       try {
         const result = JSON.parse(Buffer.concat(stdout).toString("utf8").replace(/^\uFEFF/u, ""));
-        if (!isPlainRecord(result) || result.ok !== true || result.status !== "complete") {
+        if (!isPlainRecord(result)
+          || result.ok !== true
+          || result.status !== "complete"
+          || result.integrityMode !== mode) {
           throw new Error("invalid-result");
         }
         resolve(Object.freeze({ ...result }));
@@ -503,6 +522,13 @@ function isPathWithin(rootPath, candidatePath, platform) {
 
 function pathForPlatform(platform) {
   return platform === "win32" ? path.win32 : path.posix;
+}
+
+function relativePosixPath(pathApi, rootPath, candidatePath) {
+  return pathApi.relative(
+    pathApi.resolve(rootPath),
+    pathApi.resolve(candidatePath)
+  ).split(pathApi.sep).join("/");
 }
 
 function isPlainRecord(value) {

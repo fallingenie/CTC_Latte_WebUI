@@ -3,6 +3,10 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import {
+  validatePublicDatasetMetadata,
+  validatePublicObservationAttribution
+} from "../source/runtime-policy.js";
 import { resolveReleaseDataEnvironment } from "./release-candidate-data.mjs";
 import {
   LOOPBACK_HOST,
@@ -90,12 +94,16 @@ export async function startReleaseCandidateServer({
   fileSystem = fs,
   fetchImplementation = globalThis.fetch,
   spawnGateway = spawnProductionGateway,
+  resolveReleaseData = resolveReleaseDataEnvironment,
   createServer = http.createServer,
   signalTarget = process
 } = {}) {
   const serverConfiguration = validateReleaseServerEnvironment(env);
   await requireDistribution(serverConfiguration.distRoot, fileSystem);
-  const release = await resolveReleaseDataEnvironment(env, { fileSystem });
+  const release = await resolveReleaseData(env, { fileSystem });
+  if (release && Object.hasOwn(release, "testOnly")) {
+    throw new ProductionDeploymentError("시험 전용 자료판은 공개 출시 서버에서 사용할 수 없습니다.");
+  }
   const gatewayEnvironment = {
     ...release.env,
     CTC_GATEWAY_HOST: LOOPBACK_HOST,
@@ -103,7 +111,10 @@ export async function startReleaseCandidateServer({
   };
   let gateway;
   let server;
+  let listenAbortController;
   let stopPromise;
+  let gatewayFailed = false;
+  let gatewayFailureExitCode = 1;
   const signalHandlers = new Map();
   const removeSignalHandlers = () => {
     for (const [signal, handler] of signalHandlers) signalTarget.removeListener(signal, handler);
@@ -113,6 +124,7 @@ export async function startReleaseCandidateServer({
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       removeSignalHandlers();
+      listenAbortController?.abort();
       await Promise.allSettled([
         closeServer(server, { timeoutMs: DEFAULT_SHUTDOWN_TIMEOUT_MS }),
         terminateChild(gateway?.child, { timeoutMs: DEFAULT_SHUTDOWN_TIMEOUT_MS })
@@ -123,13 +135,42 @@ export async function startReleaseCandidateServer({
   };
 
   try {
+    const startupTimeoutMs = parsePositiveInteger(
+      env.CTC_GATEWAY_STARTUP_TIMEOUT_MS,
+      DEFAULT_STARTUP_TIMEOUT_MS
+    );
+    const startupDeadline = Date.now() + startupTimeoutMs;
     gateway = await spawnGateway({ env: gatewayEnvironment, fileSystem });
+    const markGatewayFailed = (code) => {
+      gatewayFailed = true;
+      gatewayFailureExitCode = Number.isInteger(code) && code !== 0 ? code : 1;
+      if (server) void stop(gatewayFailureExitCode);
+    };
+    gateway.child.once("error", () => markGatewayFailed(1));
+    gateway.child.once("exit", (code) => markGatewayFailed(code));
+    assertGatewayRunning(gateway.child, gatewayFailed);
+    const healthTimeoutMs = startupDeadline - Date.now();
+    if (healthTimeoutMs < 1) {
+      throw new ProductionDeploymentError("기후자료 게이트웨이 준비 시간이 초과되었습니다.");
+    }
     await waitForGateway({
       child: gateway.child,
       fetchImplementation,
       port: serverConfiguration.gatewayPort,
-      timeoutMs: parsePositiveInteger(env.CTC_GATEWAY_STARTUP_TIMEOUT_MS, DEFAULT_STARTUP_TIMEOUT_MS)
+      timeoutMs: healthTimeoutMs
     });
+    assertGatewayRunning(gateway.child, gatewayFailed);
+    const readinessTimeoutMs = startupDeadline - Date.now();
+    if (readinessTimeoutMs < 1) {
+      throw new ProductionDeploymentError("게이트웨이 공개 자료 준비 확인 시간이 초과되었습니다.");
+    }
+    await validateGatewayPublicationReadiness({
+      fetchImplementation,
+      pointer: release.pointer,
+      port: serverConfiguration.gatewayPort,
+      timeoutMs: readinessTimeoutMs
+    });
+    assertGatewayRunning(gateway.child, gatewayFailed);
 
     server = createServer(createReleaseRequestHandler({
       distRoot: serverConfiguration.distRoot,
@@ -147,12 +188,13 @@ export async function startReleaseCandidateServer({
       signalHandlers.set(signal, handler);
       signalTarget.once(signal, handler);
     }
-    gateway.child.once("error", () => void stop(1));
-    gateway.child.once("exit", (code) => {
-      if (!stopPromise) void stop(Number.isInteger(code) && code !== 0 ? code : 1);
-    });
 
-    await listen(server, serverConfiguration.publicPort);
+    assertGatewayRunning(gateway.child, gatewayFailed);
+    listenAbortController = new AbortController();
+    await listen(server, serverConfiguration.publicPort, {
+      signal: listenAbortController.signal
+    });
+    assertGatewayRunning(gateway.child, gatewayFailed);
     process.stdout.write(JSON.stringify({
       event: "release-candidate-ready",
       releaseId: release.pointer.releaseId,
@@ -164,6 +206,86 @@ export async function startReleaseCandidateServer({
     await stop(1);
     throw error;
   }
+}
+
+function assertGatewayRunning(child, failed) {
+  if (failed
+    || child?.killed === true
+    || child?.exitCode != null
+    || child?.signalCode != null) {
+    throw new ProductionDeploymentError("기후자료 게이트웨이가 공개 서버 시작 전에 종료되었습니다.");
+  }
+}
+
+export async function validateGatewayPublicationReadiness({
+  fetchImplementation,
+  pointer,
+  port,
+  timeoutMs = DEFAULT_STARTUP_TIMEOUT_MS
+}) {
+  if (typeof fetchImplementation !== "function"
+    || !Number.isSafeInteger(port)
+    || port < 1
+    || port > 65535
+    || !Number.isSafeInteger(timeoutMs)
+    || timeoutMs < 1
+    || typeof pointer?.datasetVersion !== "string") {
+    throw new ProductionDeploymentError("게이트웨이 공개 자료 준비 상태를 확인할 수 없습니다.");
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  const metadataPayload = await fetchGatewayPublicationJson({
+    deadline,
+    endpoint: "metadata",
+    fetchImplementation,
+    port
+  });
+  let metadata;
+  try {
+    metadata = validatePublicDatasetMetadata(metadataPayload);
+  } catch {
+    throw new ProductionDeploymentError("게이트웨이 공개 metadata 계약이 올바르지 않습니다.");
+  }
+  if (metadata.attributionReady !== true || metadata.datasetVersion !== pointer.datasetVersion) {
+    throw new ProductionDeploymentError("자료판 포인터와 게이트웨이 metadata 식별자가 일치하지 않습니다.");
+  }
+
+  const attributionPayload = await fetchGatewayPublicationJson({
+    deadline,
+    endpoint: "attribution",
+    fetchImplementation,
+    port
+  });
+  let attribution;
+  try {
+    attribution = validatePublicObservationAttribution(attributionPayload, {
+      requireDatasetIdentity: true
+    });
+  } catch {
+    throw new ProductionDeploymentError("게이트웨이 공개 attribution 계약이 올바르지 않습니다.");
+  }
+  if (attribution.datasetVersion !== metadata.datasetVersion
+    || attribution.datasetUpdatedAt !== metadata.datasetUpdatedAt) {
+    throw new ProductionDeploymentError("게이트웨이 metadata와 attribution 자료판 식별자가 일치하지 않습니다.");
+  }
+  const attributionWithoutIdentity = {
+    schemaVersion: attribution.schemaVersion,
+    ready: attribution.ready,
+    providerIds: attribution.providerIds,
+    providers: attribution.providers
+  };
+  const metadataAttributionCatalog = {
+    schemaVersion: metadata.observationAttribution.schemaVersion,
+    ready: metadata.observationAttribution.ready,
+    providerIds: metadata.observationAttribution.providerIds,
+    providers: metadata.observationAttribution.providers
+  };
+  if (!sameJsonValue(metadataAttributionCatalog, attributionWithoutIdentity)) {
+    throw new ProductionDeploymentError(
+      "게이트웨이 metadata와 attribution 출처 정보가 일치하지 않습니다."
+    );
+  }
+  return Object.freeze({ attribution, metadata });
 }
 
 export async function waitForGateway({
@@ -212,6 +334,38 @@ export async function waitForGateway({
       ? "기후자료 게이트웨이가 준비 전에 종료되었습니다."
       : "기후자료 게이트웨이 준비 시간이 초과되었습니다."
   );
+}
+
+async function fetchGatewayPublicationJson({
+  deadline,
+  endpoint,
+  fetchImplementation,
+  port
+}) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs < 1) {
+    throw new ProductionDeploymentError("게이트웨이 공개 자료 준비 확인 시간이 초과되었습니다.");
+  }
+  let response;
+  try {
+    response = await fetchImplementation(
+      `http://${LOOPBACK_HOST}:${port}/api/climate/${endpoint}`,
+      {
+        cache: "no-store",
+        signal: AbortSignal.timeout(remainingMs)
+      }
+    );
+  } catch {
+    throw new ProductionDeploymentError(`게이트웨이 공개 ${endpoint} 응답을 확인할 수 없습니다.`);
+  }
+  if (!response?.ok) {
+    throw new ProductionDeploymentError(`게이트웨이 공개 ${endpoint}가 준비되지 않았습니다.`);
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw new ProductionDeploymentError(`게이트웨이 공개 ${endpoint} 응답 형식이 올바르지 않습니다.`);
+  }
 }
 
 async function serveStaticFile(request, response, pathname, distRoot, fileSystem) {
@@ -426,6 +580,23 @@ function isPathWithin(rootPath, candidatePath) {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
+function sameJsonValue(left, right) {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== typeof right || left === null || right === null) return false;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => sameJsonValue(value, right[index]));
+  }
+  if (typeof left !== "object") return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]
+      && sameJsonValue(left[key], right[key]));
+}
+
 async function requireDistribution(distRoot, fileSystem) {
   try {
     const [rootStat, indexStat] = await Promise.all([
@@ -438,13 +609,32 @@ async function requireDistribution(distRoot, fileSystem) {
   }
 }
 
-function listen(server, port) {
+function listen(server, port, { signal } = {}) {
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "0.0.0.0", () => {
-      server.removeListener("error", reject);
-      resolve();
-    });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      server.removeListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onError = (error) => finish(reject, error);
+    const onAbort = () => finish(
+      reject,
+      new ProductionDeploymentError("공개 서버 시작이 취소되었습니다.")
+    );
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    server.once("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      server.listen({ host: "0.0.0.0", port, signal }, () => finish(resolve));
+    } catch (error) {
+      finish(reject, error);
+    }
   });
 }
 

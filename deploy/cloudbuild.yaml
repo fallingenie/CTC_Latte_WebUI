@@ -1,5 +1,5 @@
 steps:
-  - name: node:22-bookworm-slim
+  - name: node:22-trixie-slim
     id: frontend-quality-gates
     dir: frontend
     entrypoint: bash
@@ -8,6 +8,7 @@ steps:
       - |
         apt-get update
         apt-get install --yes --no-install-recommends python3
+        python3 -c "import sys; assert sys.version_info >= (3, 12)"
         corepack enable
         corepack prepare pnpm@10.33.2 --activate
         pnpm install --frozen-lockfile

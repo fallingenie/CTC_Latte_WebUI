@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -12,6 +13,7 @@ import {
   computeMountedDatasetVersion,
   createReleasePointer,
   parseReleasePointer,
+  resolveLegacyTestDataEnvironment,
   resolveReleaseDataEnvironment,
   validateMountedDatasetPublication,
   validateMountedDatasetReady
@@ -20,10 +22,57 @@ import { createReleasePointerFile } from "../scripts/create-release-pointer.mjs"
 import {
   createReleaseRequestHandler,
   parseAllowedOrigins,
+  startReleaseCandidateServer,
   terminateChild,
+  validateGatewayPublicationReadiness,
   validateReleaseServerEnvironment,
   waitForGateway
 } from "../scripts/start-release-candidate-server.mjs";
+
+const FIXTURE_MTIME = new Date("2026-01-01T00:00:00.000Z");
+const PUBLICATION_DATASET_VERSION = "a".repeat(64);
+const PUBLICATION_DATASET_UPDATED_AT = "2026-08-04T00:00:00.000000+00:00";
+const PUBLICATION_METADATA = Object.freeze({
+  publicSafe: true,
+  ready: true,
+  attributionReady: true,
+  observationAttribution: Object.freeze({
+    schemaVersion: 1,
+    ready: true,
+    usesObservationData: false,
+    providerIds: Object.freeze([]),
+    providers: Object.freeze([])
+  }),
+  datasetVersion: PUBLICATION_DATASET_VERSION,
+  datasetUpdatedAt: PUBLICATION_DATASET_UPDATED_AT,
+  dateStart: "2035-01-01",
+  dateEnd: "2099-12-31",
+  models: Object.freeze(["MODEL-A"]),
+  scenarios: Object.freeze(["ssp585"])
+});
+const PUBLICATION_ATTRIBUTION = Object.freeze({
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: false,
+  providerIds: Object.freeze([]),
+  providers: Object.freeze([]),
+  datasetVersion: PUBLICATION_DATASET_VERSION,
+  datasetUpdatedAt: PUBLICATION_DATASET_UPDATED_AT
+});
+const PUBLICATION_OBSERVATION_PROVIDER = Object.freeze({
+  providerId: "dwd",
+  name: "Deutscher Wetterdienst Climate Data Center",
+  dataset: "dwd_cdc_hourly_observations",
+  licenseName: "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+  licenseUrl: "https://www.dwd.de/EN/service/legal_notice/templates_dwd_as_source.html",
+  citation: "Deutscher Wetterdienst, Climate Data Center hourly station observations.",
+  attributionText: "Based on data from Deutscher Wetterdienst (DWD), Climate Data Center; processed by Climate Time Capsule.",
+  redistributionPolicy: "cc_by_4_0_with_source_and_modification_notice",
+  usedRowCount: 37,
+  attributionRequired: true,
+  requiresResultMark: false,
+  markAssets: Object.freeze([])
+});
 
 test("자료판 포인터는 고정 스키마와 안전한 상대경로만 허용한다", () => {
   const pointer = createReleasePointer({
@@ -41,31 +90,71 @@ test("자료판 포인터는 고정 스키마와 안전한 상대경로만 허�
 });
 
 test("GCS 자료판 포인터의 SHA-256과 실제 자료가 일치할 때만 경로를 승격한다", async (context) => {
-  const fixture = await createMountedReleaseFixture();
+  let fixture = await createMountedReleaseFixture();
   context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
   const datasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
+  fixture = await moveFixtureToImmutableReleasePath(fixture, datasetVersion);
   const pointer = createReleasePointer({
     releaseId: "ctc-1000-rc1",
     relativePath: fixture.relativePath,
     datasetVersion
   });
-  await fs.mkdir(path.dirname(fixture.pointerPath), { recursive: true });
-  await fs.writeFile(fixture.pointerPath, `${JSON.stringify(pointer)}\n`, "utf8");
+  const pointerPath = path.join(
+    fixture.mountRoot,
+    "release-candidate",
+    "releases",
+    `${datasetVersion}.json`
+  );
+  await fs.mkdir(path.dirname(pointerPath), { recursive: true });
+  await fs.writeFile(pointerPath, `${JSON.stringify(pointer)}\n`, "utf8");
 
   const result = await resolveReleaseDataEnvironment({
     CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
-    CTC_RELEASE_POINTER: fixture.pointerPath
+    CTC_RELEASE_POINTER: pointerPath,
+    CTC_RELEASE_TOKEN: datasetVersion
   });
-  assert.equal(result.webDataRoot, fixture.webDataRoot);
-  assert.equal(result.env.CTC_WEB_DATA_ROOT, fixture.webDataRoot);
+  const expectedWebDataRoot = await fs.realpath(fixture.webDataRoot);
+  assert.equal(result.webDataRoot, expectedWebDataRoot);
+  assert.equal(result.env.CTC_WEB_DATA_ROOT, expectedWebDataRoot);
+  assert.equal(result.publication.integrityMode, "startup");
 
-  await fs.writeFile(fixture.pointerPath, JSON.stringify({ ...pointer, datasetVersion: "b".repeat(64) }), "utf8");
+  await fs.writeFile(pointerPath, JSON.stringify({ ...pointer, datasetVersion: "b".repeat(64) }), "utf8");
+  await assert.rejects(
+    () => resolveReleaseDataEnvironment({
+      CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
+      CTC_RELEASE_POINTER: pointerPath,
+      CTC_RELEASE_TOKEN: datasetVersion
+    }),
+    /일치하지 않습니다/u
+  );
+});
+
+test("공개 자료 해석은 불변 pointer·dataset 경로와 CTC_RELEASE_TOKEN을 하나의 SHA-256으로 결합한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const datasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
+  const pointer = createReleasePointer({
+    releaseId: "ctc-mutable",
+    relativePath: fixture.relativePath,
+    datasetVersion
+  });
+  await fs.mkdir(path.dirname(fixture.pointerPath), { recursive: true });
+  await fs.writeFile(fixture.pointerPath, JSON.stringify(pointer), "utf8");
+
+  await assert.rejects(
+    () => resolveReleaseDataEnvironment({
+      CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
+      CTC_RELEASE_POINTER: fixture.pointerPath,
+      CTC_RELEASE_TOKEN: datasetVersion
+    }),
+    /불변 자료 포인터 경로/u
+  );
   await assert.rejects(
     () => resolveReleaseDataEnvironment({
       CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
       CTC_RELEASE_POINTER: fixture.pointerPath
     }),
-    /일치하지 않습니다/u
+    /CTC_RELEASE_TOKEN/u
   );
 });
 
@@ -89,21 +178,21 @@ test("구형 비봉인 자료판은 명시적으로 고정한 시험 모드에�
     CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES: "69114"
   };
 
-  const result = await resolveReleaseDataEnvironment(testEnvironment);
+  const result = await resolveLegacyTestDataEnvironment(testEnvironment);
   assert.equal(result.testOnly, true);
   assert.equal(result.acknowledgedIntegrityGapBytes, 69114);
   assert.equal(result.pointer.releaseId, `test-${datasetVersion.slice(0, 12)}`);
   assert.equal(result.pointer.datasetVersion, datasetVersion);
 
   await assert.rejects(
-    () => resolveReleaseDataEnvironment({
+    () => resolveLegacyTestDataEnvironment({
       ...testEnvironment,
       CTC_TEST_EXPECTED_DATASET_VERSION: "f".repeat(64)
     }),
     /SHA-256이 승인한 값과 일치하지 않습니다/u
   );
   await assert.rejects(
-    () => resolveReleaseDataEnvironment({
+    () => resolveLegacyTestDataEnvironment({
       ...testEnvironment,
       CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES: ""
     }),
@@ -128,15 +217,19 @@ test("시험 예외는 운영 포인터 또는 봉인된 v3 자료판에 적용�
   };
   await assert.rejects(
     () => resolveReleaseDataEnvironment(environment),
+    /공개 출시 경로/u
+  );
+  await assert.rejects(
+    () => resolveLegacyTestDataEnvironment(environment),
     /정상 배포 절차/u
   );
   await assert.rejects(
-    () => resolveReleaseDataEnvironment({ ...environment, CTC_RELEASE_POINTER: fixture.pointerPath }),
+    () => resolveLegacyTestDataEnvironment({ ...environment, CTC_RELEASE_POINTER: fixture.pointerPath }),
     /운영 포인터/u
   );
   await assert.rejects(
-    () => resolveReleaseDataEnvironment({ ...environment, CTC_TEST_DATASET_MODE: "anything" }),
-    /실행 방식/u
+    () => resolveLegacyTestDataEnvironment({ ...environment, CTC_TEST_DATASET_MODE: "anything" }),
+    /명시되지 않았습니다/u
   );
 });
 
@@ -175,25 +268,69 @@ test("부분 압축 해제 자료는 식별 파일이 생겨도 자료판 포인
   );
 });
 
-test("실행 시작 검사도 완료 표식 뒤에 누락된 Zarr 청크를 거부한다", async (context) => {
+test("실행 시작 검사는 Zarr content digest를 반복하지 않고 full 검사만 변조를 거부한다", async (context) => {
   const fixture = await createMountedReleaseFixture();
   context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
-  const datasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
-  const pointer = createReleasePointer({
-    releaseId: "ctc-startup-partial",
-    relativePath: fixture.relativePath,
-    datasetVersion
-  });
-  await fs.mkdir(path.dirname(fixture.pointerPath), { recursive: true });
-  await fs.writeFile(fixture.pointerPath, `${JSON.stringify(pointer)}\n`, "utf8");
-  await fs.rm(path.join(fixture.webDataRoot, "arrays", "coverage_mask.zarr", ".zarray"));
+  const target = path.join(fixture.webDataRoot, "arrays", "coverage_mask.zarr", ".zarray");
+  const originalStat = await fs.stat(target, { bigint: true });
+  const original = await fs.readFile(target, "utf8");
+  const replacement = "x".repeat(Buffer.byteLength(original, "utf8"));
+  await fs.writeFile(target, replacement, "utf8");
+  await fs.utimes(target, FIXTURE_MTIME, FIXTURE_MTIME);
+  const changedStat = await fs.stat(target, { bigint: true });
+  assert.equal(changedStat.size, originalStat.size);
+  assert.equal(changedStat.mtimeNs, originalStat.mtimeNs);
 
+  const startup = await validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" });
+  assert.equal(startup.integrityMode, "startup");
   await assert.rejects(
-    () => resolveReleaseDataEnvironment({
-      CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
-      CTC_RELEASE_POINTER: fixture.pointerPath
-    }),
+    () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "full" }),
     /폴더 해시가 manifest와 일치하지 않습니다/u
+  );
+});
+
+test("startup 검사는 필수 Zarr 경로의 중복과 metadata 누락을 얕은 경계에서 거부한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const indexPath = path.join(fixture.webDataRoot, "meta", "array_index.json");
+  const originalIndex = await fs.readFile(indexPath, "utf8");
+  const index = JSON.parse(originalIndex);
+  index.arrays.coverage_mask = index.arrays.raw_daily;
+  await fs.writeFile(indexPath, JSON.stringify(index), "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+    /배열 경로 설명/u
+  );
+
+  await fs.writeFile(indexPath, originalIndex, "utf8");
+  await fs.rm(path.join(fixture.webDataRoot, "arrays", "coverage_mask.zarr", ".zarray"));
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+    /배열 metadata/u
+  );
+});
+
+test("필수 Zarr는 최신 Backend content-v2 해시 계약을 하향할 수 없다", async (context) => {
+  const fixture = await createMountedReleaseFixture({ zarrHashMode: "directory_listing_v1" });
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+    /content-v2 해시/u
+  );
+});
+
+test("Node wrapper는 요청한 full 검사를 startup 결과로 대체하지 않는다", async () => {
+  await assert.rejects(
+    () => validateMountedDatasetPublication("unused.ctwebui", {
+      mode: "full",
+      timeoutMs: 1_000,
+      spawnProcess: () => createFakeValidatorChild({
+        integrityMode: "startup",
+        ok: true,
+        status: "complete"
+      })
+    }),
+    /검증 결과가 올바르지 않습니다/u
   );
 });
 
@@ -281,6 +418,139 @@ test("파일 내용과 manifest SHA-256이 다르면 같은 크기라도 출시�
   );
 });
 
+test("최신 Backend Zarr content-v2 digest는 child SHA-256 정본식과 정확히 일치한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const manifest = JSON.parse(await fs.readFile(path.join(fixture.webDataRoot, "manifest.json"), "utf8"));
+  const artifact = manifest.artifacts.find(({ path: artifactPath }) => artifactPath === "arrays/raw_daily.zarr");
+  assert.equal(artifact.hash_mode, "directory_content_sha256_v2");
+  assert.equal(artifact.file_count, 1);
+  assert.equal(artifact.size_bytes, Buffer.byteLength("arrays/raw_daily.zarr", "utf8"));
+  assert.equal(
+    artifact.sha256,
+    sha256Text(`.zarray\0${artifact.size_bytes}\0${sha256Text("arrays/raw_daily.zarr")}\n`)
+  );
+});
+
+test("Backend manifest binding의 정규 JSON byte 계약을 golden digest로 고정한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const manifest = JSON.parse(await fs.readFile(path.join(fixture.webDataRoot, "manifest.json"), "utf8"));
+  assert.equal(
+    manifest.completion.manifest_binding_sha256,
+    "590a4a7b4c07aad84d2616fb2951bee9190bcadf806e5fc873a20b7368482d7b"
+  );
+});
+
+test("JSON 정수 계약은 문자열·실수·bool 버전과 범위를 벗어난 count를 거부한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const manifestPath = path.join(fixture.webDataRoot, "manifest.json");
+  const originalManifest = await fs.readFile(manifestPath, "utf8");
+
+  for (const invalidVersion of ["\"3\"", "3.0", "true"]) {
+    const changed = originalManifest.replace('"format_version":3', `"format_version":${invalidVersion}`);
+    assert.notEqual(changed, originalManifest);
+    await fs.writeFile(manifestPath, changed, "utf8");
+    await assert.rejects(
+      () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+      /원자적 자료 게시 계약/u
+    );
+  }
+
+  for (const mutate of [
+    (manifest) => { manifest.completion.artifact_count = true; },
+    (manifest) => { manifest.artifacts[0].file_count = 1.5; },
+    (manifest) => { manifest.artifacts[0].file_count = 0; },
+    (manifest) => { manifest.artifacts[0].size_bytes = -1; },
+    (manifest) => { manifest.table_row_counts = { invalid: "0" }; }
+  ]) {
+    const manifest = JSON.parse(originalManifest);
+    mutate(manifest);
+    await fs.writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+    await assert.rejects(
+      () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+      /완료 표식의 파일 수|artifact 설명|표 행수 설명/u
+    );
+  }
+});
+
+test("정본 봉인과 완료 표식은 JSON 숫자와 bool의 타입까지 정확히 일치해야 한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const manifestPath = path.join(fixture.webDataRoot, "manifest.json");
+  const markerPath = path.join(fixture.webDataRoot, "meta", "completion.json");
+  const originalManifest = await fs.readFile(manifestPath, "utf8");
+
+  const booleanSeal = JSON.parse(originalManifest);
+  booleanSeal.dataset_seal.contract_version = true;
+  await fs.writeFile(manifestPath, JSON.stringify(booleanSeal), "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+    /정본 봉인/u
+  );
+
+  const numericSealPrefix = '"dataset_seal":{"contract":"ctc.webui.canonical-dataset-seal","contract_version":1,';
+  const floatSeal = originalManifest.replace(
+    numericSealPrefix,
+    numericSealPrefix.replace(":1,", ":1.0,")
+  );
+  assert.notEqual(floatSeal, originalManifest);
+  await fs.writeFile(manifestPath, floatSeal, "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+    /정본 봉인/u
+  );
+
+  await fs.writeFile(manifestPath, originalManifest, "utf8");
+  const marker = JSON.parse(await fs.readFile(markerPath, "utf8"));
+  marker.table_count = false;
+  await fs.writeFile(markerPath, JSON.stringify(marker), "utf8");
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+    /완료 표식이 manifest와 일치하지 않습니다/u
+  );
+});
+
+test("artifact path와 arcname은 문자열 타입의 동일한 정규 경로여야 한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const manifestPath = path.join(fixture.webDataRoot, "manifest.json");
+  const originalManifest = await fs.readFile(manifestPath, "utf8");
+  for (const mutate of [
+    (manifest) => { manifest.artifacts[0].path = 1; },
+    (manifest) => { manifest.artifacts[0].path = ` ${manifest.artifacts[0].path}`; },
+    (manifest) => { manifest.artifacts[0].arcname += ".alias"; }
+  ]) {
+    const manifest = JSON.parse(originalManifest);
+    mutate(manifest);
+    await fs.writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+    await assert.rejects(
+      () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+      /artifact 경로|내부 경로/u
+    );
+  }
+});
+
+test("publication validator는 Python 3.12 미만을 실행 전에 실패 폐쇄한다", () => {
+  const pythonExecutable = process.platform === "win32" ? "python" : "python3";
+  const validatorPath = path.resolve("scripts", "validate_ctwebui_publication.py");
+  const probe = [
+    "import importlib.util, sys",
+    "spec = importlib.util.spec_from_file_location('ctc_validator', sys.argv[1])",
+    "module = importlib.util.module_from_spec(spec)",
+    "spec.loader.exec_module(module)",
+    "module._require_supported_python((3, 11))"
+  ].join("; ");
+  const result = spawnSync(pythonExecutable, ["-c", probe, validatorPath], {
+    encoding: "utf8",
+    env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
+    windowsHide: true
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Python 3\.12 이상/u);
+});
+
 test("자료판 내부 junction과 승인되지 않은 미래 형식은 실패 폐쇄한다", async (context) => {
   const fixture = await createMountedReleaseFixture();
   context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
@@ -305,6 +575,24 @@ test("자료판 내부 junction과 승인되지 않은 미래 형식은 실패 �
   await assert.rejects(
     () => validateMountedDatasetPublication(fixture.webDataRoot),
     /원자적 자료 게시 계약/u
+  );
+});
+
+test("startup 검사는 manifest 식별 파일의 부모 junction을 읽기 전에 거부한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const metaPath = path.join(fixture.webDataRoot, "meta");
+  const outsideMetaPath = path.join(fixture.tempRoot, "outside-meta");
+  await fs.rename(metaPath, outsideMetaPath);
+  await fs.symlink(
+    outsideMetaPath,
+    metaPath,
+    process.platform === "win32" ? "junction" : "dir"
+  );
+
+  await assert.rejects(
+    () => validateMountedDatasetPublication(fixture.webDataRoot, { mode: "startup" }),
+    /링크 또는 junction|자료판 밖/u
   );
 });
 
@@ -452,6 +740,337 @@ test("게이트웨이 준비 확인은 공개 안전 health 응답만 허용한�
   assert.equal(child.killed, false);
 });
 
+test("공개 listen 준비 검사는 pointer·metadata·attribution 자료판 식별자를 결합한다", async () => {
+  const requestedPaths = [];
+  const result = await validateGatewayPublicationReadiness({
+    pointer: { datasetVersion: PUBLICATION_DATASET_VERSION },
+    port: 8765,
+    timeoutMs: 1_000,
+    fetchImplementation: async (url) => {
+      const pathname = new URL(url).pathname;
+      requestedPaths.push(pathname);
+      const payload = pathname.endsWith("/metadata")
+        ? PUBLICATION_METADATA
+        : PUBLICATION_ATTRIBUTION;
+      return jsonResponse(payload);
+    }
+  });
+  assert.deepEqual(requestedPaths, [
+    "/api/climate/metadata",
+    "/api/climate/attribution"
+  ]);
+  assert.equal(result.metadata.datasetVersion, PUBLICATION_DATASET_VERSION);
+  assert.equal(result.attribution.datasetUpdatedAt, PUBLICATION_DATASET_UPDATED_AT);
+});
+
+test("metadata와 dedicated attribution은 usesObservationData 의미를 보존하면서 provider catalog을 결합한다", async () => {
+  const metadata = {
+    ...PUBLICATION_METADATA,
+    observationAttribution: {
+      ...PUBLICATION_METADATA.observationAttribution,
+      providerIds: ["dwd"],
+      providers: [PUBLICATION_OBSERVATION_PROVIDER]
+    }
+  };
+  const attribution = {
+    ...PUBLICATION_ATTRIBUTION,
+    usesObservationData: true,
+    providerIds: ["dwd"],
+    providers: [PUBLICATION_OBSERVATION_PROVIDER]
+  };
+  const result = await validateGatewayPublicationReadiness({
+    pointer: { datasetVersion: PUBLICATION_DATASET_VERSION },
+    port: 8765,
+    timeoutMs: 1_000,
+    fetchImplementation: async (url) => new URL(url).pathname.endsWith("/metadata")
+      ? jsonResponse(metadata)
+      : jsonResponse(attribution)
+  });
+  assert.deepEqual(result.metadata.observationAttribution.providerIds, ["dwd"]);
+  assert.equal(result.attribution.usesObservationData, true);
+});
+
+test("공개 listen 준비 검사는 attribution 503·스키마·자료판 불일치를 실패 폐쇄한다", async (context) => {
+  const pointer = { datasetVersion: PUBLICATION_DATASET_VERSION };
+  const cases = [
+    {
+      name: "503",
+      attributionResponse: new Response("not-ready", { status: 503 }),
+      pattern: /attribution가 준비되지 않았습니다/u
+    },
+    {
+      name: "schema",
+      attributionResponse: jsonResponse({ ...PUBLICATION_ATTRIBUTION, schemaVersion: 2 }),
+      pattern: /attribution 계약/u
+    },
+    {
+      name: "identity",
+      attributionResponse: jsonResponse({
+        ...PUBLICATION_ATTRIBUTION,
+        datasetUpdatedAt: "2026-08-05T00:00:00.000000+00:00"
+      }),
+      pattern: /자료판 식별자가 일치하지 않습니다/u
+    },
+    {
+      name: "semantic-attribution",
+      attributionResponse: jsonResponse({
+        ...PUBLICATION_ATTRIBUTION,
+        usesObservationData: true,
+        providerIds: ["dwd"],
+        providers: [PUBLICATION_OBSERVATION_PROVIDER]
+      }),
+      pattern: /출처 정보가 일치하지 않습니다/u
+    }
+  ];
+  for (const item of cases) {
+    await context.test(item.name, async () => {
+      await assert.rejects(
+        () => validateGatewayPublicationReadiness({
+          pointer,
+          port: 8765,
+          timeoutMs: 1_000,
+          fetchImplementation: async (url) => new URL(url).pathname.endsWith("/metadata")
+            ? jsonResponse(PUBLICATION_METADATA)
+            : item.attributionResponse
+        }),
+        item.pattern
+      );
+    });
+  }
+  await assert.rejects(
+    () => validateGatewayPublicationReadiness({
+      pointer: { datasetVersion: "b".repeat(64) },
+      port: 8765,
+      timeoutMs: 1_000,
+      fetchImplementation: async () => jsonResponse(PUBLICATION_METADATA)
+    }),
+    /포인터와 게이트웨이 metadata 식별자/u
+  );
+});
+
+test("env-only legacy와 testOnly 결과는 gateway spawn과 공개 bind 전에 이중 차단한다", async () => {
+  const distRoot = path.resolve("dist");
+  const fileSystem = fakeDistributionFileSystem(distRoot);
+  let spawnCount = 0;
+  let createCount = 0;
+  const common = {
+    fileSystem,
+    spawnGateway: async () => { spawnCount += 1; },
+    createServer: () => { createCount += 1; },
+    env: {
+      PORT: "8080",
+      CTC_GATEWAY_PORT: "8765",
+      CTC_FRONTEND_DIST_ROOT: distRoot
+    }
+  };
+
+  await assert.rejects(
+    () => startReleaseCandidateServer({
+      ...common,
+      env: { ...common.env, CTC_TEST_DATASET_MODE: LEGACY_TEST_DATASET_MODE }
+    }),
+    /공개 출시 경로/u
+  );
+  for (const testOnly of [true, false]) {
+    await assert.rejects(
+      () => startReleaseCandidateServer({
+        ...common,
+        resolveReleaseData: async () => ({
+          env: {},
+          pointer: { datasetVersion: PUBLICATION_DATASET_VERSION },
+          testOnly
+        })
+      }),
+      /공개 출시 서버/u
+    );
+  }
+  assert.equal(spawnCount, 0);
+  assert.equal(createCount, 0);
+});
+
+test("attribution readiness 실패는 공개 서버 생성과 listen 전에 gateway를 회수한다", async () => {
+  const previousExitCode = process.exitCode;
+  const distRoot = path.resolve("dist");
+  const child = createFakeChild({ exitOnSignal: "SIGTERM" });
+  let createCount = 0;
+  try {
+    await assert.rejects(
+      () => startReleaseCandidateServer({
+        env: {
+          PORT: "8080",
+          CTC_GATEWAY_PORT: "8765",
+          CTC_FRONTEND_DIST_ROOT: distRoot,
+          CTC_GATEWAY_STARTUP_TIMEOUT_MS: "1000"
+        },
+        fileSystem: fakeDistributionFileSystem(distRoot),
+        resolveReleaseData: async () => ({
+          env: {},
+          pointer: { datasetVersion: PUBLICATION_DATASET_VERSION }
+        }),
+        spawnGateway: async () => ({ child }),
+        createServer: () => { createCount += 1; },
+        signalTarget: new EventEmitter(),
+        fetchImplementation: async (url) => {
+          const pathname = new URL(url).pathname;
+          if (pathname.endsWith("/health")) {
+            return jsonResponse({ ok: true, publicSafe: true });
+          }
+          if (pathname.endsWith("/metadata")) return jsonResponse(PUBLICATION_METADATA);
+          return new Response("not-ready", { status: 503 });
+        }
+      }),
+      /attribution가 준비되지 않았습니다/u
+    );
+    assert.equal(createCount, 0);
+    assert.deepEqual(child.signals, ["SIGTERM"]);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("readiness 직후 gateway 종료 이벤트도 공개 서버 생성 전에 차단한다", async () => {
+  const previousExitCode = process.exitCode;
+  const distRoot = path.resolve("dist");
+  const child = createFakeChild({ exitOnSignal: "SIGTERM" });
+  let createCount = 0;
+  try {
+    await assert.rejects(
+      () => startReleaseCandidateServer({
+        env: {
+          PORT: "8080",
+          CTC_GATEWAY_PORT: "8765",
+          CTC_FRONTEND_DIST_ROOT: distRoot,
+          CTC_GATEWAY_STARTUP_TIMEOUT_MS: "1000"
+        },
+        fileSystem: fakeDistributionFileSystem(distRoot),
+        resolveReleaseData: async () => ({
+          env: {},
+          pointer: { datasetVersion: PUBLICATION_DATASET_VERSION }
+        }),
+        spawnGateway: async () => ({ child }),
+        createServer: () => { createCount += 1; },
+        signalTarget: new EventEmitter(),
+        fetchImplementation: async (url) => {
+          const pathname = new URL(url).pathname;
+          if (pathname.endsWith("/health")) {
+            return jsonResponse({ ok: true, publicSafe: true });
+          }
+          if (pathname.endsWith("/metadata")) return jsonResponse(PUBLICATION_METADATA);
+          queueMicrotask(() => child.emit("exit", 1));
+          return jsonResponse(PUBLICATION_ATTRIBUTION);
+        }
+      }),
+      /공개 서버 시작 전에 종료/u
+    );
+    assert.equal(createCount, 0);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("gateway가 공개 listen 대기 중 종료되면 pending bind를 AbortSignal로 취소한다", async () => {
+  const previousExitCode = process.exitCode;
+  const distRoot = path.resolve("dist");
+  const child = createFakeChild({ exitOnSignal: "SIGTERM" });
+  const pendingServer = new EventEmitter();
+  pendingServer.listening = false;
+  pendingServer.close = (callback) => {
+    pendingServer.listening = false;
+    callback?.();
+  };
+  pendingServer.closeAllConnections = () => {};
+  pendingServer.closeIdleConnections = () => {};
+  let listenSignal;
+  let bindCompleted = false;
+  pendingServer.listen = (options, callback) => {
+    listenSignal = options.signal;
+    queueMicrotask(() => child.emit("exit", 1));
+    setImmediate(() => {
+      if (options.signal.aborted) return;
+      pendingServer.listening = true;
+      bindCompleted = true;
+      callback();
+    });
+    return pendingServer;
+  };
+  try {
+    await assert.rejects(
+      () => startReleaseCandidateServer({
+        env: {
+          PORT: "8080",
+          CTC_GATEWAY_PORT: "8765",
+          CTC_FRONTEND_DIST_ROOT: distRoot,
+          CTC_GATEWAY_STARTUP_TIMEOUT_MS: "1000"
+        },
+        fileSystem: fakeDistributionFileSystem(distRoot),
+        resolveReleaseData: async () => ({
+          env: {},
+          pointer: {
+            datasetVersion: PUBLICATION_DATASET_VERSION,
+            releaseId: "ctc-1000-rc1"
+          }
+        }),
+        spawnGateway: async () => ({ child }),
+        createServer: () => pendingServer,
+        signalTarget: new EventEmitter(),
+        fetchImplementation: async (url) => {
+          const pathname = new URL(url).pathname;
+          if (pathname.endsWith("/health")) {
+            return jsonResponse({ ok: true, publicSafe: true });
+          }
+          if (pathname.endsWith("/metadata")) return jsonResponse(PUBLICATION_METADATA);
+          return jsonResponse(PUBLICATION_ATTRIBUTION);
+        }
+      }),
+      /취소되었습니다|공개 서버 시작 전에 종료/u
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(listenSignal?.aborted, true);
+    assert.equal(bindCompleted, false);
+    assert.equal(pendingServer.listening, false);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
+test("gateway spawn 시간도 공개 시작 제한시간 예산에 포함한다", async () => {
+  const previousExitCode = process.exitCode;
+  const distRoot = path.resolve("dist");
+  const child = createFakeChild({ exitOnSignal: "SIGTERM" });
+  let fetchCount = 0;
+  try {
+    await assert.rejects(
+      () => startReleaseCandidateServer({
+        env: {
+          PORT: "8080",
+          CTC_GATEWAY_PORT: "8765",
+          CTC_FRONTEND_DIST_ROOT: distRoot,
+          CTC_GATEWAY_STARTUP_TIMEOUT_MS: "1"
+        },
+        fileSystem: fakeDistributionFileSystem(distRoot),
+        resolveReleaseData: async () => ({
+          env: {},
+          pointer: { datasetVersion: PUBLICATION_DATASET_VERSION }
+        }),
+        spawnGateway: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          return { child };
+        },
+        createServer: () => assert.fail("공개 서버를 만들면 안 됩니다."),
+        signalTarget: new EventEmitter(),
+        fetchImplementation: async () => {
+          fetchCount += 1;
+          return jsonResponse({ ok: true, publicSafe: true });
+        }
+      }),
+      /준비 시간이 초과/u
+    );
+    assert.equal(fetchCount, 0);
+  } finally {
+    process.exitCode = previousExitCode;
+  }
+});
+
 test("게이트웨이 spawn 오류와 종료 제한시간은 자식 프로세스를 회수한다", async () => {
   const failedChild = createFakeChild({ exitOnSignal: "SIGTERM" });
   const readiness = waitForGateway({
@@ -591,16 +1210,21 @@ test("Cloud Run 배포는 공개 읽기 전용 GCS와 API, 체크섬 승격을 �
   assert.match(pagesScript, /foreach \(\$parsedRun in \$parsedRuns\)/u);
   assert.match(pagesScript, /PSObject\.Properties\['headSha'\]/u);
   assert.match(cloudBuild, /pnpm test/u);
+  assert.match(cloudBuild, /node:22-trixie-slim/u);
   assert.match(cloudBuild, /apt-get install --yes --no-install-recommends python3/u);
   assert.match(cloudBuild, /smoke-container/u);
   assert.match(cloudBuild, /raw_zarr_point_worker/u);
   assert.doesNotMatch(cloudBuild, /id:\s*push-container/u);
   assert.match(dockerfile, /apt-get install --yes --no-install-recommends python3/u);
+  assert.match(dockerfile, /^FROM node:22-trixie-slim AS frontend-build$/mu);
   assert.match(dockerfile, /^USER 10001:10001$/mu);
   assert.doesNotMatch(requirements, /[<>~]=?/u);
 });
 
-async function createMountedReleaseFixture({ includeNestedArtifact = false } = {}) {
+async function createMountedReleaseFixture({
+  includeNestedArtifact = false,
+  zarrHashMode = "directory_content_sha256_v2"
+} = {}) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ctc-rc-pointer-"));
   const mountRoot = path.join(tempRoot, "gcs");
   const relativePath = "releases/ctc-1000-rc1/data.ctwebui";
@@ -615,12 +1239,16 @@ async function createMountedReleaseFixture({ includeNestedArtifact = false } = {
   for (const relativePath of Object.values(arrayPaths)) {
     const target = path.join(webDataRoot, ...relativePath.split("/"));
     await fs.mkdir(target, { recursive: true });
-    await fs.writeFile(path.join(target, ".zarray"), relativePath, "utf8");
+    const zarrayPath = path.join(target, ".zarray");
+    await fs.writeFile(zarrayPath, relativePath, "utf8");
+    await fs.utimes(zarrayPath, FIXTURE_MTIME, FIXTURE_MTIME);
   }
   const dataRelativePath = "data/scenario_model_predictions";
   const dataRoot = path.join(webDataRoot, ...dataRelativePath.split("/"));
   await fs.mkdir(dataRoot, { recursive: true });
-  await fs.writeFile(path.join(dataRoot, "part-000000.parquet"), "fixture", "utf8");
+  const dataPath = path.join(dataRoot, "part-000000.parquet");
+  await fs.writeFile(dataPath, "fixture", "utf8");
+  await fs.utimes(dataPath, FIXTURE_MTIME, FIXTURE_MTIME);
 
   await fs.writeFile(path.join(webDataRoot, "meta", "array_index.json"), JSON.stringify({
     arrays: arrayPaths,
@@ -647,7 +1275,7 @@ async function createMountedReleaseFixture({ includeNestedArtifact = false } = {
   const artifacts = [];
   for (const relativePath of artifactPaths) {
     const target = path.join(webDataRoot, ...relativePath.split("/"));
-    const stats = await fixtureArtifactStats(target);
+    const stats = await fixtureArtifactStats(target, { zarrHashMode });
     artifacts.push({
       arcname: relativePath,
       file_count: stats.fileCount,
@@ -668,7 +1296,19 @@ async function createMountedReleaseFixture({ includeNestedArtifact = false } = {
   return { mountRoot, pointerPath, relativePath, tempRoot, webDataRoot };
 }
 
-async function fixtureArtifactStats(target) {
+async function moveFixtureToImmutableReleasePath(fixture, datasetVersion) {
+  assert.match(datasetVersion, /^[0-9a-f]{64}$/u);
+  const relativePath = `release-candidate/datasets/${datasetVersion}.ctwebui`;
+  const webDataRoot = path.join(fixture.mountRoot, ...relativePath.split("/"));
+  await fs.mkdir(path.dirname(webDataRoot), { recursive: true });
+  await fs.rename(fixture.webDataRoot, webDataRoot);
+  return { ...fixture, relativePath, webDataRoot };
+}
+
+async function fixtureArtifactStats(
+  target,
+  { zarrHashMode = "directory_content_sha256_v2" } = {}
+) {
   const stat = await fs.stat(target);
   if (stat.isFile()) {
     return {
@@ -691,6 +1331,7 @@ async function fixtureArtifactStats(target) {
         const childStat = await fs.stat(child, { bigint: true });
         const relativePath = path.relative(target, child).replaceAll("\\", "/");
         files.push({
+          childSha256: createHash("sha256").update(await fs.readFile(child)).digest("hex"),
           mtimeNs: childStat.mtimeNs,
           relativePath,
           size: Number(childStat.size)
@@ -700,13 +1341,17 @@ async function fixtureArtifactStats(target) {
     }
   }
   const digest = createHash("sha256");
-  files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-  files.forEach(({ mtimeNs, relativePath, size }) => {
-    digest.update(`${relativePath}\0${size}\0${mtimeNs}\n`, "utf8");
+  const hashMode = target.toLowerCase().endsWith(".zarr")
+    ? zarrHashMode
+    : "directory_listing_v1";
+  files.sort((left, right) => left.relativePath < right.relativePath ? -1 : Number(left.relativePath > right.relativePath));
+  files.forEach(({ childSha256, mtimeNs, relativePath, size }) => {
+    const identity = hashMode === "directory_content_sha256_v2" ? childSha256 : mtimeNs;
+    digest.update(`${relativePath}\0${size}\0${identity}\n`, "utf8");
   });
   return {
     fileCount: files.length,
-    hashMode: "directory_listing_v1",
+    hashMode,
     sha256: digest.digest("hex"),
     sizeBytes
   };
@@ -850,6 +1495,24 @@ function sha256Text(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function jsonResponse(value, { status = 200 } = {}) {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: { "Content-Type": "application/json" }
+  });
+}
+
+function fakeDistributionFileSystem(distRoot) {
+  return {
+    async lstat(target) {
+      return {
+        isDirectory: () => path.resolve(target) === path.resolve(distRoot),
+        isFile: () => path.resolve(target) === path.resolve(distRoot, "index.html")
+      };
+    }
+  };
+}
+
 function requestLocal(origin, pathname, { method = "GET", headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
     const request = http.request(new URL(pathname, origin), { method, headers }, (response) => {
@@ -881,5 +1544,17 @@ function createFakeChild({ exitOnSignal }) {
     }
     return true;
   };
+  return child;
+}
+
+function createFakeValidatorChild(payload) {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => true;
+  queueMicrotask(() => {
+    child.stdout.emit("data", Buffer.from(JSON.stringify(payload), "utf8"));
+    child.emit("close", 0);
+  });
   return child;
 }
