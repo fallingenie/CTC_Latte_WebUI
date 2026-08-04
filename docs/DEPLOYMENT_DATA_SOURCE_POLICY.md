@@ -4,6 +4,8 @@
 
 운영 Web UI는 GitHub Pages에서 정적 화면을 제공하고, 기후자료 조회는 검증된 공개 Cloud Run의 `/api/climate/*`만 호출합니다. 로컬 개발에서는 기존 동일 출처 상대 경로를 사용합니다. 지도 타일은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 제공자 연결입니다. 브라우저 번들, 연결 설정과 기후자료 응답에는 Google Drive 주소, 로컬·네트워크 경로, 토큰·자격 증명과 내부 자료 확장자를 넣지 않습니다. 공개 GCS 객체 주소도 UI나 내보내기에 표시하지 않습니다.
 
+이 release의 Backend read-only 계약 기준은 `05fd49a602d5530d9c0b3debf758319f6fc4ccd8`입니다. Backend는 `.ctwebui` 생성·정규화·봉인, raw fallback, 실제 관측 provider와 사용량을 소유합니다. WebUI는 publication과 공개 응답을 검증하고 표시·내보내기만 하며, 실패한 자료를 보정·재생성·재봉인하지 않습니다.
+
 공개 웹 서버는 빌드 결과인 `dist/`만 문서 루트로 배포합니다. 저장소 루트, `source/`, `config/`, `scripts/` 및 검증 증거 디렉터리를 정적 파일 서버의 공개 경로로 사용하지 않습니다.
 
 운영 게이트웨이의 자료 역할과 조회 순서는 다음과 같이 고정합니다.
@@ -16,11 +18,13 @@
 
 GCS 버킷 루트나 업로드 중인 디렉터리는 직접 열지 않습니다. 발행 명령은 업로드 경로를 로컬 정본과 대조한 뒤 `release-candidate/datasets/<datasetVersion>.ctwebui`로 서버 측 복사하고, 운영 프로세스는 배포할 때 지정한 `release-candidate/releases/<datasetVersion>.json` 불변 포인터가 가리키는 이 사본만 엽니다. 포인터에 기록된 `datasetVersion`이 실제 `manifest.json`, `meta/array_index.json`, `meta/raw_cmip6_index.json`의 합성 SHA-256과 일치할 때만 시작합니다. `release-candidate/current.json`은 운영자가 현재 자료판을 확인하기 위한 별칭이며 실행 중인 리비전의 자료판을 바꾸지 않습니다. 같은 업로드 경로가 다음 자료로 교체되어도 이미 배포된 리비전은 이전 불변 사본을 계속 읽습니다.
 
+불변 pointer를 발행하기 전 `full` 검증은 모든 선언 파일과 디렉터리를 해당 선언 해시 방식으로 검사합니다. 필수 `arrays/*.zarr`에는 `directory_content_sha256_v2`만 허용하고, `directory_listing_v1`은 필수 Zarr 이외의 호환 범위로 제한합니다. 서버 `startup` 검증은 이미 full 검증을 통과해 pointer에 결합된 publication을 전제로 seal·manifest·completion·선언 inventory와 자료판 identity를 확인하되 대형 Zarr child content를 다시 해시하지 않습니다. 이어 `/api/climate/metadata`와 `/api/climate/attribution`의 자료판 identity가 pointer와 일치할 때만 공개 listener를 엽니다. Startup 통과만으로 deep content 검증을 대체할 수 없습니다.
+
 ## 공개 출처와 내보내기
 
-공개 Attribution 카탈로그에 고정된 프로젝트 제작자명, 공개 GitHub 프로필·프로젝트 저장소 링크와 DOI·인용 링크는 UI와 내보내기에 필요한 공개 출처 정보로 의도적으로 허용합니다. 이 허용 목록은 임의의 저장소나 외부 주소를 허용하지 않으며, Google Drive·GCS 주소, 로컬·네트워크 경로, 비공개 저장소 주소와 토큰·자격 증명은 계속 금지합니다.
+프로젝트·CMIP6·방법론 출처는 Frontend 공개 카탈로그에서 가져옵니다. 관측 provider 출처와 `licenseUrl`은 Backend exact schema v1 응답에서만 가져오고, `licenseUrl`은 안전한 공개 HTTPS 형식으로 검증합니다. 이 경계는 임의의 저장소나 외부 주소를 허용하지 않으며, Google Drive·GCS 주소, 로컬·네트워크 경로, 비공개 저장소 주소와 토큰·자격 증명은 계속 금지합니다.
 
-기간 자료 내보내기의 CSV 출처 묶음, PDF, PNG, 대화형 HTML은 각 파일 또는 함께 제공되는 출처 묶음에 자료 출처와 인용 정보를 포함해야 합니다. 대한민국 기상청 ASOS 자료 사용을 고지할 때는 변형·대체하지 않은 원본 `kma_mark_1.png`와 `kma_mark_2.png`를 함께 사용해야 합니다. `raw-model-grid`는 ASOS 관측 보정 미사용을 명시하고, 공통 출처 묶음에 KMA 표장이 포함되더라도 ASOS 자료를 사용했다는 문구나 인상을 주지 않아야 합니다.
+기간 자료 내보내기의 CSV 출처 묶음, PDF, PNG, 대화형 HTML과 DOCX는 결과별 provider·순서·사용 행 수·표장 descriptor를 query 또는 series 응답 그대로 사용하며 재계산하거나 다른 결과와 합산하지 않습니다. 표장 바이트는 실제 provider descriptor가 요구하고 이름·SHA-256·크기·media type이 모두 일치하는 검증된 로컬 원본만 포함합니다. `raw-model-grid`에는 관측 provider나 표장을 포함하지 않습니다.
 
 논문과 자료 인용의 라이선스는 공개 Attribution 카탈로그의 값을 그대로 사용합니다. 카탈로그에 라이선스가 없으면 DOI, 저널 또는 제공 기관을 근거로 라이선스를 추정하거나 새로 표시하지 않습니다.
 
@@ -34,6 +38,8 @@ GCS 버킷 루트나 업로드 중인 디렉터리는 직접 열지 않습니다
 - 공개 산출물에 Google Drive·GCS 주소, 로컬·네트워크 경로, 비공개 저장소 주소, 토큰·자격 증명과 내부 확장자가 없는지
 
 실제 운영 게이트웨이를 열기 전에는 게이트웨이가 생성한 배포 확인서를 이용해 다음 검증도 통과해야 합니다.
+
+아래 명령은 문서 확인이나 Frontend PR 자동 검증용 예제가 아닙니다. Backend SHA, sealed publication, GCS mount, 외부 후보 URL과 담당자 실행 창이 합의된 경우에만 수행합니다. 조율 전에는 `start:gateway:production`, `verify:public-data`, `attest:production`, `verify:deployment`, release pointer 발행, Cloud Run·Pages 배포 및 승격을 실행하지 않습니다. 게이트웨이와 publication validator에는 Python 3.12 이상이 필요합니다.
 
 ```powershell
 $env:CTC_BACKEND_ROOT = "<PR이 병합된 Backend main 절대경로>"
@@ -112,6 +118,8 @@ corepack pnpm verify:deployment
 - `internalPathExposure`는 `false`여야 합니다.
 - 위에 없는 필드, 주소, 토큰, 자격 증명, 로컬·네트워크·클라우드 저장소 위치 또는 내부 자료 확장자가 하나라도 있으면 확인서를 거부합니다.
 
+확인서의 `rawData.attributionReady=true`는 raw 결과의 중첩 `observationAttribution.ready=true`, 즉 canonical 계약이 준비됐음을 뜻합니다. raw query와 series 응답의 최상위 `attributionReady`는 반드시 `false`이고, 중첩 값은 `usesObservationData=false`, `providerIds=[]`, `providers=[]`이어야 합니다. 두 readiness 값은 의미가 다르므로 서로 대체하지 않습니다.
+
 UI와 내보내기의 공개 Attribution 허용 목록은 확인서 스키마를 확장하지 않습니다. 프로젝트 제작자·GitHub·인용 링크도 위 JSON 확인서에는 추가하지 않습니다.
 
 따라서 `config/production-data-policy.json` 자체를 확인서 경로로 지정하면 실패합니다. 검증 결과의 `attestationVerified`, `datasetVersion`, `datasetUpdatedAt`, Frontend·Backend commit SHA, `publicSafe`, `attributionReady`, `internalPathExposure`를 배포 개방 기록에 남기고, 검증에 실패하면 운영 트래픽을 열지 않습니다.
@@ -179,7 +187,7 @@ Pages가 이미 생성되어 있으면 생성 API의 충돌 응답은 기존 설
 
 Frontend는 `runtime-policy.js`의 호환 계층에서 Backend 응답을 안정된 내부 형식으로 바꾼 뒤 화면에 전달합니다. `allowedFields`에는 `values[].label`처럼 화면과 내보내기에 필요한 필드 경로만 명시합니다. 필수 필드가 빠지거나 자료판 식별자, 요청 조건, 자료 형태가 달라지면 즉시 거부합니다.
 
-Backend가 정상 metadata, query, series 응답에 안전한 부가 필드를 추가하면 호환 계층은 응답 전체를 보안 검사한 뒤 그 필드를 화면에 전달하지 않고 무시합니다. 따라서 자료판 갱신, 새 모델 추가, 부가 진단 정보 추가는 Frontend 대규모 수정 사유가 아닙니다. 공개 Attribution 링크는 Frontend의 검토된 카탈로그에서만 가져오며 Backend 응답의 임의 URL을 허용하지 않습니다. 알 수 없는 필드라도 저장소 주소, 파일 경로, 인증 정보, 내부 자료 확장자 또는 이를 암시하는 필드 이름이 있으면 응답 전체를 거부합니다.
+Backend가 정상 metadata, query, series 응답에 안전한 부가 필드를 추가하면 호환 계층은 응답 전체를 보안 검사한 뒤 그 필드를 화면에 전달하지 않고 무시합니다. 다만 `observationAttribution`, provider와 mark descriptor는 exact schema이므로 필드 추가·누락 또는 의미 변경을 즉시 거부하며 schema bump와 양측 조율이 필요합니다. Frontend 카탈로그는 프로젝트·CMIP6·방법론 링크만 소유하고, 관측 provider `licenseUrl`은 Backend exact 계약의 안전한 공개 HTTPS 자리에서만 소비합니다. 알 수 없는 필드라도 저장소 주소, 파일 경로, 인증 정보, 내부 자료 확장자 또는 이를 암시하는 필드 이름이 있으면 응답 전체를 거부합니다.
 
 같은 `*.ctwebui` 위치의 내용이 별도 통보 없이 교체되는 상황도 정상 갱신으로 처리합니다. Frontend는 RC 이름이나 파일명을 자료판 식별자로 사용하지 않고 metadata의 `datasetVersion`과 `datasetUpdatedAt`을 함께 확인합니다. 창이 다시 활성화될 때와 저빈도 주기 확인에서 두 값 중 하나라도 바뀌면 진행 중 요청을 취소하고 학생·교사·일반 화면의 현재 날짜·좌표·시나리오·모델을 새 자료판에 고정해 다시 조회합니다. 열려 있는 기간 내보내기도 새 자료판으로 다시 조회한 결과만 저장합니다.
 

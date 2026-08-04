@@ -33,8 +33,14 @@
 - 범위 밖 좌표는 CMIP6 원자료 격자를 조회하며 관측자료 기반 보정을 적용한 것처럼 표시하지 않습니다.
 - CSV의 결측값은 빈 칸과 `coverage=missing`으로 기록합니다.
 
+## 관측자료 출처 의미
+
+`dataMode`는 값의 자료 형태를 설명하지만 provider 식별자가 아닙니다. `bias-corrected` query와 series는 최상위 `attributionReady=true`이고 중첩 `observationAttribution.ready=true`, `usesObservationData=true`, 실제 provider 1개 이상이어야 합니다. `raw-model-grid`는 최상위 `attributionReady=false`이지만 중첩 canonical 계약은 `ready=true`이며 `usesObservationData=false`, `providerIds=[]`, `providers=[]`입니다.
+
+중첩 `ready`는 canonical 관측자료 출처 계약의 준비 여부이고, 최상위 `attributionReady`는 해당 결과가 관측자료 attribution을 사용하는지 나타냅니다. WebUI는 실제 provider, 사용량, 라이선스 또는 표장을 계산·정규화하지 않습니다.
+
 ## 내보내기 재현 정보
 
-CSV는 각 행에 조회 날짜, 좌표, 시나리오, 모델, 지표, 계산 기준, 보정값·원자료 구분, 모델 수와 기준 지점 거리를 기록합니다. `generated_at`에는 API 응답 생성 시각을, `attribution_labels`에는 공개 가능한 자료 출처를 기록합니다.
+CSV는 각 행에 조회 날짜, 좌표, 시나리오, 모델, 지표, 계산 기준, 보정값·원자료 구분, 모델 수와 기준 지점 거리를 기록합니다. 재현·출처 필드로 `dataset_version`, `dataset_updated_at`, `generated_at`, `attribution_document`, `observation_provider_ids`, `observation_attribution_texts`, `attribution_labels`를 기록합니다. 관측 provider ID와 attribution text는 해당 query 또는 series가 반환한 실제 provider만 사용하며, raw 결과에서는 두 관측 provider 필드를 비워 둡니다. PDF·PNG·HTML·DOCX와 CSV 출처 ZIP도 같은 exact 계약을 사용하고, 필요한 표장은 검증된 descriptor와 로컬 원본이 일치할 때만 포함합니다.
 
 내부 저장 경로, 원본 묶음 확장자, 저장소 주소와 인증 정보는 CSV·PDF·PNG에 기록하지 않습니다. 연구 재현 시에는 내보낸 조회 조건과 별도로 보관한 정본 검증 보고서를 함께 사용해야 합니다.
