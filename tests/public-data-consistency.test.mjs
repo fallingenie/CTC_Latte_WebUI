@@ -10,6 +10,20 @@ import {
   verifyPublicDataConsistency
 } from "../scripts/verify-public-data-consistency.mjs";
 
+const observationProvider = Object.freeze({
+  providerId: "dwd",
+  name: "Deutscher Wetterdienst Climate Data Center",
+  dataset: "dwd_cdc_hourly_observations",
+  licenseName: "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+  licenseUrl: "https://www.dwd.de/EN/service/legal_notice/templates_dwd_as_source.html",
+  citation: "Deutscher Wetterdienst, Climate Data Center hourly station observations.",
+  attributionText: "Based on data from Deutscher Wetterdienst (DWD), Climate Data Center; processed by Climate Time Capsule.",
+  redistributionPolicy: "cc_by_4_0_with_source_and_modification_notice",
+  usedRowCount: 37,
+  attributionRequired: true,
+  requiresResultMark: false,
+  markAssets: []
+});
 const metadata = Object.freeze({
   ready: true,
   dateStart: "2035-01-01",
@@ -17,6 +31,8 @@ const metadata = Object.freeze({
   scenarios: ["고배출 경로"],
   models: ["전체 앙상블", "CanESM5", "MIROC6"],
   publicSafe: true,
+  attributionReady: true,
+  observationAttribution: buildObservationAttribution(false, { includeProviders: true }),
   datasetVersion: "a".repeat(64),
   datasetUpdatedAt: "2026-07-20T00:45:24.000000+00:00"
 });
@@ -94,6 +110,46 @@ test("공개 API 검증은 다시 시도 가능한 503을 재호출하고 query�
   assert.equal(calls.filter((pathname) => pathname === "/api/climate/series").length, 2);
 });
 
+test("공개 API 대조는 providerIds와 providers가 다른 응답을 거부한다", async () => {
+  const fetchImplementation = createPublicFetch({
+    mutateQuery(payload) {
+      if (payload.dataMode === "bias-corrected") {
+        payload.observationAttribution.providerIds = ["mismatched_provider"];
+      }
+    }
+  });
+
+  await assert.rejects(
+    () => verifyPublicDataConsistency({
+      baseUrl: "https://climate.example.test",
+      sampleCount: 2,
+      seed: "provider-mismatch-seed",
+      fetchImplementation,
+      retryDelayMs: 0
+    }),
+    /공개 계약|관측자료 출처/u
+  );
+});
+
+test("공개 API 대조는 원자료 embedded 출처 계약의 legacy ready=false를 거부한다", async () => {
+  const fetchImplementation = createPublicFetch({
+    mutateSeries(payload) {
+      if (payload.dataMode === "raw-model-grid") payload.observationAttribution.ready = false;
+    }
+  });
+
+  await assert.rejects(
+    () => verifyPublicDataConsistency({
+      baseUrl: "https://climate.example.test",
+      sampleCount: 2,
+      seed: "legacy-ready-seed",
+      fetchImplementation,
+      retryDelayMs: 0
+    }),
+    /공개 계약|관측자료 출처/u
+  );
+});
+
 function buildRequest() {
   return {
     stationLabel: "무작위 대조 표본",
@@ -121,6 +177,7 @@ function buildSeriesRequest(request, includeRaw) {
 }
 
 function buildQuery(request, dataMode = "bias-corrected") {
+  const usesObservationData = dataMode === "bias-corrected";
   const values = [
     ["tasmax", 31, 30],
     ["tasmin", 21, 20],
@@ -151,7 +208,8 @@ function buildQuery(request, dataMode = "bias-corrected") {
     coverage: dataMode === "bias-corrected" ? "available" : "fallback",
     dataMode,
     values,
-    attributionReady: true,
+    attributionReady: usesObservationData,
+    observationAttribution: buildObservationAttribution(usesObservationData),
     publicSafe: true,
     generatedAt: "2026-07-21T01:00:00.000000+00:00",
     datasetVersion: metadata.datasetVersion,
@@ -161,6 +219,7 @@ function buildQuery(request, dataMode = "bias-corrected") {
 }
 
 function buildSeries(request, dataMode, includeRaw) {
+  const usesObservationData = dataMode === "bias-corrected";
   const values = {
     tasmax: [31, 30],
     tasmin: [21, 20],
@@ -192,15 +251,50 @@ function buildSeries(request, dataMode, includeRaw) {
       ...(includeRaw ? { raw: { p10: [values[key][1]], p50: [values[key][1]], p90: [values[key][1]] } } : {})
     })),
     includeRaw,
-    attributionReady: true,
+    attributionReady: usesObservationData,
     attributionLabels: dataMode === "bias-corrected"
       ? ["국제기후모델 시나리오 자료", "관측자료 기반 보정"]
       : ["국제기후모델 시나리오 원자료"],
+    observationAttribution: buildObservationAttribution(usesObservationData),
     publicSafe: true,
     generatedAt: "2026-07-21T01:00:00.000000+00:00",
     datasetVersion: metadata.datasetVersion,
     datasetUpdatedAt: metadata.datasetUpdatedAt,
     ...(dataMode === "bias-corrected" ? { nearestDistanceKm: 2.5 } : { fallbackReason: "기후 모델 원자료" })
+  };
+}
+
+function buildObservationAttribution(usesObservationData, { includeProviders = usesObservationData } = {}) {
+  const providers = includeProviders ? [{ ...observationProvider, markAssets: [] }] : [];
+  return {
+    schemaVersion: 1,
+    ready: true,
+    usesObservationData,
+    providerIds: providers.map((provider) => provider.providerId),
+    providers
+  };
+}
+
+function createPublicFetch({ mutateMetadata, mutateQuery, mutateSeries } = {}) {
+  return async (url, options = {}) => {
+    const pathname = new URL(url).pathname;
+    if (pathname === "/api/climate/metadata") {
+      const payload = JSON.parse(JSON.stringify(metadata));
+      mutateMetadata?.(payload);
+      return jsonResponse(payload);
+    }
+    const body = JSON.parse(options.body);
+    if (pathname === "/api/climate/query") {
+      const payload = buildQuery(body, body.latitude === 36.35 ? "bias-corrected" : "raw-model-grid");
+      mutateQuery?.(payload);
+      return jsonResponse(payload);
+    }
+    if (pathname === "/api/climate/series") {
+      const payload = buildSeries(body, body.includeRaw ? "bias-corrected" : "raw-model-grid", body.includeRaw);
+      mutateSeries?.(payload);
+      return jsonResponse(payload);
+    }
+    return jsonResponse({ error: "not-found" }, 404);
   };
 }
 

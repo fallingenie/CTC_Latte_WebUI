@@ -22,6 +22,7 @@ import {
   validatePublicClimateSeriesResponse,
   validatePublicDatasetMetadata,
   validatePublicClimateReadPath,
+  validatePublicObservationAttribution,
   validatePublicRuntimeConfig
 } from "../source/runtime-policy.js";
 
@@ -29,6 +30,60 @@ const currentDatasetVersion = "a".repeat(64);
 const nextDatasetVersion = "b".repeat(64);
 const currentDatasetUpdatedAt = "2026-07-13T16:22:20.121000+00:00";
 const nextDatasetUpdatedAt = "2026-07-14T03:20:10.000000+00:00";
+
+const validObservationProvider = {
+  providerId: "dwd",
+  name: "Deutscher Wetterdienst Climate Data Center",
+  dataset: "dwd_cdc_hourly_observations",
+  licenseName: "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+  licenseUrl: "https://www.dwd.de/EN/service/legal_notice/templates_dwd_as_source.html",
+  citation: "Deutscher Wetterdienst, Climate Data Center hourly station observations.",
+  attributionText: "Based on data from Deutscher Wetterdienst (DWD), Climate Data Center; processed by Climate Time Capsule.",
+  redistributionPolicy: "cc_by_4_0_with_source_and_modification_notice",
+  usedRowCount: 37,
+  attributionRequired: true,
+  requiresResultMark: false,
+  markAssets: []
+};
+const validKmaMark = {
+  name: "kma_mark_1.png",
+  path: "licenses/kma_mark_1.png",
+  sha256: "8248bb099a0c05b9819d60a9423673582d143cfc909cc22a9ffcb3e6770c6b06",
+  sizeBytes: 7485,
+  mediaType: "image/png"
+};
+const validKmaProvider = {
+  providerId: "kma_asos",
+  name: "Korea Meteorological Administration",
+  dataset: "Automated Synoptic Observing System",
+  licenseName: "Korea Open Government License Type 1",
+  licenseUrl: "https://www.kogl.or.kr/info/licenseType1.do",
+  citation: "Korea Meteorological Administration, Automated Synoptic Observing System observations.",
+  attributionText: "Based on observations from the Korea Meteorological Administration; processed by Climate Time Capsule.",
+  redistributionPolicy: "source_attribution_and_result_mark_required",
+  usedRowCount: 11,
+  attributionRequired: true,
+  requiresResultMark: true,
+  markAssets: [validKmaMark]
+};
+const validObservationAttribution = {
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: true,
+  providerIds: ["dwd"],
+  providers: [validObservationProvider]
+};
+const validMetadataObservationAttribution = {
+  ...validObservationAttribution,
+  usesObservationData: false
+};
+const validRawObservationAttribution = {
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: false,
+  providerIds: [],
+  providers: []
+};
 
 const validConfig = {
   readPath: "/api/climate/query",
@@ -40,6 +95,8 @@ const validConfig = {
 const validMetadata = {
   publicSafe: true,
   ready: true,
+  attributionReady: true,
+  observationAttribution: validMetadataObservationAttribution,
   datasetVersion: currentDatasetVersion,
   datasetUpdatedAt: currentDatasetUpdatedAt,
   dateStart: "2035-01-01",
@@ -86,6 +143,7 @@ const validQueryResponse = {
   dataMode: "bias-corrected",
   values: [{ key: "tasmax", label: "최고기온", value: "31.25도", unit: "도", caption: "선택 모델 보정값", tone: "hot", available: true, numericValue: 31.25 }],
   attributionReady: true,
+  observationAttribution: validObservationAttribution,
   publicSafe: true,
   generatedAt: "2026-07-15T00:00:00Z",
   datasetVersion: currentDatasetVersion,
@@ -116,6 +174,7 @@ const validSeriesResponse = {
   includeRaw: false,
   attributionReady: true,
   attributionLabels: ["국제기후모델 시나리오 자료", "관측자료 기반 보정"],
+  observationAttribution: validObservationAttribution,
   publicSafe: true,
   generatedAt: "2026-07-15T00:00:00Z",
   datasetVersion: currentDatasetVersion,
@@ -192,6 +251,191 @@ test("공개 메타데이터는 Backend Main의 정확한 자료판 형식만 �
   assert.equal(metadata.datasetVersion, validMetadata.datasetVersion);
   assert.equal(metadata.datasetUpdatedAt, validMetadata.datasetUpdatedAt);
   assert.deepEqual(metadata.models, ["전체 앙상블"]);
+
+  const legacyMetadata = {
+    ...validMetadata,
+    attributionReady: false,
+    observationAttribution: {
+      ...validRawObservationAttribution,
+      ready: false
+    }
+  };
+  assert.deepEqual(validatePublicDatasetMetadata(legacyMetadata), legacyMetadata);
+});
+
+test("관측자료 출처는 Backend의 정확한 v1 필드만 정규화한다", () => {
+  assert.deepEqual(
+    validatePublicObservationAttribution(validObservationAttribution),
+    validObservationAttribution
+  );
+  assert.deepEqual(
+    validatePublicObservationAttribution({
+      ...validObservationAttribution,
+      datasetVersion: currentDatasetVersion,
+      datasetUpdatedAt: currentDatasetUpdatedAt
+    }, { requireDatasetIdentity: true }),
+    {
+      ...validObservationAttribution,
+      datasetVersion: currentDatasetVersion,
+      datasetUpdatedAt: currentDatasetUpdatedAt
+    }
+  );
+  assert.deepEqual(
+    validatePublicObservationAttribution({
+      ...validRawObservationAttribution,
+      datasetVersion: currentDatasetVersion,
+      datasetUpdatedAt: currentDatasetUpdatedAt
+    }, { requireDatasetIdentity: true }),
+    {
+      ...validRawObservationAttribution,
+      datasetVersion: currentDatasetVersion,
+      datasetUpdatedAt: currentDatasetUpdatedAt
+    }
+  );
+
+  assert.throws(
+    () => validatePublicObservationAttribution({ ...validObservationAttribution, extra: true }),
+    /공개 계약/u
+  );
+  const { ready, ...missingReady } = validObservationAttribution;
+  assert.equal(ready, true);
+  assert.throws(() => validatePublicObservationAttribution(missingReady), /공개 계약/u);
+  assert.throws(
+    () => validatePublicObservationAttribution(validObservationAttribution, { requireDatasetIdentity: true }),
+    /공개 계약/u
+  );
+  assert.throws(
+    () => validatePublicObservationAttribution({
+      ...validMetadataObservationAttribution,
+      datasetVersion: currentDatasetVersion,
+      datasetUpdatedAt: currentDatasetUpdatedAt
+    }, { requireDatasetIdentity: true }),
+    /공개 계약/u
+  );
+});
+
+test("관측자료 공급자 순서와 키 대응은 정확히 일치해야 한다", () => {
+  const twoProviders = {
+    ...validObservationAttribution,
+    providerIds: ["dwd", "kma_asos"],
+    providers: [validObservationProvider, validKmaProvider]
+  };
+  assert.deepEqual(validatePublicObservationAttribution(twoProviders), twoProviders);
+  for (const invalid of [
+    { ...twoProviders, providerIds: ["kma_asos", "dwd"] },
+    { ...twoProviders, providerIds: ["dwd", "dwd"] },
+    { ...twoProviders, providers: [validObservationProvider] },
+    { ...twoProviders, providers: [validKmaProvider, validObservationProvider] },
+    { ...validObservationAttribution, providerIds: [] },
+    { ...validObservationAttribution, usesObservationData: true, providerIds: [], providers: [] }
+  ]) {
+    assert.throws(() => validatePublicObservationAttribution(invalid), /공개 계약/u);
+  }
+
+  const { dataset, ...missingProviderField } = validObservationProvider;
+  assert.equal(dataset, "dwd_cdc_hourly_observations");
+  assert.throws(
+    () => validatePublicObservationAttribution({
+      ...validObservationAttribution,
+      providers: [missingProviderField]
+    }),
+    /공개 계약/u
+  );
+  assert.throws(
+    () => validatePublicObservationAttribution({
+      ...validObservationAttribution,
+      providers: [{ ...validObservationProvider, backendPath: "redacted" }]
+    }),
+    /공개 계약/u
+  );
+
+  const accessorAttribution = structuredClone(validObservationAttribution);
+  Object.defineProperty(accessorAttribution, "ready", {
+    enumerable: true,
+    get() {
+      return true;
+    }
+  });
+  assert.throws(
+    () => validatePublicObservationAttribution(accessorAttribution),
+    /공개 계약/u
+  );
+});
+
+test("라이선스 주소는 공개 HTTPS 주소만 허용한다", () => {
+  assert.deepEqual(validatePublicObservationAttribution(validObservationAttribution), validObservationAttribution);
+  assert.deepEqual(validatePublicObservationAttribution({
+    ...validObservationAttribution,
+    providers: [{ ...validObservationProvider, licenseUrl: "" }]
+  }).providers[0].licenseUrl, "");
+
+  for (const licenseUrl of [
+    "http://www.dwd.de/license",
+    "file:///private/license.txt",
+    "/relative/license",
+    "https://localhost/license",
+    "https://127.0.0.1/license",
+    "https://user:secret@www.dwd.de/license",
+    "https://www.dwd.de:8443/license",
+    "https://license.example/path",
+    "https://internal.local/path",
+    "https://storage.googleapis.com/private-bucket/license.txt",
+    "https://private-bucket.storage.googleapis.com/license.txt",
+    "https://storage.cloud.google.com/private-bucket/license.txt",
+    "https://bucket.s3.ap-northeast-2.amazonaws.com/license.txt",
+    "https://bucket.blob.core.windows.net/private/license.txt",
+    "https://good.example.org/ <img src=x onerror=alert(1)>",
+    "https://www.dwd.de/license\n-injected"
+  ]) {
+    assert.throws(
+      () => validatePublicObservationAttribution({
+        ...validObservationAttribution,
+        providers: [{ ...validObservationProvider, licenseUrl }]
+      }),
+      /공개 계약/u
+    );
+  }
+});
+
+test("결과 표장은 안전한 PNG descriptor의 정확한 필드만 허용한다", () => {
+  const withMark = {
+    ...validObservationAttribution,
+    providerIds: ["kma_asos"],
+    providers: [validKmaProvider]
+  };
+  assert.deepEqual(validatePublicObservationAttribution(withMark), withMark);
+
+  const invalidMarks = [
+    { ...validKmaMark, path: "../kma_mark_1.png" },
+    { ...validKmaMark, path: "licenses\\kma_mark_1.png" },
+    { ...validKmaMark, path: "licenses/wrong.png" },
+    { ...validKmaMark, sha256: validKmaMark.sha256.toUpperCase() },
+    { ...validKmaMark, sha256: "a".repeat(63) },
+    { ...validKmaMark, sizeBytes: 0 },
+    { ...validKmaMark, sizeBytes: 1.5 },
+    { ...validKmaMark, mediaType: "image/svg+xml" },
+    { ...validKmaMark, sourceUrl: "https://example.invalid/mark.png" }
+  ];
+  const { sha256, ...missingHash } = validKmaMark;
+  assert.equal(sha256.length, 64);
+  invalidMarks.push(missingHash);
+
+  for (const mark of invalidMarks) {
+    assert.throws(
+      () => validatePublicObservationAttribution({
+        ...withMark,
+        providers: [{ ...validKmaProvider, markAssets: [mark] }]
+      }),
+      /공개 계약/u
+    );
+  }
+  assert.throws(
+    () => validatePublicObservationAttribution({
+      ...withMark,
+      providers: [{ ...validKmaProvider, markAssets: [validKmaMark, validKmaMark] }]
+    }),
+    /공개 계약/u
+  );
 });
 
 test("자료판 필드가 없는 이전 main 메타데이터는 거부한다", () => {
@@ -207,6 +451,14 @@ test("공개 준비 상태와 자료 기준이 불완전한 메타데이터는 �
     [],
     { ...validMetadata, publicSafe: false },
     { ...validMetadata, ready: false },
+    { ...validMetadata, attributionReady: false },
+    {
+      ...validMetadata,
+      observationAttribution: {
+        ...validMetadataObservationAttribution,
+        usesObservationData: true
+      }
+    },
     { ...validMetadata, datasetVersion: "" },
     { ...validMetadata, datasetVersion: "A".repeat(64) },
     { ...validMetadata, datasetVersion: "a".repeat(63) },
@@ -355,6 +607,64 @@ test("단일 날짜와 기간 응답은 공개 허용 목록을 통과해야 한
     }),
     /공개 계약/u
   );
+});
+
+test("원자료 query와 series는 준비된 빈 관측 출처 계약으로 통과한다", () => {
+  const rawQuery = {
+    ...validQueryResponse,
+    dataMode: "raw-model-grid",
+    attributionReady: false,
+    observationAttribution: validRawObservationAttribution
+  };
+  const rawSeries = {
+    ...validSeriesResponse,
+    dataMode: "raw-model-grid",
+    attributionReady: false,
+    attributionLabels: ["국제기후모델 시나리오 원자료"],
+    observationAttribution: validRawObservationAttribution
+  };
+  assert.deepEqual(validatePublicClimateQueryResponse(rawQuery), rawQuery);
+  assert.deepEqual(validatePublicClimateSeriesResponse(rawSeries), rawSeries);
+
+  for (const invalid of [
+    { ...rawQuery, attributionReady: true },
+    { ...rawQuery, observationAttribution: validObservationAttribution },
+    {
+      ...rawQuery,
+      observationAttribution: {
+        ...validRawObservationAttribution,
+        ready: false
+      }
+    },
+    { ...rawSeries, attributionReady: true },
+    { ...rawSeries, observationAttribution: validObservationAttribution }
+  ]) {
+    const validator = "metrics" in invalid
+      ? validatePublicClimateSeriesResponse
+      : validatePublicClimateQueryResponse;
+    assert.throws(() => validator(invalid), /공개 계약/u);
+  }
+});
+
+test("보정 결과는 legacy ready=false 또는 빈 공급자 출처를 거부한다", () => {
+  const legacyAttribution = {
+    schemaVersion: 1,
+    ready: false,
+    usesObservationData: false,
+    providerIds: [],
+    providers: []
+  };
+  for (const invalid of [
+    { ...validQueryResponse, observationAttribution: legacyAttribution },
+    { ...validQueryResponse, observationAttribution: validRawObservationAttribution },
+    { ...validSeriesResponse, observationAttribution: legacyAttribution },
+    { ...validSeriesResponse, observationAttribution: validRawObservationAttribution }
+  ]) {
+    const validator = "metrics" in invalid
+      ? validatePublicClimateSeriesResponse
+      : validatePublicClimateQueryResponse;
+    assert.throws(() => validator(invalid), /공개 계약/u);
+  }
 });
 
 test("단일 날짜와 기간 응답은 자료판 필드를 반드시 포함해야 한다", () => {

@@ -4,7 +4,8 @@ import { pathToFileURL } from "node:url";
 
 import {
   computeMountedDatasetVersion,
-  createReleasePointer
+  createReleasePointer,
+  validateMountedDatasetPublication
 } from "./release-candidate-data.mjs";
 import { ProductionDeploymentError } from "./start-production-gateway.mjs";
 
@@ -16,14 +17,28 @@ export async function createReleasePointerFile({
   outputPath,
   fileSystem = fs
 }) {
-  const root = path.resolve(requiredText(mountRoot, "마운트 루트"));
+  const rootCandidate = path.resolve(requiredText(mountRoot, "마운트 루트"));
   const output = path.resolve(requiredText(outputPath, "출력 경로"));
   const normalizedRelativePath = requiredText(relativePath, "자료판 상대경로").replaceAll("\\", "/");
   const normalizedPointerRelativePath = requiredText(pointerRelativePath, "포인터 대상 상대경로").replaceAll("\\", "/");
-  const webDataRoot = path.resolve(root, ...normalizedRelativePath.split("/"));
-  if (!isPathWithin(root, webDataRoot)) {
+  const webDataCandidate = path.resolve(rootCandidate, ...normalizedRelativePath.split("/"));
+  if (!isPathWithin(rootCandidate, webDataCandidate)) {
     throw new ProductionDeploymentError("자료판 경로가 마운트 루트를 벗어났습니다.");
   }
+  const root = await resolveExistingDirectory(
+    fileSystem,
+    rootCandidate,
+    "마운트 루트의 실제 경로를 확인할 수 없습니다."
+  );
+  const webDataRoot = await resolveExistingDirectory(
+    fileSystem,
+    webDataCandidate,
+    "자료판의 실제 경로를 확인할 수 없습니다."
+  );
+  if (!isPathWithin(root, webDataRoot)) {
+    throw new ProductionDeploymentError("자료판 실제 경로가 마운트 루트를 벗어났습니다.");
+  }
+  await validateMountedDatasetPublication(webDataRoot);
   const datasetVersion = await computeMountedDatasetVersion(webDataRoot, { fileSystem });
   const pointer = createReleasePointer({
     releaseId,
@@ -70,6 +85,16 @@ function isPathWithin(rootPath, candidatePath) {
     && relative !== ".."
     && !relative.startsWith(`..${path.sep}`)
     && !path.isAbsolute(relative);
+}
+
+async function resolveExistingDirectory(fileSystem, target, message) {
+  try {
+    const stat = await fileSystem.lstat(target);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("invalid-directory");
+    return await fileSystem.realpath(target);
+  } catch {
+    throw new ProductionDeploymentError(message);
+  }
 }
 
 function isMainEntry(metaUrl = import.meta.url, argvEntry = process.argv[1]) {

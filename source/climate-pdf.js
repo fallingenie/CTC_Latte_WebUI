@@ -6,22 +6,20 @@ import {
 import {
   BIAS_CORRECTED_DATA_MODE,
   RAW_MODEL_GRID_DATA_MODE,
-  buildPublicExportAttribution
+  buildPublicExportAttribution,
+  resolveVerifiedObservationMarkAssets,
+  verifyLocalObservationMarkAssetBytes
 } from "./export-attribution.js";
+import { validatePublicObservationAttribution } from "./runtime-policy.js";
 
 const A4_LANDSCAPE = [841.89, 595.28];
 const A4_PORTRAIT = [595.28, 841.89];
-const MARK_PATHS = Object.freeze([
-  "./assets/licenses/kma_mark_1.png",
-  "./assets/licenses/kma_mark_2.png"
-]);
 const FONT_PATH = new URL(
   "../node_modules/pretendard/dist/public/static/alternative/Pretendard-Regular.ttf",
   import.meta.url
 ).href;
 const MISSING_YEAR_LABEL = "저장소 메타데이터 미기재";
 const DATASET_VERSION_PATTERN = /^[0-9a-f]{64}$/u;
-const PNG_SIGNATURE = Object.freeze([137, 80, 78, 71, 13, 10, 26, 10]);
 const PRIVATE_PATH_PATTERNS = Object.freeze([
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u,
   /\b(?:file|gs|gcs|s3|az|ssh):\/\//iu,
@@ -47,13 +45,16 @@ export function selectPdfAttributionModels(modelName) {
 }
 
 export function pdfSourceStatement(response) {
-  if (response?.dataMode === RAW_MODEL_GRID_DATA_MODE) {
-    return "선택 좌표의 CMIP6 기후 모델 격자 원자료(raw grid)를 사용했으며, 대한민국 기상청(KMA) ASOS 관측 보정은 적용하지 않았습니다.";
+  const dataMode = response?.dataMode;
+  if (dataMode !== RAW_MODEL_GRID_DATA_MODE && dataMode !== BIAS_CORRECTED_DATA_MODE) {
+    throw new TypeError("PDF 자료 유형은 raw-model-grid 또는 bias-corrected여야 합니다.");
   }
-  if (response?.dataMode === BIAS_CORRECTED_DATA_MODE) {
-    return "CMIP6 기후 모델 원자료를 대한민국 기상청(KMA) ASOS 관측자료로 보정한 결과입니다.";
+  const observationAttribution = requirePdfObservationAttribution(response?.observationAttribution, dataMode);
+  if (dataMode === RAW_MODEL_GRID_DATA_MODE) {
+    return "선택 좌표의 CMIP6 기후 모델 격자 원자료(raw grid)를 사용했으며, 이 결과에는 관측자료 보정을 사용하지 않았습니다.";
   }
-  throw new TypeError("PDF 자료 유형은 raw-model-grid 또는 bias-corrected여야 합니다.");
+  const providerNames = observationAttribution.providers.map((provider) => provider.name).join(", ");
+  return `CMIP6 기후 모델 원자료를 ${providerNames} 관측자료로 보정한 결과입니다.`;
 }
 
 export function verifiedPdfCcByLicense(citation) {
@@ -82,16 +83,15 @@ export function buildPdfAttributionContent(response) {
   const context = normalizePdfResponse(response);
   const attribution = buildPublicExportAttribution({
     dataMode: context.dataMode,
-    model: context.model
+    model: context.model,
+    observationAttribution: context.observationAttribution
   });
+  const observationMarkAssets = resolveVerifiedObservationMarkAssets(attribution.observationAttribution);
   const content = {
     context,
     sourceStatement: pdfSourceStatement(context),
-    asosCorrection: {
-      used: attribution.asosCorrection.used,
-      notice: attribution.asosCorrection.notice,
-      source: attribution.asosCorrection.source
-    },
+    observationAttribution: attribution.observationAttribution,
+    observationMarkAssets,
     project: {
       title: attribution.project.title,
       version: attribution.project.version,
@@ -118,34 +118,41 @@ export function buildPdfAttributionContent(response) {
 export async function buildClimatePdfBlob(canvas, response) {
   validateReportCanvas(canvas);
   const content = buildPdfAttributionContent(response);
-  const [{ PDFDocument, rgb }, fontkitModule, fontBytes, markOneBytes, markTwoBytes] = await Promise.all([
+  const [{ PDFDocument, rgb }, fontkitModule, fontBytes, markPayloads] = await Promise.all([
     import("pdf-lib"),
     import("@pdf-lib/fontkit"),
     fetchBytes(FONT_PATH),
-    fetchBytes(MARK_PATHS[0]),
-    fetchBytes(MARK_PATHS[1])
+    Promise.all(content.observationMarkAssets.map(async (asset) => ({
+      asset,
+      bytes: await fetchBytes(asset.sourceUrl)
+    })))
   ]);
-  assertPngBytes(markOneBytes);
-  assertPngBytes(markTwoBytes);
+  await Promise.all(markPayloads.map(({ asset, bytes }) => assertVerifiedPngAsset(bytes, asset)));
 
   const pdf = await PDFDocument.create();
   pdf.registerFontkit(fontkitModule.default ?? fontkitModule);
   const font = await pdf.embedFont(fontBytes, { subset: false });
-  const [markOne, markTwo] = await Promise.all([
-    pdf.embedPng(markOneBytes),
-    pdf.embedPng(markTwoBytes)
-  ]);
+  const embeddedMarks = await Promise.all(markPayloads.map(async ({ asset, bytes }) => ({
+    ...asset,
+    image: await pdf.embedPng(bytes)
+  })));
   const generatedDate = new Date(content.context.generatedAt);
   pdf.setTitle("기후 변화 기간 자료 보고서");
   pdf.setAuthor(content.project.creator.displayName);
   pdf.setCreator(content.project.creator.displayName);
-  pdf.setSubject("CMIP6 격자 원자료와 대한민국 기상청 KMA ASOS 보정 자료의 출처 및 인용 부록 포함");
-  pdf.setKeywords(["CMIP6", "ScenarioMIP", "기후 시나리오", "KMA", "ASOS", "attribution"]);
+  pdf.setSubject("CMIP6 기후 자료와 실제 사용한 관측자료 공급자의 출처 및 인용 부록 포함");
+  pdf.setKeywords([
+    "CMIP6",
+    "ScenarioMIP",
+    "기후 시나리오",
+    "attribution",
+    ...content.observationAttribution.providerIds
+  ]);
   pdf.setCreationDate(generatedDate);
   pdf.setModificationDate(generatedDate);
 
   await appendCanvasPages(pdf, canvas);
-  appendAttributionPages(pdf, content, font, markOne, markTwo, rgb);
+  appendAttributionPages(pdf, content, font, embeddedMarks, rgb);
   return new Blob([await pdf.save()], { type: "application/pdf" });
 }
 
@@ -215,7 +222,7 @@ export function pdfCanvasSliceRanges({ width, height, pageBreaks = [] }) {
   return slices;
 }
 
-function appendAttributionPages(pdf, content, font, markOne, markTwo, rgb) {
+function appendAttributionPages(pdf, content, font, embeddedMarks, rgb) {
   const colors = {
     ink: rgb(0.06, 0.12, 0.1),
     muted: rgb(0.34, 0.41, 0.38),
@@ -233,15 +240,24 @@ function appendAttributionPages(pdf, content, font, markOne, markTwo, rgb) {
   writer.paragraph(`datasetUpdatedAt: ${content.context.datasetUpdatedAt}`, { size: 8.5, lineHeight: 12, color: colors.muted });
   writer.paragraph(`generatedAt: ${content.context.generatedAt}`, { size: 8.5, lineHeight: 12, color: colors.muted, after: 12 });
 
-  writer.heading("대한민국 기상청(KMA) ASOS", 13);
-  writer.paragraph(`보정 상태: ${content.asosCorrection.notice}`, { color: colors.green });
-  const sourcePrefix = content.asosCorrection.used ? "관측자료 출처" : "참고 출처(이 결과 계산에는 미사용)";
-  writer.paragraph(`${sourcePrefix}: ${content.asosCorrection.source.organization} · ${content.asosCorrection.source.title}`);
-  writer.paragraph(content.asosCorrection.source.url, { size: 8.5, lineHeight: 12, color: colors.muted, after: 10 });
-  writer.imageRow([
-    { image: markOne, width: 120 },
-    { image: markTwo, width: 100 }
-  ]);
+  writer.heading("관측자료 출처 및 라이선스", 13);
+  if (content.observationAttribution.providers.length === 0) {
+    writer.paragraph("이 결과에는 관측자료 공급자 또는 결과 표시 마크가 사용되지 않았습니다.", { color: colors.muted });
+  }
+  for (const provider of content.observationAttribution.providers) {
+    writer.heading(`${provider.name} · ${provider.dataset}`, 10.5);
+    writer.paragraph(`인용: ${provider.citation}`);
+    writer.paragraph(`출처 표시: ${provider.attributionText}`);
+    writer.paragraph(`라이선스: ${provider.licenseName}`, { size: 8.8, lineHeight: 12, color: colors.green });
+    if (provider.licenseUrl) {
+      writer.paragraph(provider.licenseUrl, { size: 8.5, lineHeight: 12, color: colors.muted });
+    }
+    writer.paragraph(`재배포 조건: ${provider.redistributionPolicy}`, { size: 8.5, lineHeight: 12, color: colors.muted, after: 10 });
+    const providerMarks = embeddedMarks
+      .filter((mark) => mark.providerIds.includes(provider.providerId))
+      .map((mark) => ({ image: mark.image, width: 100 }));
+    if (providerMarks.length > 0) writer.imageRow(providerMarks);
+  }
 
   writer.rule();
   writer.heading("프로젝트와 이용 조건", 13);
@@ -250,7 +266,7 @@ function appendAttributionPages(pdf, content, font, markOne, markTwo, rgb) {
   writer.paragraph(`GitHub: ${content.project.creator.githubHandle} · ${content.project.creator.githubUrl}`, { size: 9, lineHeight: 13 });
   writer.paragraph(`공개 저장소: ${content.project.repositoryUrl}`, { size: 9, lineHeight: 13 });
   writer.paragraph(`소스 코드 라이선스: ${content.project.license.title} (${content.project.license.identifier})`, { size: 9, lineHeight: 13 });
-  writer.paragraph("데이터셋·논문·기상청 자료의 이용 조건은 각 원 출처와 저장소 attribution 메타데이터를 우선합니다. 확인되지 않은 별도 라이선스는 부여하지 않습니다.", { size: 9, lineHeight: 13, color: colors.muted });
+  writer.paragraph("데이터셋·논문·관측자료의 이용 조건은 각 원 출처와 저장소 attribution 메타데이터를 우선합니다. 확인되지 않은 별도 라이선스는 부여하지 않습니다.", { size: 9, lineHeight: 13, color: colors.muted });
 
   writer.startSection("CMIP6 / ScenarioMIP 데이터셋 인용", { newPage: true });
   writer.heading("CMIP6 / ScenarioMIP 데이터셋 인용", 14);
@@ -410,7 +426,10 @@ function normalizePdfResponse(response) {
     throw new TypeError("PDF에 넣을 공개 기후 자료가 없습니다.");
   }
   const dataMode = response.dataMode;
-  pdfSourceStatement({ dataMode });
+  if (dataMode !== RAW_MODEL_GRID_DATA_MODE && dataMode !== BIAS_CORRECTED_DATA_MODE) {
+    throw new TypeError("PDF 자료 유형은 raw-model-grid 또는 bias-corrected여야 합니다.");
+  }
+  const observationAttribution = requirePdfObservationAttribution(response.observationAttribution, dataMode);
   const datasetVersion = requirePublicText(response.datasetVersion, "datasetVersion");
   if (!DATASET_VERSION_PATTERN.test(datasetVersion)) {
     throw new TypeError("PDF datasetVersion을 확인할 수 없습니다.");
@@ -427,8 +446,31 @@ function normalizePdfResponse(response) {
     longitude: requireCoordinate(response.longitude, -180, 180, "경도"),
     datasetVersion,
     datasetUpdatedAt,
-    generatedAt
+    generatedAt,
+    observationAttribution
   };
+}
+
+function requirePdfObservationAttribution(value, dataMode) {
+  let attribution;
+  try {
+    attribution = validatePublicObservationAttribution(value);
+  } catch {
+    throw new TypeError("PDF 관측자료 출처 정보를 확인할 수 없습니다.");
+  }
+  const rawOnly = dataMode === RAW_MODEL_GRID_DATA_MODE
+    && attribution.ready === true
+    && attribution.usesObservationData === false
+    && attribution.providerIds.length === 0
+    && attribution.providers.length === 0;
+  const observationResult = dataMode === BIAS_CORRECTED_DATA_MODE
+    && attribution.ready === true
+    && attribution.usesObservationData === true
+    && attribution.providerIds.length > 0;
+  if (!rawOnly && !observationResult) {
+    throw new TypeError("PDF 자료 유형과 관측자료 출처 정보가 일치하지 않습니다.");
+  }
+  return attribution;
 }
 
 function requireTimestamp(value, label) {
@@ -547,10 +589,8 @@ async function fetchBytes(path) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-function assertPngBytes(bytes) {
-  const valid = bytes.byteLength > PNG_SIGNATURE.length
-    && PNG_SIGNATURE.every((byte, index) => bytes[index] === byte);
-  if (!valid) throw new Error("출처 표시 원본 자산이 유효한 PNG가 아닙니다.");
+async function assertVerifiedPngAsset(bytes, asset) {
+  await verifyLocalObservationMarkAssetBytes(asset, bytes);
 }
 
 function canvasBlob(canvas, type, quality) {

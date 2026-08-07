@@ -5,26 +5,43 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { VERIFIED_LOCAL_RESULT_MARK_ASSETS } from "../source/export-attribution.js";
+
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const canonicalAssets = [
   {
-    relativePath: "source/public/assets/licenses/kma_mark_1.png",
-    size: 7485,
+    name: "kma_mark_1.png",
+    path: "licenses/kma_mark_1.png",
+    sourceUrl: "./assets/licenses/kma_mark_1.png",
+    sizeBytes: 7485,
     sha256: "8248bb099a0c05b9819d60a9423673582d143cfc909cc22a9ffcb3e6770c6b06"
   },
   {
-    relativePath: "source/public/assets/licenses/kma_mark_2.png",
-    size: 10205,
+    name: "kma_mark_2.png",
+    path: "licenses/kma_mark_2.png",
+    sourceUrl: "./assets/licenses/kma_mark_2.png",
+    sizeBytes: 10205,
     sha256: "4e489d7721cd2b629c28a0aebb54e3f7668f257185949e77fda9b008f35ed8f8"
   }
 ];
 
-test("KMA attribution assets match the Backend origin/main canonical files", async () => {
-  for (const asset of canonicalAssets) {
-    const bytes = await fs.readFile(path.join(root, ...asset.relativePath.split("/")));
+test("WebUI의 로컬 결과 표장 catalog는 실제 배포 PNG의 name·path·SHA·size와 일치한다", async () => {
+  assert.deepEqual(VERIFIED_LOCAL_RESULT_MARK_ASSETS.map((asset) => ({
+    name: asset.name,
+    path: asset.path,
+    sourceUrl: asset.sourceUrl,
+    sizeBytes: asset.sizeBytes,
+    sha256: asset.sha256
+  })), canonicalAssets);
 
-    assert.equal(bytes.byteLength, asset.size, `${asset.relativePath} size`);
-    assert.equal(sha256(bytes), asset.sha256, `${asset.relativePath} SHA-256`);
+  for (const asset of canonicalAssets) {
+    const relativePath = `source/public/${asset.sourceUrl.replace(/^\.\//u, "")}`;
+    const bytes = await fs.readFile(path.join(root, ...relativePath.split("/")));
+
+    assert.equal(bytes.byteLength, asset.sizeBytes, `${relativePath} size`);
+    assert.equal(sha256(bytes), asset.sha256, `${relativePath} SHA-256`);
+    assert.notEqual(asset.path, asset.sourceUrl, "Backend descriptor path를 fetch URL로 사용하면 안 됩니다.");
+    assert.match(asset.sourceUrl, /^\.\/assets\/licenses\/[A-Za-z0-9._-]+\.png$/u);
   }
 });
 

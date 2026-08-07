@@ -32,11 +32,27 @@ test("현재 조회 상태와 비교 자료를 최종 단계 잠금 상태에 �
   assert.match(source, /type: TEACHER_FLOW_ACTIONS\.SET_COMPARISON_MATERIALS,[\s\S]*?materials: comparisonPoints/u);
   assert.match(source, /resolveTeacherQueryStatus\(remoteState\.status, lessonMetrics, requiredTeacherMetricKeys\)/u);
   assert.match(source, /teacherQueryStatus === TEACHER_QUERY_STATUSES\.READY[\s\S]*?isMatchingPublicDatasetIdentity\(remoteState\.response, metadata\?\.datasetVersion, metadata\?\.datasetUpdatedAt\)/u);
-  assert.match(source, /hasCurrentTeacherResult \? createMetricSnapshot\(lessonMetrics/u);
+  assert.match(source, /hasCurrentTeacherResult \? createMetricSnapshot\(visibleLessonMetrics/u);
   assert.match(source, /type: TEACHER_FLOW_ACTIONS\.SET_QUERY_STATUS,[\s\S]*?status: teacherQueryStatus/u);
   assert.match(source, /validateTeacherReviewReadiness\(teacherFlowState\)/u);
   assert.match(source, /messages: teacherReviewValidation\.errors\.map/u);
   assert.match(source, /disabled: !currentSnapshot \|\| teacherQueryStatus !== TEACHER_QUERY_STATUSES\.READY/u);
+});
+
+test("교사가 직접 만든 질문과 지표 및 결과물을 같은 단계 흐름과 학생 링크에 연결한다", () => {
+  assert.match(source, /const startCustomTeacherLesson = \(\) =>/u);
+  assert.match(source, /lessonId: CUSTOM_TEACHER_LESSON_ID/u);
+  assert.match(source, /교사가 직접 수업 만들기/u);
+  assert.match(source, /학생에게 제시할 질문/u);
+  assert.match(source, /살펴볼 기후 지표/u);
+  assert.match(source, /학생이 완성할 결과물/u);
+  assert.match(source, /customLesson: customLessonReadyForShare \? customLessonSharePayload/u);
+  assert.match(source, /problem: activeProblem/u);
+  assert.match(source, /enabled: isActivityComposition \|\| isReviewAndShare/u);
+  assert.match(source, /const customActivityIdentity = `\$\{customLessonDraft\.metricKeys\.join\(","\)\}\|\$\{customLessonDraft\.periodStart\}\|\$\{customLessonDraft\.periodEnd\}`/u);
+  assert.match(source, /if \(!isCustomTeacherLesson\) return;[\s\S]*?setComparisonPoints\(\[\]\);[\s\S]*?setTeacherFileDelivery\(null\);[\s\S]*?\[customActivityIdentity, isCustomTeacherLesson\]/u);
+  assert.match(styleSource, /\.teacher-custom-start[\s\S]*?min-height: 44px/u);
+  assert.match(styleSource, /\.teacher-metric-picker label[\s\S]*?min-height: 44px/u);
 });
 
 test("단계 통합 뒤에도 학생 링크와 자료 내보내기 및 DOCX 저장 계약을 유지한다", () => {

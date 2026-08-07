@@ -24,6 +24,8 @@ const DATASET_UPDATED_AT_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d
 const PUBLIC_DATASET_METADATA_ALLOWED_FIELDS = Object.freeze([
   "publicSafe",
   "ready",
+  "attributionReady",
+  "observationAttribution",
   "datasetVersion",
   "datasetUpdatedAt",
   "dateStart",
@@ -54,6 +56,7 @@ const PUBLIC_QUERY_RESPONSE_ALLOWED_FIELDS = Object.freeze([
   "values[].rawValue",
   "values[].rawNumericValue",
   "attributionReady",
+  "observationAttribution",
   "publicSafe",
   "generatedAt",
   "datasetVersion",
@@ -91,6 +94,7 @@ const PUBLIC_SERIES_RESPONSE_ALLOWED_FIELDS = Object.freeze([
   "includeRaw",
   "attributionReady",
   "attributionLabels",
+  "observationAttribution",
   "publicSafe",
   "generatedAt",
   "datasetVersion",
@@ -106,6 +110,53 @@ const PUBLIC_RETRYABLE_ERROR_ALLOWED_FIELDS = Object.freeze([
 const PUBLIC_API_ALLOWED_FIELD_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(?:\[\])?(?:\.[A-Za-z][A-Za-z0-9_]*(?:\[\])?)*$/u;
 const PUBLIC_API_RESPONSE_ERROR = "공개 기후 자료 응답이 허용된 공개 계약과 맞지 않습니다.";
 const PUBLIC_CLIMATE_ATTRIBUTION_LABEL_SET = new Set(PUBLIC_CLIMATE_ATTRIBUTION_LABELS);
+const PUBLIC_OBSERVATION_ATTRIBUTION_SCHEMA_VERSION = 1;
+const PUBLIC_OBSERVATION_ATTRIBUTION_FIELDS = Object.freeze([
+  "providerIds",
+  "providers",
+  "ready",
+  "schemaVersion",
+  "usesObservationData"
+]);
+const PUBLIC_OBSERVATION_ATTRIBUTION_WITH_IDENTITY_FIELDS = Object.freeze([
+  "datasetUpdatedAt",
+  "datasetVersion",
+  ...PUBLIC_OBSERVATION_ATTRIBUTION_FIELDS
+].sort());
+const PUBLIC_OBSERVATION_PROVIDER_FIELDS = Object.freeze([
+  "attributionRequired",
+  "attributionText",
+  "citation",
+  "dataset",
+  "licenseName",
+  "licenseUrl",
+  "markAssets",
+  "name",
+  "providerId",
+  "redistributionPolicy",
+  "requiresResultMark",
+  "usedRowCount"
+]);
+const PUBLIC_OBSERVATION_MARK_FIELDS = Object.freeze([
+  "mediaType",
+  "name",
+  "path",
+  "sha256",
+  "sizeBytes"
+]);
+const PUBLIC_OBSERVATION_PROVIDER_ID_PATTERN = /^[a-z0-9](?:[a-z0-9_]{0,126}[a-z0-9])?$/u;
+const PUBLIC_OBSERVATION_MARK_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?\.png$/u;
+const PUBLIC_HTTPS_HOST_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
+const PUBLIC_OBSERVATION_TEXT_FORBIDDEN_PATTERNS = Object.freeze([
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u,
+  /\b(?:file|gs|gcs|s3|az|ssh|git):\/\//iu,
+  /\bhttp:\/\//iu,
+  /\b(?:drive\.google\.com|storage\.googleapis\.com|storage\.cloud\.google\.com|console\.cloud\.google\.com)\b/iu,
+  /(?:^|[\s"'`(=,:])(?:[a-z]:[\\/]|\\\\[^\\\s]+[\\/])/imu,
+  /(?:^|[\s"'`(=])\/(?:home|users|mnt|tmp|var|srv|opt|volumes)(?:\/|$)/imu,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]+/iu,
+  /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u
+]);
 const PUBLIC_API_FORBIDDEN_EXTENSION_FIELD_PATTERN = /^(?:(?:.*_)?(?:path|url|uri|auth|authentication|authorization|credential|credentials|secret|secrets|token|tokens|password|passwords|bearer|jwt|cookie|cookies)|(?:file|folder|bucket|project|storage|repository|repo)_id|(?:api|access|secret)_key)$/u;
 const PUBLIC_API_FORBIDDEN_TEXT_PATTERNS = Object.freeze([
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u,
@@ -195,6 +246,65 @@ export function adaptCompatiblePublicApiResponse(value, allowedFields) {
   }
 }
 
+export function validatePublicObservationAttribution(
+  value,
+  { requireDatasetIdentity = false } = {}
+) {
+  try {
+    if (typeof requireDatasetIdentity !== "boolean" || !isPlainRecord(value)) {
+      throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+    }
+    const expectedFields = requireDatasetIdentity
+      ? PUBLIC_OBSERVATION_ATTRIBUTION_WITH_IDENTITY_FIELDS
+      : PUBLIC_OBSERVATION_ATTRIBUTION_FIELDS;
+    requireExactFields(value, expectedFields);
+    if (value.schemaVersion !== PUBLIC_OBSERVATION_ATTRIBUTION_SCHEMA_VERSION
+      || typeof value.ready !== "boolean"
+      || typeof value.usesObservationData !== "boolean"
+      || !Array.isArray(value.providerIds)
+      || !Array.isArray(value.providers)) {
+      throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+    }
+
+    const providerIds = value.providerIds.map(requireObservationProviderId);
+    if (new Set(providerIds).size !== providerIds.length) {
+      throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+    }
+    const providers = value.providers.map(validatePublicObservationProvider);
+    if (providers.length !== providerIds.length
+      || providers.some((provider, index) => provider.providerId !== providerIds[index])) {
+      throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+    }
+    if ((!value.ready && (value.usesObservationData || providerIds.length > 0))
+      || (value.usesObservationData && providerIds.length === 0)) {
+      throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+    }
+
+    const projected = {
+      schemaVersion: PUBLIC_OBSERVATION_ATTRIBUTION_SCHEMA_VERSION,
+      ready: value.ready,
+      usesObservationData: value.usesObservationData,
+      providerIds,
+      providers
+    };
+    if (requireDatasetIdentity) {
+      const datasetVersion = normalizeDatasetVersion(value.datasetVersion);
+      const datasetUpdatedAt = normalizeDatasetUpdatedAt(value.datasetUpdatedAt);
+      if (!datasetVersion
+        || !datasetUpdatedAt
+        || value.ready !== true
+        || value.usesObservationData !== (providerIds.length > 0)) {
+        throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+      }
+      projected.datasetVersion = datasetVersion;
+      projected.datasetUpdatedAt = datasetUpdatedAt;
+    }
+    return projected;
+  } catch {
+    throw new Error(PUBLIC_API_RESPONSE_ERROR);
+  }
+}
+
 export function validatePublicDatasetMetadata(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || value.publicSafe !== true || value.ready !== true) {
@@ -209,7 +319,11 @@ export function validatePublicDatasetMetadata(value) {
 
   const datasetVersion = normalizeDatasetVersion(value.datasetVersion);
   const datasetUpdatedAt = normalizeDatasetUpdatedAt(value.datasetUpdatedAt);
-  if (!datasetVersion || !datasetUpdatedAt) {
+  if (!datasetVersion
+    || !datasetUpdatedAt
+    || typeof value.attributionReady !== "boolean"
+    || value.observationAttribution?.usesObservationData !== false
+    || value.attributionReady !== value.observationAttribution?.ready) {
     throw new Error("기후 자료 기준 정보를 확인할 수 없습니다.");
   }
 
@@ -344,8 +458,22 @@ function createAllowedPublicApiFieldSet(value) {
 
 function validatePublicClimateResponse(value, allowedFields) {
   const response = adaptCompatiblePublicApiResponse(value, allowedFields);
+  const observationAttribution = response.observationAttribution;
+  const rawOnly = response.dataMode === "raw-model-grid";
+  const observationResult = response.dataMode === "bias-corrected";
+  const validRawAttribution = rawOnly
+    && response.attributionReady === false
+    && observationAttribution?.ready === true
+    && observationAttribution.usesObservationData === false
+    && observationAttribution.providerIds.length === 0
+    && observationAttribution.providers.length === 0;
+  const validObservationAttribution = observationResult
+    && response.attributionReady === true
+    && observationAttribution?.ready === true
+    && observationAttribution.usesObservationData === true
+    && observationAttribution.providerIds.length > 0;
   if (response.publicSafe !== true
-    || response.attributionReady !== true
+    || (!validRawAttribution && !validObservationAttribution)
     || !normalizeDatasetVersion(response.datasetVersion)
     || !normalizeDatasetUpdatedAt(response.datasetUpdatedAt)) {
     throw new Error(PUBLIC_API_RESPONSE_ERROR);
@@ -379,6 +507,10 @@ function validatePublicApiNode(value, path, allowedFieldSet, ancestors) {
   for (const [key, nestedValue] of Object.entries(value)) {
     const fieldPath = path ? `${path}.${key}` : key;
     if (!allowedFieldSet.has(fieldPath)) throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+    if (fieldPath === "observationAttribution") {
+      validatePublicObservationAttribution(nestedValue);
+      continue;
+    }
     validatePublicApiNode(nestedValue, fieldPath, allowedFieldSet, ancestors);
   }
   ancestors.delete(value);
@@ -409,6 +541,10 @@ function projectCompatiblePublicApiNode(value, path, allowedFieldSet, ancestors)
   for (const [key, nestedValue] of Object.entries(value)) {
     const fieldPath = path ? `${path}.${key}` : key;
     if (allowedFieldSet.has(fieldPath)) {
+      if (fieldPath === "observationAttribution") {
+        projected[key] = validatePublicObservationAttribution(nestedValue);
+        continue;
+      }
       projected[key] = projectCompatiblePublicApiNode(nestedValue, fieldPath, allowedFieldSet, ancestors);
       continue;
     }
@@ -449,6 +585,124 @@ function validatePublicApiExtensionValue(value, ancestors) {
 
 function validatePublicApiText(value) {
   if (PUBLIC_API_FORBIDDEN_TEXT_PATTERNS.some((pattern) => pattern.test(value))) {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+}
+
+function validatePublicObservationProvider(value) {
+  if (!isPlainRecord(value)) throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  requireExactFields(value, PUBLIC_OBSERVATION_PROVIDER_FIELDS);
+  const providerId = requireObservationProviderId(value.providerId);
+  const markAssets = requireObservationMarkAssets(value.markAssets, value.requiresResultMark);
+  if (!Number.isSafeInteger(value.usedRowCount)
+    || value.usedRowCount <= 0
+    || value.attributionRequired !== true
+    || typeof value.requiresResultMark !== "boolean") {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+  return {
+    providerId,
+    name: requireObservationText(value.name, 500),
+    dataset: requireObservationText(value.dataset, 500),
+    licenseName: requireObservationText(value.licenseName, 1000),
+    licenseUrl: requirePublicLicenseUrl(value.licenseUrl),
+    citation: requireObservationText(value.citation, 4000),
+    attributionText: requireObservationText(value.attributionText, 4000),
+    redistributionPolicy: requireObservationText(value.redistributionPolicy, 1000),
+    usedRowCount: value.usedRowCount,
+    attributionRequired: value.attributionRequired,
+    requiresResultMark: value.requiresResultMark,
+    markAssets
+  };
+}
+
+function requireObservationMarkAssets(value, requiresResultMark) {
+  if (!Array.isArray(value) || typeof requiresResultMark !== "boolean") {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+  if ((requiresResultMark && value.length === 0) || (!requiresResultMark && value.length !== 0)) {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+  const names = new Set();
+  return value.map((mark) => {
+    if (!isPlainRecord(mark)) throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+    requireExactFields(mark, PUBLIC_OBSERVATION_MARK_FIELDS);
+    if (typeof mark.name !== "string"
+      || !PUBLIC_OBSERVATION_MARK_NAME_PATTERN.test(mark.name)
+      || mark.path !== `licenses/${mark.name}`
+      || typeof mark.sha256 !== "string"
+      || !DATASET_VERSION_PATTERN.test(mark.sha256)
+      || !Number.isSafeInteger(mark.sizeBytes)
+      || mark.sizeBytes <= 0
+      || mark.mediaType !== "image/png"
+      || names.has(mark.name)) {
+      throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+    }
+    names.add(mark.name);
+    return {
+      name: mark.name,
+      path: mark.path,
+      sha256: mark.sha256,
+      sizeBytes: mark.sizeBytes,
+      mediaType: "image/png"
+    };
+  });
+}
+
+function requireObservationProviderId(value) {
+  if (typeof value !== "string" || !PUBLIC_OBSERVATION_PROVIDER_ID_PATTERN.test(value)) {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+  return value;
+}
+
+function requireObservationText(value, maxLength) {
+  if (typeof value !== "string"
+    || value.length === 0
+    || value.length > maxLength
+    || value !== value.trim()
+    || PUBLIC_OBSERVATION_TEXT_FORBIDDEN_PATTERNS.some((pattern) => pattern.test(value))) {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+  return value;
+}
+
+function requirePublicLicenseUrl(value) {
+  if (value === "") return "";
+  if (typeof value !== "string"
+    || value.length > 2048
+    || value !== value.trim()
+    || /[\u0000-\u001F\u007F]/u.test(value)) {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  if (parsed.protocol !== "https:"
+    || parsed.href !== value
+    || parsed.username
+    || parsed.password
+    || parsed.port
+    || !PUBLIC_HTTPS_HOST_PATTERN.test(hostname)
+    || /\.(?:example|invalid|localhost|local|internal|lan|home|onion)$/u.test(hostname)
+    || /(?:^|\.)(?:drive\.google\.com|storage\.googleapis\.com|storage\.cloud\.google\.com|console\.cloud\.google\.com|s3\.amazonaws\.com)$/u.test(hostname)
+    || /(?:^|\.)s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/u.test(hostname)
+    || /\.(?:blob|dfs)\.core\.windows\.net$/u.test(hostname)) {
+    throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
+  }
+  return value;
+}
+
+function requireExactFields(value, expectedFields) {
+  const actual = Object.keys(value).sort();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (actual.length !== expectedFields.length
+    || actual.some((field, index) => field !== expectedFields[index])
+    || actual.some((field) => !descriptors[field]?.enumerable || !("value" in descriptors[field]))) {
     throw new TypeError(PUBLIC_API_RESPONSE_ERROR);
   }
 }

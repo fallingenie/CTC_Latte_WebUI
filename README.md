@@ -13,7 +13,7 @@
 
 ## 실행
 
-Node.js 20.19 이상 또는 22.12 이상과 pnpm이 필요합니다.
+일반 Frontend 개발에는 Node.js 20.19 이상 또는 22.12 이상과 pnpm이 필요합니다. `.ctwebui` publication 검증과 읽기 전용 Python 게이트웨이 통합에는 Python 3.12 이상이 추가로 필요합니다. 출시 컨테이너는 Python 3.13을 사용합니다. WebUI는 Backend 자료를 생성·정규화·재봉인하지 않습니다.
 
 ```powershell
 corepack pnpm install
@@ -42,25 +42,26 @@ corepack pnpm sync:deploy
 
 ```powershell
 corepack pnpm test
+corepack pnpm build
 corepack pnpm verify:reproducible
-corepack pnpm verify:deployment
+corepack pnpm verify:cloud-policy
 ```
 
 `pnpm test`는 실제자료 API 경로 제한, 날짜 확인, 지도 확대·축소, 원자료 CSV 열, 월별 체감 기준, CSV 출처 정보와 파일 저장 결과를 검증합니다. GitHub의 검증 워크플로는 Windows와 Linux에서 동일한 테스트와 재현 빌드를 실행합니다.
 
-`pnpm verify:deployment`는 새 빌드, 루트 산출물 재현성 검증, 운영 대상의 실시간 배포 확인을 순서대로 수행합니다.
+`verify:public-data`, `attest:production`, `verify:deployment`와 배포·승격 스크립트는 실서비스 Backend, GCS 또는 공개 후보 리비전을 조회하거나 변경할 수 있는 조율 대상입니다. Backend·배포 담당자의 명시적 승인과 정확한 자료판이 준비되기 전에는 실행하지 않습니다.
 
 실제자료 자체의 배열·API 일치 여부는 WebUI 저장소의 합성값으로 대신하지 않습니다. 운영 데이터 검증에서는 정본의 Zarr·Parquet를 직접 읽는 검증기와 같은 좌표·날짜·시나리오·모델을 조회하는 API 검증기를 함께 실행해야 합니다.
 
 ## 자료 연결
 
-브라우저의 기후자료 조회는 같은 출처의 `/api/climate/query`, `/api/climate/series`, `/api/climate/metadata`만 호출합니다. 지도 화면은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 타일 제공자에 연결됩니다. 실제 자료 서비스에서는 기후자료 API 계약을 읽기 전용 게이트웨이에 연결해야 합니다.
+브라우저의 공개 기후자료 계약은 같은 출처의 `/api/climate/query`, `/api/climate/series`, `/api/climate/metadata`, `/api/climate/attribution`으로 구성됩니다. 출시 서버는 공개 listener를 열기 전에 attribution endpoint의 exact schema v1과 metadata의 자료판 identity를 확인합니다. query와 series의 관측자료 출처는 결과별 실제 provider만을 나타내며, WebUI는 `dataMode`나 정적 카탈로그로 provider를 추론하지 않습니다. 지도 화면은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 타일 제공자에 연결됩니다.
 
-공개 Attribution 카탈로그에 고정된 프로젝트 제작자명, 공개 GitHub 프로필·프로젝트 저장소 링크와 DOI·인용 링크는 UI와 내보내기에서 의도적으로 허용합니다. 이 공개 출처 정보를 제외한 Google Drive·GCS 주소, 로컬·네트워크 경로와 토큰·자격 증명은 브라우저 UI 또는 내보내기에 포함하지 않습니다. GitHub Pages 연결 설정에는 검증된 공개 Cloud Run API 주소만 들어갑니다.
+프로젝트·CMIP6·방법론 인용은 Frontend 공개 카탈로그가 소유합니다. 관측 provider 이름, 데이터셋, 라이선스, 인용문, 사용 행 수와 결과 표장 요구는 Backend 응답의 exact `observationAttribution`만 사용합니다. 이 공개 출처 정보를 제외한 Google Drive·GCS 주소, 로컬·네트워크 경로와 토큰·자격 증명은 브라우저 UI 또는 내보내기에 포함하지 않습니다. GitHub Pages 연결 설정에는 검증된 공개 Cloud Run API 주소만 들어갑니다.
 
 운영 게이트웨이는 공개 객체 조회 전용 GCS의 준비된 Web 자료를 먼저 읽고, 해당 범위를 벗어난 조회는 Team Start가 정의한 GCS CMIP6 원자료로 보완합니다. 정적 화면은 GitHub Pages, 읽기 전용 질의 API는 공개 Cloud Run에서 제공합니다. 로컬 드라이브와 네트워크 공유 폴더는 개발·정합성 대조에만 사용할 수 있으며 운영 원본이나 장애 대체 경로로 허용하지 않습니다. `pnpm start:gateway:production`은 이 경계를 강제하고, `pnpm attest:production`은 외부 API와 loopback 게이트웨이의 실제 응답을 대조한 v3 확인서를 만듭니다. 배포 산출물과 서버 원본 정책은 `pnpm verify:cloud-policy` 및 `pnpm verify:deployment`로 확인합니다. 자세한 배포 차단 기준은 [배포 자료 원본 정책](docs/DEPLOYMENT_DATA_SOURCE_POLICY.md)을 참고하세요.
 
-기간 자료 내보내기의 CSV 출처 묶음, PDF, PNG, 대화형 HTML에는 자료 출처와 인용 정보를 포함해야 합니다. 대한민국 기상청 ASOS 자료 사용을 고지할 때는 변형·대체하지 않은 원본 `kma_mark_1.png`와 `kma_mark_2.png`를 함께 사용합니다. `raw-model-grid` 결과는 ASOS 관측 보정 미사용으로 명시하고 ASOS 자료를 사용했다는 인상을 주지 않아야 합니다. 논문과 자료 인용의 라이선스는 공개 Attribution 카탈로그에 값이 있을 때만 표시하며, 값이 없으면 추정하지 않습니다.
+기간 자료 내보내기의 CSV 출처 묶음, PDF, PNG, 대화형 HTML과 DOCX에는 실제 결과의 관측 provider와 인용 정보를 포함합니다. KMA 표장은 해당 provider descriptor가 요구하고 로컬 원본의 이름·SHA-256·크기·media type이 모두 일치할 때만 표시·내보냅니다. `raw-model-grid` 결과에는 관측 provider나 표장을 포함하지 않습니다. 프로젝트·CMIP6·방법론 인용의 라이선스는 Frontend 카탈로그에 값이 있을 때만 표시하며, 값이 없으면 추정하지 않습니다.
 
 지표 계산과 결측 처리 기준은 [자료 의미와 계산 기준](docs/DATA_SEMANTICS.md)을 참고하세요.
 

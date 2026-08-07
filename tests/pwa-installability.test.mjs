@@ -57,7 +57,7 @@ test("Android 아이콘은 192px, 512px와 마스크형 512px PNG를 갖는다",
 });
 
 test("설치용 셸은 실제 기후자료 API를 오프라인 캐시에 저장하지 않는다", () => {
-  assert.match(serviceWorkerSource, /const CACHE_NAME = "climate-web-shell-v19";/u);
+  assert.match(serviceWorkerSource, /const CACHE_NAME = "climate-web-shell-v20";/u);
   assert.match(viteConfigSource, /fileName: "app-shell-assets\.json"/u);
   assert.match(deploySyncSource, /"app-shell-assets\.json"/u);
   assert.match(serviceWorkerSource, /"assets\/icons\/app-icon-192\.png"/u);
@@ -66,8 +66,99 @@ test("설치용 셸은 실제 기후자료 API를 오프라인 캐시에 저장�
   assert.match(serviceWorkerSource, /url\.pathname\.startsWith\("\/api\/climate\/"\)\) return;/u);
   assert.match(serviceWorkerSource, /"app\.webmanifest"/u);
   assert.match(serviceWorkerSource, /cache\.put\(SHELL_ASSET_MANIFEST, response\)/u);
+  assert.doesNotMatch(
+    serviceWorkerSource,
+    /caches\.open\(CACHE_NAME\)\.then\(\(cache\) => cache\.put/u
+  );
   assert.doesNotMatch(serviceWorkerSource, /clients\.claim/u);
   assert.doesNotMatch(serviceWorkerSource, /caches\.put\([^\n]*api\/climate/u);
+});
+
+test("연결 설정은 앱 셸에 고정하지 않고 서버에서 먼저 갱신한다", () => {
+  const shellAssetsBlock = serviceWorkerSource.match(/const SHELL_ASSETS = \[(?<assets>[\s\S]*?)\]\.map/u);
+  assert.ok(shellAssetsBlock?.groups?.assets);
+  assert.doesNotMatch(shellAssetsBlock.groups.assets, /runtime-config\.json/u);
+  assert.match(serviceWorkerSource, /const RUNTIME_CONFIG = new URL\("runtime-config\.json", self\.location\.href\)\.toString\(\);/u);
+  assert.match(serviceWorkerSource, /if \(request\.url === RUNTIME_CONFIG\)/u);
+  assert.match(serviceWorkerSource, /fetch\(request, \{ cache: "no-store" \}\)/u);
+});
+
+test("연결 설정 요청은 네트워크 응답을 우선 사용하고 최신 응답을 보관한다", async () => {
+  const listeners = new Map();
+  const stored = [];
+  const fetchCalls = [];
+  let completeCacheWrite;
+  const cacheWrite = new Promise((resolve) => {
+    completeCacheWrite = resolve;
+  });
+  const networkResponse = {
+    ok: true,
+    clone() {
+      return this;
+    }
+  };
+  const context = {
+    URL,
+    Promise,
+    Set,
+    Error,
+    self: {
+      location: new URL("https://climate.example/app/sw.js"),
+      addEventListener(type, listener) {
+        listeners.set(type, listener);
+      }
+    },
+    caches: {
+      async open() {
+        return {
+          async put(request, response) {
+            stored.push({ request, response });
+            await cacheWrite;
+          }
+        };
+      },
+      async keys() {
+        return [];
+      },
+      async delete() {},
+      async match() {}
+    },
+    async fetch(request, options) {
+      fetchCalls.push({ request, options });
+      return networkResponse;
+    }
+  };
+  runInNewContext(serviceWorkerSource, context);
+
+  const request = {
+    destination: "",
+    method: "GET",
+    mode: "cors",
+    url: "https://climate.example/app/runtime-config.json"
+  };
+  let responsePromise;
+  listeners.get("fetch")({
+    request,
+    respondWith(promise) {
+      responsePromise = promise;
+    }
+  });
+
+  let responseSettled = false;
+  const observedResponse = responsePromise.then((response) => {
+    responseSettled = true;
+    return response;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stored.length, 1);
+  assert.equal(responseSettled, false);
+  completeCacheWrite();
+  assert.equal(await observedResponse, networkResponse);
+  assert.equal(fetchCalls.length, 1);
+  assert.equal(fetchCalls[0].request, request);
+  assert.equal(fetchCalls[0].options.cache, "no-store");
+  assert.equal(stored[0].request, request);
+  assert.equal(stored[0].response, networkResponse);
 });
 
 test("빌드는 해시 실행 자산만 정렬된 앱 셸 목록으로 만든다", () => {

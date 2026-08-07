@@ -7,7 +7,8 @@ import {
   validatePublicClimateQueryResponse,
   validatePublicClimateRetryableError,
   validatePublicClimateSeriesResponse,
-  validatePublicDatasetMetadata
+  validatePublicDatasetMetadata,
+  validatePublicObservationAttribution
 } from "../source/runtime-policy.js";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -185,8 +186,8 @@ export async function verifyPublicDataConsistency({
 }
 
 export function compareQueryAndSeries({ metadata, query, request, series, seriesRequest }) {
-  requireDatasetIdentity(metadata, query, "단일 날짜");
-  requireDatasetIdentity(metadata, series, "기간");
+  const queryAttribution = requireDatasetIdentity(metadata, query, "단일 날짜");
+  const seriesAttribution = requireDatasetIdentity(metadata, series, "기간");
   if (!sameCoordinate(query.latitude, request.latitude)
     || !sameCoordinate(query.longitude, request.longitude)
     || query.date !== request.date
@@ -205,6 +206,9 @@ export function compareQueryAndSeries({ metadata, query, request, series, series
     || series.dataMode !== query.dataMode
     || series.includeRaw !== seriesRequest.includeRaw) {
     throw new PublicDataConsistencyError("기간 응답이 무작위 표본 조건과 다릅니다.");
+  }
+  if (stableJson(queryAttribution) !== stableJson(seriesAttribution)) {
+    throw new PublicDataConsistencyError("단일 날짜와 기간 응답의 관측자료 출처 계약이 다릅니다.");
   }
 
   const seriesMetrics = new Map((series.metrics ?? []).map((metric) => [metric?.key, metric]));
@@ -341,6 +345,10 @@ function validateMetadata(value) {
   let metadata;
   try {
     metadata = validatePublicDatasetMetadata(value);
+    const attribution = validatePublicObservationAttribution(metadata.observationAttribution);
+    if (attribution.ready !== true || attribution.usesObservationData !== false) {
+      throw new TypeError("invalid metadata observation attribution");
+    }
   } catch {
     throw new PublicDataConsistencyError("공개 기후 자료 기준 정보가 올바르지 않습니다.");
   }
@@ -438,10 +446,32 @@ function randomDate({ startMs, endMs }, random) {
 function requireDatasetIdentity(metadata, response, label) {
   if (response.datasetVersion !== metadata.datasetVersion
     || response.datasetUpdatedAt !== metadata.datasetUpdatedAt
-    || response.publicSafe !== true
-    || response.attributionReady !== true) {
+    || response.publicSafe !== true) {
     throw new PublicDataConsistencyError(`${label} 응답의 자료판 또는 공개 안전 정보가 기준 정보와 다릅니다.`);
   }
+  return requireResponseObservationAttribution(response, label);
+}
+
+function requireResponseObservationAttribution(response, label) {
+  let attribution;
+  try {
+    attribution = validatePublicObservationAttribution(response?.observationAttribution);
+  } catch {
+    throw new PublicDataConsistencyError(`${label} 응답의 관측자료 출처 계약이 올바르지 않습니다.`);
+  }
+  const observationResult = response.dataMode === "bias-corrected";
+  const rawResult = response.dataMode === "raw-model-grid";
+  const hasExpectedProviders = observationResult
+    ? attribution.providerIds.length > 0
+    : attribution.providerIds.length === 0 && attribution.providers.length === 0;
+  if ((!observationResult && !rawResult)
+    || attribution.ready !== true
+    || attribution.usesObservationData !== observationResult
+    || response.attributionReady !== observationResult
+    || !hasExpectedProviders) {
+    throw new PublicDataConsistencyError(`${label} 응답의 관측자료 출처 계약이 자료 방식과 다릅니다.`);
+  }
+  return attribution;
 }
 
 function sameCoordinate(left, right) {

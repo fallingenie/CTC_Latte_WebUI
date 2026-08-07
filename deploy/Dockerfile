@@ -1,6 +1,10 @@
-FROM node:22-bookworm-slim AS frontend-build
+FROM node:22-trixie-slim AS frontend-build
 
 WORKDIR /build/frontend
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends python3 \
+    && python3 -c "import sys; assert sys.version_info >= (3, 12)" \
+    && rm -rf /var/lib/apt/lists/*
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile

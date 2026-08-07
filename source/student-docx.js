@@ -3,6 +3,7 @@ import {
   BorderStyle,
   Document,
   HeadingLevel,
+  ImageRun,
   Packer,
   Paragraph,
   ShadingType,
@@ -14,6 +15,14 @@ import {
   VerticalAlign,
   WidthType
 } from "docx";
+import {
+  BIAS_CORRECTED_DATA_MODE,
+  RAW_MODEL_GRID_DATA_MODE,
+  buildPublicExportAttribution,
+  resolveVerifiedObservationMarkAssets,
+  verifyLocalObservationMarkAssetBytes
+} from "./export-attribution.js";
+import { validatePublicObservationAttribution } from "./runtime-policy.js";
 import {
   formatCoordinatePair,
   formatPublicMetricValue,
@@ -138,8 +147,8 @@ function outputPlanTable(outputs) {
   const rows = [new TableRow({
     tableHeader: true,
     children: [
-      tableCell("만들 결과물", { fill: colors.accent, bold: true, color: colors.white, width: 38 }),
-      tableCell("자료에서 확인한 내용", { fill: colors.accent, bold: true, color: colors.white, width: 62 })
+      tableCell("완성할 결과물", { fill: colors.accent, bold: true, color: colors.white, width: 38 }),
+      tableCell("자료에서 찾은 근거", { fill: colors.accent, bold: true, color: colors.white, width: 62 })
     ]
   })];
   outputs.forEach((output) => rows.push(new TableRow({
@@ -163,7 +172,7 @@ function metricTable(snapshot) {
     tableHeader: true,
     children: [
       tableCell("기후 지표", { fill: colors.accent, bold: true, color: colors.white, width: 45 }),
-      tableCell("선택한 자료의 값", { fill: colors.accent, bold: true, color: colors.white, width: 55 })
+      tableCell("조회한 값", { fill: colors.accent, bold: true, color: colors.white, width: 55 })
     ]
   })];
   snapshot.values.forEach((metric) => {
@@ -232,7 +241,7 @@ function comparisonTable(baseline, comparison) {
       tableCell("기후 지표", { fill: colors.accent, bold: true, color: colors.white, width: 28 }),
       tableCell("첫 번째 자료", { fill: colors.accent, bold: true, color: colors.white, width: 24 }),
       tableCell("두 번째 자료", { fill: colors.accent, bold: true, color: colors.white, width: 24 }),
-      tableCell("변화", { fill: colors.accent, bold: true, color: colors.white, width: 24 })
+      tableCell("차이", { fill: colors.accent, bold: true, color: colors.white, width: 24 })
     ]
   })];
 
@@ -262,6 +271,8 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
   if (!baseline) {
     throw new TypeError("학생 탐구 기록을 만들려면 먼저 비교할 자료가 필요합니다.");
   }
+  const attributionContent = buildDocxAttributionContent([baseline, comparison].filter(Boolean));
+  const attributionMarks = await loadVerifiedDocxMarks(attributionContent.markAssets);
 
   const overviewRows = [["탐구 주제", cleanText(focusLabel, 80) || "자유 탐구"]];
   if (problem?.presentation?.title) overviewRows.push(["탐구 제목", cleanText(problem.presentation.title, 200)]);
@@ -275,7 +286,7 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
     overviewRows.push(["탐구 기간", `${cleanText(problem.dataPlan.periodStart, 20)} ~ ${cleanText(problem.dataPlan.periodEnd, 20)}`]);
   }
   if (problem?.roles?.student?.output?.length) {
-    overviewRows.push(["만들 결과물", problem.roles.student.output.map((item) => cleanText(item, 200)).join(" · ")]);
+    overviewRows.push(["완성할 결과물", problem.roles.student.output.map((item) => cleanText(item, 200)).join(" · ")]);
   }
   if (problem?.inquiry?.interpretationLimit) {
     overviewRows.push(["해석할 때 주의할 점", cleanText(problem.inquiry.interpretationLimit, 1200)]);
@@ -299,7 +310,7 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
       size: 42,
       spacing: { after: 90 }
     }),
-    textParagraph("실제 기후 시나리오에서 가져온 두 자료를 비교하는 활동", {
+    textParagraph("실제 기후 시나리오 자료 두 가지를 비교하는 활동", {
       color: colors.muted,
       size: 21,
       spacing: { after: 220 }
@@ -333,7 +344,7 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
   let nextSectionNumber = comparison ? 4 : 2;
   if (cleanText(conclusion, 200)) {
     children.push(
-      textParagraph(`${nextSectionNumber}. 자료가 보여주는 가능성`, {
+      textParagraph(`${nextSectionNumber}. 자료로 판단한 가능성`, {
         color: colors.accent,
         heading: HeadingLevel.HEADING_2,
         size: 28,
@@ -346,7 +357,7 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
   }
 
   children.push(
-    textParagraph(`${nextSectionNumber}. 나의 발견`, {
+    textParagraph(`${nextSectionNumber}. 내가 찾은 점`, {
       color: colors.accent,
       heading: HeadingLevel.HEADING_2,
       size: 28,
@@ -381,7 +392,8 @@ export async function buildStudentNotebookDocx({ baseline, comparison, conclusio
       color: colors.muted,
       size: 18,
       spacing: { after: 0, line: 280 }
-    })
+    }),
+    ...docxAttributionSection(attributionContent, attributionMarks, `${nextSectionNumber + 1}. 자료 출처와 인용`)
   );
 
   const document = new Document({
@@ -507,7 +519,7 @@ function teachingFlowTable({ inquiryQuestion, studentPrompt, requirements }) {
     ["단계", "학생 활동", "교사가 확인할 점"],
     [
       ["질문 이해", cleanText(inquiryQuestion, 1000) || "탐구 질문을 읽고 알고 싶은 점을 정합니다.", "처음 생각과 그 까닭을 먼저 적게 합니다."],
-      ["가설 세우기", "자료를 보기 전에 나타날 수 있는 결과를 예상합니다.", "정답을 고르게 하기보다 여러 가능성을 열어 둡니다."],
+      ["가설 세우기", "자료를 보기 전에 나타날 수 있는 결과를 예상합니다.", "한 가지 답으로 몰아가기보다 여러 가능성을 열어 둡니다."],
       ["자료 비교", cleanText(studentPrompt, 1200) || "위치·기간·기후 모델을 바꾸어 자료를 비교합니다.", `서로 다른 지점 ${minimumSites}곳과 기후 모델 ${minimumModels}개 이상을 확인하게 합니다.`],
       ["근거 정리", "그래프와 표에서 결론을 뒷받침하는 값을 고릅니다.", "자료가 없는 경우를 0으로 바꾸지 않았는지 확인합니다."],
       ["결론 쓰기", "주장·근거·한계가 드러나도록 결과를 정리합니다.", "한 가지 결과를 미래 전체의 확정된 사실처럼 쓰지 않게 합니다."]
@@ -524,7 +536,7 @@ function studentResponseTable() {
     "그래프나 표에서 찾은 가장 중요한 값",
     "다른 기후 모델에서 같거나 다르게 나타난 점",
     "자료만으로 설명하기 어려운 점과 추가로 필요한 자료",
-    "자료가 보여 주는 가능성과 최종 결론"
+    "자료로 판단한 가능성과 결론"
   ];
   const rows = [new TableRow({
     tableHeader: true,
@@ -576,14 +588,14 @@ function extensionSections(problem) {
   }
   if (problem?.mystery) {
     sections.push(
-      subsectionHeading("생각을 바로잡는 수업 진행"),
+      subsectionHeading("선입견을 다시 살펴보는 수업"),
       ...[
         "좌표와 지명을 숨긴 네 가지 기후 지표를 먼저 보여 줍니다.",
         "학생이 후보를 고르고 자료에서 찾은 근거를 말하게 합니다.",
         "두 비교 지점의 계절별 자료를 나란히 살펴봅니다.",
-        `위치를 공개한 뒤 ‘${cleanText(problem.mystery.reveal?.answer, 100)}’이라고 판단할 수 있는 범위와 한계를 구분합니다.`
+        `위치를 공개한 뒤 ‘${cleanText(problem.mystery.reveal?.answer, 100)}’이라고 판단한 근거와 이 자료만으로는 알기 어려운 점을 나눠 확인합니다.`
       ].map(bulletParagraph),
-      subsectionHeading("교사가 먼저 확인한 자료"),
+      subsectionHeading("교사가 미리 확인할 자료"),
       ...Object.values(problem.validationEvidence ?? {}).map((item) => bulletParagraph(item))
     );
   }
@@ -609,6 +621,8 @@ export async function buildTeacherActivityDocx({
   if (usableSnapshots.length === 0) {
     throw new TypeError("수업 활동지를 만들려면 비교할 기후 자료가 하나 이상 필요합니다.");
   }
+  const attributionContent = buildDocxAttributionContent(usableSnapshots);
+  const attributionMarks = await loadVerifiedDocxMarks(attributionContent.markAssets);
 
   const resolvedQuestion = cleanText(inquiryQuestion ?? problem?.inquiry?.question, 1000);
   const resolvedObjective = cleanText(objective ?? problem?.inquiry?.objective, 1000) || "기후 자료를 비교하고 근거와 한계를 설명합니다.";
@@ -625,7 +639,7 @@ export async function buildTeacherActivityDocx({
   const resolvedSites = problem?.dataPlan?.sites?.length
     ? problem.dataPlan.sites
     : usableSnapshots.map((snapshot) => ({
-      detail: "저장된 비교 자료",
+      detail: "수업 화면에서 저장한 자료",
       label: snapshot.label,
       latitude: snapshot.latitude,
       longitude: snapshot.longitude
@@ -661,7 +675,7 @@ export async function buildTeacherActivityDocx({
       size: 42,
       spacing: { after: 90 }
     }),
-    textParagraph("실제 기후 시나리오 자료를 바탕으로 수업 흐름과 비교 근거를 정리한 문서", {
+    textParagraph("실제 기후 시나리오 자료로 수업 순서와 비교 근거를 정리한 문서", {
       color: colors.muted,
       size: 21,
       spacing: { after: 220 }
@@ -671,7 +685,7 @@ export async function buildTeacherActivityDocx({
     ...[
       "탐구 설계와 비교 기준",
       "기간·지점·기후 지표를 포함한 자료 계획",
-      "현재 수업에서 저장한 실제 기후 자료",
+      "수업 화면에서 저장한 실제 기후 자료",
       "학생 기록지와 교사 평가표",
       "자료 해석 범위와 확장 활동"
     ].map(bulletParagraph),
@@ -684,7 +698,7 @@ export async function buildTeacherActivityDocx({
     ...(resolvedHypotheses.length ? resolvedHypotheses : ["자료를 비교한 뒤 판단합니다."]).map(checkboxParagraph),
     subsectionHeading("결론에 필요한 근거"),
     evidenceRequirementTable(resolvedRequirements),
-    pageSectionHeading("2. 수업 진행 흐름"),
+    pageSectionHeading("2. 수업 진행 순서"),
     teachingFlowTable({ inquiryQuestion: resolvedQuestion, studentPrompt: resolvedStudentPrompt, requirements: resolvedRequirements }),
     pageSectionHeading("3. 자료 준비 계획"),
     subsectionHeading("살펴볼 기간과 기후 지표"),
@@ -700,7 +714,7 @@ export async function buildTeacherActivityDocx({
     ),
     subsectionHeading("비교할 지점"),
     plannedSiteTable(resolvedSites),
-    textParagraph("아래 실제 비교 자료에는 수업 화면에서 직접 확인하고 저장한 값만 들어갑니다. 계획에 있는 다른 지점의 값은 임의로 채우지 않습니다.", {
+    textParagraph("아래 비교 자료에는 수업 화면에서 직접 확인해 저장한 값만 담았습니다. 계획에만 있는 다른 지점의 값은 넣지 않았습니다.", {
       color: colors.muted,
       size: 18,
       spacing: { before: 160, after: 0, line: 280 }
@@ -712,9 +726,9 @@ export async function buildTeacherActivityDocx({
   usableSnapshots.forEach((snapshot, index) => {
     children.push(...conditionSection(`${sectionNumber}. 실제 비교 자료 ${index + 1}`, snapshot, { pageBreakBefore: true }));
     children.push(
-      subsectionHeading("이 자료에서 확인할 내용"),
+      subsectionHeading("이 자료를 볼 때 확인할 점"),
       ...[
-        "선택한 날짜의 값이 탐구 기간 전체를 대표한다고 단정하지 않습니다.",
+        "선택한 날짜의 값 하나로 탐구 기간 전체를 판단하지 않습니다.",
         "같은 지점에서 날짜나 기후 모델을 바꾸었을 때 값이 어떻게 달라지는지 확인합니다.",
         "자료가 제공되지 않은 기후 지표는 0이 아니라 ‘자료 없음’으로 기록합니다."
       ].map(bulletParagraph)
@@ -726,7 +740,7 @@ export async function buildTeacherActivityDocx({
     children.push(
       pageSectionHeading(`${sectionNumber}. 첫 번째 자료와 두 번째 자료의 차이`),
       comparisonTable(usableSnapshots[0], usableSnapshots[1]),
-      subsectionHeading("차이를 읽을 때 확인할 질문"),
+      subsectionHeading("차이를 살펴볼 때 확인할 질문"),
       ...[
         "두 자료에서 같은 기후 지표를 비교했나요?",
         "위치·날짜·배출 경로·기후 모델 가운데 무엇이 달라졌나요?",
@@ -738,7 +752,7 @@ export async function buildTeacherActivityDocx({
 
   children.push(
     pageSectionHeading(`${sectionNumber}. 학생 활동 기록지`),
-    textParagraph("그래프와 표에서 직접 확인한 값을 근거로 작성하세요. 자료가 보여 주지 않는 원인은 추측과 확인된 사실을 구분해 적습니다.", {
+    textParagraph("그래프와 표에서 직접 확인한 값을 근거로 작성하세요. 자료에 나오지 않은 원인을 설명할 때는 추측과 확인된 사실을 구분해 적으세요.", {
       color: colors.muted,
       size: 19,
       spacing: { after: 120, line: 300 }
@@ -749,7 +763,7 @@ export async function buildTeacherActivityDocx({
 
   children.push(
     pageSectionHeading(`${sectionNumber}. 학생 결과물 정리`),
-    textParagraph("각 결과물에는 사용한 위치·기간·배출 경로·기후 모델과 그래프 또는 표에서 확인한 근거를 함께 적습니다.", {
+    textParagraph("결과물마다 사용한 위치·기간·배출 경로·기후 모델과 그래프 또는 표에서 확인한 근거를 함께 적으세요.", {
       color: colors.muted,
       size: 19,
       spacing: { after: 120, line: 300 }
@@ -762,7 +776,7 @@ export async function buildTeacherActivityDocx({
     pageSectionHeading(`${sectionNumber}. 교사 지도와 평가`),
     subsectionHeading("평가 기준"),
     assessmentTable(resolvedAssessment.length ? resolvedAssessment : ["자료에서 확인한 근거와 해석의 한계를 함께 적는다"]),
-    subsectionHeading("학생에게 되물을 질문"),
+    subsectionHeading("학생의 생각을 넓히는 질문"),
     ...[
       "그 결론을 뒷받침하는 날짜와 값은 무엇인가요?",
       "다른 지점이나 기후 모델에서도 같은 결과가 나타났나요?",
@@ -785,10 +799,17 @@ export async function buildTeacherActivityDocx({
     subsectionHeading("다음 탐구로 이어 가기"),
     ...[
       "다른 배출 경로 또는 다른 시기의 자료에서도 같은 경향이 나타나는지 확인합니다.",
-      "여러 기후 모델의 공통점뿐 아니라 서로 다른 결과도 함께 기록합니다.",
-      "기후 모델 자료와 지역 관측 자료가 나타내는 공간 규모의 차이를 구분합니다."
+      "여러 기후 모델의 공통점과 차이점을 모두 기록합니다.",
+      "기후 모델 자료와 지역 관측 자료가 각각 어느 정도로 넓은 지역을 나타내는지 구분합니다."
     ].map(bulletParagraph)
   );
+  sectionNumber += 1;
+
+  children.push(...docxAttributionSection(
+    attributionContent,
+    attributionMarks,
+    `${sectionNumber}. 자료 출처와 인용`
+  ));
 
   const document = new Document({
     creator: "기후 타임캡슐",
@@ -814,4 +835,210 @@ export async function buildTeacherActivityDocx({
   });
 
   return Packer.toBlob(document);
+}
+
+export function buildDocxAttributionContent(snapshots) {
+  if (!Array.isArray(snapshots) || snapshots.length === 0) {
+    throw new TypeError("DOCX 출처를 확인할 비교 자료가 필요합니다.");
+  }
+  const records = snapshots.map((snapshot) => {
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+      throw new TypeError("DOCX 출처를 확인할 비교 자료가 올바르지 않습니다.");
+    }
+    const observationAttribution = requireDocxObservationAttribution(
+      snapshot.observationAttribution,
+      snapshot.dataMode
+    );
+    return buildPublicExportAttribution({
+      dataMode: snapshot.dataMode,
+      model: snapshot.model,
+      observationAttribution
+    });
+  });
+
+  const providers = [];
+  const providerFingerprints = new Map();
+  const markAssets = [];
+  const markFingerprints = new Map();
+  const climateModels = [];
+  const modelNames = new Set();
+  for (const record of records) {
+    for (const provider of record.observationAttribution.providers) {
+      const fingerprint = observationProviderFingerprint(provider);
+      const previous = providerFingerprints.get(provider.providerId);
+      if (previous && previous !== fingerprint) {
+        throw new TypeError(`DOCX 비교 자료의 관측자료 공급자 정보가 서로 다릅니다: ${provider.providerId}`);
+      }
+      if (!previous) {
+        providerFingerprints.set(provider.providerId, fingerprint);
+        providers.push(provider);
+      }
+    }
+    for (const asset of resolveVerifiedObservationMarkAssets(record.observationAttribution)) {
+      const key = asset.name;
+      const { providerIds, ...staticAsset } = asset;
+      const fingerprint = JSON.stringify(staticAsset);
+      const previous = markFingerprints.get(key);
+      if (previous && previous.fingerprint !== fingerprint) {
+        throw new TypeError(`DOCX 비교 자료의 결과 표시 마크가 서로 다릅니다: ${asset.name}`);
+      }
+      if (!previous) {
+        markFingerprints.set(key, { fingerprint, index: markAssets.length });
+        markAssets.push({ ...asset, providerIds: [...providerIds] });
+      } else {
+        markAssets[previous.index].providerIds = [
+          ...new Set([...markAssets[previous.index].providerIds, ...providerIds])
+        ];
+      }
+    }
+    for (const model of record.climateModels) {
+      if (modelNames.has(model.name)) continue;
+      modelNames.add(model.name);
+      climateModels.push(model);
+    }
+  }
+
+  return deepFreeze({
+    project: records[0].project,
+    providers,
+    markAssets,
+    climateModels,
+    methodologyReferences: records[0].methodologyReferences
+  });
+}
+
+function requireDocxObservationAttribution(value, dataMode) {
+  if (dataMode !== RAW_MODEL_GRID_DATA_MODE && dataMode !== BIAS_CORRECTED_DATA_MODE) {
+    throw new TypeError("DOCX 자료 유형은 raw-model-grid 또는 bias-corrected여야 합니다.");
+  }
+  let attribution;
+  try {
+    attribution = validatePublicObservationAttribution(value);
+  } catch {
+    throw new TypeError("DOCX 관측자료 출처 정보를 확인할 수 없습니다.");
+  }
+  const rawOnly = dataMode === RAW_MODEL_GRID_DATA_MODE
+    && attribution.ready === true
+    && attribution.usesObservationData === false
+    && attribution.providerIds.length === 0
+    && attribution.providers.length === 0;
+  const observationResult = dataMode === BIAS_CORRECTED_DATA_MODE
+    && attribution.ready === true
+    && attribution.usesObservationData === true
+    && attribution.providerIds.length > 0;
+  if (!rawOnly && !observationResult) {
+    throw new TypeError("DOCX 자료 유형과 관측자료 출처 정보가 일치하지 않습니다.");
+  }
+  return attribution;
+}
+
+function observationProviderFingerprint(provider) {
+  const { usedRowCount: _ignored, ...staticFields } = provider;
+  return JSON.stringify(staticFields);
+}
+
+function docxAttributionSection(content, marks, title) {
+  const children = [
+    pageSectionHeading(title),
+    subsectionHeading("실제 사용한 관측자료 공급자")
+  ];
+  if (content.providers.length === 0) {
+    children.push(textParagraph("이 문서의 비교 자료에는 관측자료 공급자 또는 결과 표시 마크가 사용되지 않았습니다.", {
+      color: colors.muted,
+      size: 19,
+      spacing: { after: 140, line: 300 }
+    }));
+  }
+  for (const provider of content.providers) {
+    children.push(
+      textParagraph(`${provider.name} · ${provider.dataset}`, { bold: true, size: 21 }),
+      textParagraph(`인용: ${provider.citation}`, { size: 19 }),
+      textParagraph(`출처 표시: ${provider.attributionText}`, { size: 19 }),
+      textParagraph(`라이선스: ${provider.licenseName}`, { size: 19, color: colors.accent }),
+      ...(provider.licenseUrl ? [textParagraph(provider.licenseUrl, { size: 18, color: colors.muted })] : []),
+      textParagraph(`재배포 조건: ${provider.redistributionPolicy}`, { size: 18, color: colors.muted })
+    );
+    const providerMarks = marks.filter((mark) => mark.providerIds.includes(provider.providerId));
+    if (providerMarks.length > 0) {
+      children.push(new Paragraph({
+        children: providerMarks.map((mark) => new ImageRun({
+          data: mark.bytes,
+          transformation: docxMarkDimensions(mark.bytes, 160),
+          type: "png"
+        })),
+        spacing: { before: 80, after: 160 }
+      }));
+    }
+  }
+
+  children.push(
+    subsectionHeading("프로젝트와 이용 조건"),
+    textParagraph(`프로젝트: ${content.project.title} ${content.project.version}`, { size: 19 }),
+    textParagraph(`공개 제작자: ${content.project.creator.displayName}`, { size: 19 }),
+    textParagraph(`공개 저장소: ${content.project.repositoryUrl}`, { size: 18, color: colors.muted }),
+    textParagraph(`소스 코드 라이선스: ${content.project.license.title} (${content.project.license.identifier})`, { size: 18, color: colors.muted }),
+    subsectionHeading("CMIP6 / ScenarioMIP 데이터셋 인용")
+  );
+  for (const model of content.climateModels) {
+    children.push(textParagraph(`${model.name} · ${model.institution}`, { bold: true, size: 20 }));
+    for (const citation of model.citations) {
+      children.push(textParagraph(formatDocxCatalogCitation(citation), { size: 18, color: colors.muted }));
+    }
+  }
+  children.push(subsectionHeading("자료 처리 방법론 인용"));
+  content.methodologyReferences.forEach((reference) => {
+    children.push(textParagraph(formatDocxCatalogCitation(reference), { size: 18, color: colors.muted }));
+  });
+  return children;
+}
+
+function formatDocxCatalogCitation(citation) {
+  const authors = Array.isArray(citation.authors)
+    ? citation.authors.map((author) => author.name ?? [author.givenNames, author.familyName].filter(Boolean).join(" ")).filter(Boolean).join("; ")
+    : "";
+  const year = Number.isInteger(citation.year) ? ` (${citation.year})` : "";
+  const source = citation.source?.doi ? ` DOI: ${citation.source.doi}` : "";
+  const license = citation.license ? ` 라이선스: ${citation.license}` : "";
+  return `${authors}${year}. ${citation.title}.${source}${license}`;
+}
+
+async function loadVerifiedDocxMarks(markAssets) {
+  return Promise.all(markAssets.map(async (asset) => {
+    const response = await fetch(asset.sourceUrl, {
+      method: "GET",
+      credentials: "same-origin",
+      cache: "force-cache"
+    });
+    if (!response?.ok || typeof response.arrayBuffer !== "function") {
+      throw new Error("출처 표시 자산을 불러오지 못해 DOCX 생성을 중단했습니다.");
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    await assertVerifiedDocxPng(bytes, asset);
+    return { ...asset, bytes };
+  }));
+}
+
+async function assertVerifiedDocxPng(bytes, asset) {
+  await verifyLocalObservationMarkAssetBytes(asset, bytes);
+}
+
+function docxMarkDimensions(bytes, maximumWidth) {
+  const width = readPngUint32(bytes, 16);
+  const height = readPngUint32(bytes, 20);
+  if (width <= 0 || height <= 0) throw new Error("DOCX 출처 표시 PNG 크기를 확인할 수 없습니다.");
+  const targetWidth = Math.min(width, maximumWidth);
+  return { width: targetWidth, height: targetWidth * height / width };
+}
+
+function readPngUint32(bytes, offset) {
+  return bytes[offset] * 0x1000000
+    + bytes[offset + 1] * 0x10000
+    + bytes[offset + 2] * 0x100
+    + bytes[offset + 3];
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nestedValue of Object.values(value)) deepFreeze(nestedValue);
+  return Object.freeze(value);
 }

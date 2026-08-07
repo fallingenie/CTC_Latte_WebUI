@@ -29,6 +29,20 @@ const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const fixedDatasetTime = new Date("2026-07-13T16:22:20.121Z");
 const backendDatasetTime = "2026-07-13T16:22:20.121000+00:00";
 const cloudDatasetTime = "2026-07-20T03:13:14.000000+00:00";
+const observationProvider = Object.freeze({
+  providerId: "dwd",
+  name: "Deutscher Wetterdienst Climate Data Center",
+  dataset: "dwd_cdc_hourly_observations",
+  licenseName: "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+  licenseUrl: "https://www.dwd.de/EN/service/legal_notice/templates_dwd_as_source.html",
+  citation: "Deutscher Wetterdienst, Climate Data Center hourly station observations.",
+  attributionText: "Based on data from Deutscher Wetterdienst (DWD), Climate Data Center; processed by Climate Time Capsule.",
+  redistributionPolicy: "cc_by_4_0_with_source_and_modification_notice",
+  usedRowCount: 37,
+  attributionRequired: true,
+  requiresResultMark: false,
+  markAssets: []
+});
 
 test("운영 환경은 GCS 마운트 안의 Web 자료와 GCS 원자료만 허용한다", () => {
   const mountRoot = path.resolve("gcs-mount");
@@ -175,6 +189,8 @@ test("v3 확인서는 GCS 자료판 SHA와 UTC 갱신 시각, 두 Git SHA를 모
     backendCommitSha: "b".repeat(40),
     manifestSha256: "2".repeat(64),
     rawIndexSha256: "3".repeat(64),
+    preparedAttributionReady: true,
+    rawAttributionReady: true,
     verifiedAtUtc: "2026-07-15T03:04:05.006Z"
   });
 
@@ -277,6 +293,8 @@ test("실제 확인서 생성은 metadata, query, series가 같은 자료판일 
   assert.equal(value.datasetVersion, fixture.datasetVersion);
   assert.equal(value.datasetUpdatedAt, cloudDatasetTime);
   assert.equal(value.gateway.seriesVerified, true);
+  assert.equal(value.preparedData.attributionReady, true);
+  assert.equal(value.rawData.attributionReady, true);
   assert.ok(calls.includes("/api/climate/metadata"));
   assert.ok(calls.includes("/api/climate/query"));
   assert.ok(calls.includes("/api/climate/series"));
@@ -309,6 +327,56 @@ test("외부 query 응답이 원래 요청 조건과 다르면 확인서를 만�
   await assert.rejects(() => fs.access(outputPath));
 });
 
+test("관측자료 providerIds와 providers가 다르면 확인서를 만들지 않는다", async (context) => {
+  const fixture = await createFixture();
+  const outputPath = path.join(root, ".release-evidence", `test-attribution-provider-${randomUUID()}.json`);
+  context.after(async () => {
+    await fs.rm(fixture.tempRoot, { recursive: true, force: true });
+    await fs.rm(outputPath, { force: true });
+  });
+
+  const baseFetch = createGatewayFetch(fixture, []);
+  const fetchImplementation = async (url, options) => {
+    const response = await baseFetch(url, options);
+    if (new URL(url).pathname !== "/api/climate/query") return response;
+    const payload = await response.json();
+    if (payload.dataMode === "bias-corrected") {
+      payload.observationAttribution.providerIds = ["mismatched_provider"];
+    }
+    return jsonResponse(payload, 200);
+  };
+
+  await assert.rejects(
+    () => createProductionDataAttestation(createAttestationOptions(fixture, outputPath, fetchImplementation)),
+    /내부 주소|공개 운영 계약|관측자료 출처/u
+  );
+  await assert.rejects(() => fs.access(outputPath));
+});
+
+test("원자료 embedded 출처 계약의 legacy ready=false는 확인서를 만들지 않는다", async (context) => {
+  const fixture = await createFixture();
+  const outputPath = path.join(root, ".release-evidence", `test-attribution-ready-${randomUUID()}.json`);
+  context.after(async () => {
+    await fs.rm(fixture.tempRoot, { recursive: true, force: true });
+    await fs.rm(outputPath, { force: true });
+  });
+
+  const baseFetch = createGatewayFetch(fixture, []);
+  const fetchImplementation = async (url, options) => {
+    const response = await baseFetch(url, options);
+    if (new URL(url).pathname !== "/api/climate/query") return response;
+    const payload = await response.json();
+    if (payload.dataMode === "raw-model-grid") payload.observationAttribution.ready = false;
+    return jsonResponse(payload, 200);
+  };
+
+  await assert.rejects(
+    () => createProductionDataAttestation(createAttestationOptions(fixture, outputPath, fetchImplementation)),
+    /공개 운영 계약|관측자료 출처/u
+  );
+  await assert.rejects(() => fs.access(outputPath));
+});
+
 test("전 세계 원자료 series가 query의 자료 방식과 다르면 확인서를 만들지 않는다", async (context) => {
   const fixture = await createFixture();
   const outputPath = path.join(root, ".release-evidence", `test-raw-series-${randomUUID()}.json`);
@@ -330,7 +398,7 @@ test("전 세계 원자료 series가 query의 자료 방식과 다르면 확인�
 
   await assert.rejects(
     () => createProductionDataAttestation(createAttestationOptions(fixture, outputPath, fetchImplementation)),
-    /원래 요청 조건/u
+    /공개 운영 계약|원래 요청 조건/u
   );
   await assert.rejects(() => fs.access(outputPath));
 });
@@ -554,6 +622,8 @@ function createGatewayFetch(fixture, calls, { externalDatasetUpdatedAt = backend
       payload = {
         publicSafe: true,
         ready: true,
+        attributionReady: true,
+        observationAttribution: buildObservationAttribution(false, { includeProviders: true }),
         datasetVersion: fixture.datasetVersion,
         datasetUpdatedAt,
         dateStart: "2035-01-01",
@@ -573,7 +643,8 @@ function createGatewayFetch(fixture, calls, { externalDatasetUpdatedAt = backend
         coverage: "available",
         dataMode: prepared ? "bias-corrected" : "raw-model-grid",
         values: [{ key: "tasmax", available: true, numericValue: prepared ? 31.2 : 29.4 }],
-        attributionReady: true,
+        attributionReady: prepared,
+        observationAttribution: buildObservationAttribution(prepared),
         publicSafe: true,
         datasetVersion: fixture.datasetVersion,
         datasetUpdatedAt
@@ -593,8 +664,11 @@ function createGatewayFetch(fixture, calls, { externalDatasetUpdatedAt = backend
         dataMode: prepared ? "bias-corrected" : "raw-model-grid",
         metrics: [{ key: "tasmax", availableCount: 1 }],
         includeRaw: false,
-        attributionReady: true,
-        attributionLabels: ["국제기후모델 시나리오 자료"],
+        attributionReady: prepared,
+        attributionLabels: prepared
+          ? ["국제기후모델 시나리오 자료", "관측자료 기반 보정"]
+          : ["국제기후모델 시나리오 원자료"],
+        observationAttribution: buildObservationAttribution(prepared),
         publicSafe: true,
         datasetVersion: fixture.datasetVersion,
         datasetUpdatedAt
@@ -609,6 +683,17 @@ function createGatewayFetch(fixture, calls, { externalDatasetUpdatedAt = backend
       }
     }
     return jsonResponse(payload, 200);
+  };
+}
+
+function buildObservationAttribution(usesObservationData, { includeProviders = usesObservationData } = {}) {
+  const providers = includeProviders ? [{ ...observationProvider, markAssets: [] }] : [];
+  return {
+    schemaVersion: 1,
+    ready: true,
+    usesObservationData,
+    providerIds: providers.map((provider) => provider.providerId),
+    providers
   };
 }
 

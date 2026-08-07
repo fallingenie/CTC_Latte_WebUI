@@ -13,6 +13,7 @@ import {
   resolveTeacherQueryStatus,
   teacherStepFlowReducer,
   validateTeacherLessonConditions,
+  validateTeacherLessonSelection,
   validateTeacherReviewReadiness
 } from "../source/teacher-step-flow.js";
 
@@ -106,6 +107,28 @@ test("수업을 선택하기 전에는 수업 조건 단계로 이동할 수 없
   assert.equal(reduce(state, TEACHER_FLOW_ACTIONS.NEXT), state);
 });
 
+test("단계 잠금과 입력 안내는 교사 화면의 현재 용어를 그대로 사용한다", () => {
+  assert.equal(TEACHER_NAVIGATION_LABELS.locked, "필수 항목을 입력한 뒤 이동할 수 있는 단계");
+  assert.equal(
+    validateTeacherLessonSelection(createTeacherStepFlowState()).errors.find(({ field }) => field === "selectedLessonId")?.message,
+    "수업 주제를 선택하세요."
+  );
+  assert.equal(
+    validateTeacherLessonConditions(createConditionsStep({ location: null })).errors.find(({ field }) => field === "location")?.message,
+    "수업에서 살펴볼 위치를 선택하세요."
+  );
+
+  const reviewErrors = validateTeacherReviewReadiness(createActivityStep()).errors;
+  assert.equal(
+    reviewErrors.find(({ field }) => field === "comparisonMaterials")?.message,
+    "이 수업에 필요한 비교 자료를 모두 추가하세요."
+  );
+  assert.equal(
+    reviewErrors.find(({ field }) => field === "queryStatus")?.message,
+    "현재 수업 조건으로 기후 자료를 조회하세요."
+  );
+});
+
 test("제목·목표·위치·시나리오·모델은 모두 유효해야 한다", () => {
   const invalidConditions = [
     ["title", "   "],
@@ -157,6 +180,24 @@ test("이전 단계로 돌아갔다가 다시 와도 입력과 비교 자료를 
   assert.equal(state.currentStep, TEACHER_STEP_IDS.ACTIVITY_COMPOSITION);
   assert.deepEqual(state.conditions, savedConditions);
   assert.deepEqual(state.comparisonMaterials, savedMaterials);
+});
+
+test("직접 수업의 비교 조건을 바꾸면 기존 자료는 보존하고 최종 단계만 다시 잠근다", () => {
+  let state = createActivityStep();
+  state = reduce(state, TEACHER_FLOW_ACTIONS.SET_COMPARISON_MATERIALS, {
+    materials: [comparisonMaterial()]
+  });
+  state = reduce(state, TEACHER_FLOW_ACTIONS.SET_QUERY_STATUS, {
+    status: TEACHER_QUERY_STATUSES.READY
+  });
+  assert.equal(canEnterTeacherStep(state, TEACHER_STEP_IDS.REVIEW_AND_SHARE), true);
+
+  state = reduce(state, TEACHER_FLOW_ACTIONS.UPDATE_COMPARISON_REQUIREMENTS, {
+    requirements: { minimumSites: 2, minimumModels: 1, includeEnsemble: false }
+  });
+  assert.equal(state.comparisonMaterials.length, 1);
+  assert.equal(state.queryStatus, TEACHER_QUERY_STATUSES.READY);
+  assert.equal(canEnterTeacherStep(state, TEACHER_STEP_IDS.REVIEW_AND_SHARE), false);
 });
 
 test("비교 자료와 실제 조회 성공이 모두 갖춰져야 최종 단계 잠금이 해제된다", () => {

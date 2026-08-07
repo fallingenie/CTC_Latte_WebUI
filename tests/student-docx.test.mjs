@@ -1,10 +1,87 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import JSZip from "jszip";
 import { climateProblemSets } from "../source/climate-problem-catalog.js";
-import { buildStudentNotebookDocx, buildTeacherActivityDocx } from "../source/student-docx.js";
+import {
+  buildDocxAttributionContent,
+  buildStudentNotebookDocx,
+  buildTeacherActivityDocx
+} from "../source/student-docx.js";
+
+const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+
+const dwdProvider = Object.freeze({
+  providerId: "dwd",
+  name: "Deutscher Wetterdienst Climate Data Center",
+  dataset: "dwd_cdc_hourly_observations",
+  licenseName: "Creative Commons Attribution 4.0 International (CC BY 4.0)",
+  licenseUrl: "https://www.dwd.de/EN/service/legal_notice/templates_dwd_as_source.html",
+  citation: "Deutscher Wetterdienst, Climate Data Center hourly station observations.",
+  attributionText: "Based on data from Deutscher Wetterdienst (DWD), Climate Data Center; processed by Climate Time Capsule.",
+  redistributionPolicy: "cc_by_4_0_with_source_and_modification_notice",
+  usedRowCount: 240,
+  attributionRequired: true,
+  requiresResultMark: false,
+  markAssets: []
+});
+const dwdObservationAttribution = Object.freeze({
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: true,
+  providerIds: ["dwd"],
+  providers: [dwdProvider]
+});
+const rawObservationAttribution = Object.freeze({
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: false,
+  providerIds: [],
+  providers: []
+});
+const kmaMarkAssets = Object.freeze([
+  Object.freeze({
+    name: "kma_mark_1.png",
+    path: "licenses/kma_mark_1.png",
+    sha256: "8248bb099a0c05b9819d60a9423673582d143cfc909cc22a9ffcb3e6770c6b06",
+    sizeBytes: 7485,
+    mediaType: "image/png"
+  }),
+  Object.freeze({
+    name: "kma_mark_2.png",
+    path: "licenses/kma_mark_2.png",
+    sha256: "4e489d7721cd2b629c28a0aebb54e3f7668f257185949e77fda9b008f35ed8f8",
+    sizeBytes: 10205,
+    mediaType: "image/png"
+  })
+]);
+const kmaProvider = Object.freeze({
+  providerId: "kma_asos",
+  name: "대한민국 기상청",
+  dataset: "ASOS 시간자료",
+  licenseName: "공공누리 제1유형 출처표시",
+  licenseUrl: "https://www.data.go.kr/data/15057210/openapi.do",
+  citation: "대한민국 기상청 ASOS 시간자료.",
+  attributionText: "대한민국 기상청 ASOS 자료를 사용하여 Climate Time Capsule에서 처리했습니다.",
+  redistributionPolicy: "source_attribution_and_result_marks_required",
+  usedRowCount: 365,
+  attributionRequired: true,
+  requiresResultMark: true,
+  markAssets: kmaMarkAssets
+});
+const kmaObservationAttribution = Object.freeze({
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: true,
+  providerIds: ["kma_asos"],
+  providers: [kmaProvider]
+});
 
 const baseline = {
+  dataMode: "bias-corrected",
+  observationAttribution: dwdObservationAttribution,
   date: "2050-08-01",
   label: "남반구 비교 지점",
   latitude: -33.8651,
@@ -24,6 +101,10 @@ const comparison = {
   label: "현재 선택 지점",
   latitude: 36.35,
   longitude: 127.38,
+  observationAttribution: {
+    ...dwdObservationAttribution,
+    providers: [{ ...dwdProvider, usedRowCount: 120 }]
+  },
   values: [
     { key: "tasmax", label: "최고기온", unit: "도", value: 35.78 },
     { key: "precipitation", label: "강수량", unit: "밀리미터/일", value: 1.09 },
@@ -95,6 +176,19 @@ test("학생 탐구 문서는 내용이 있는 DOCX 패키지로 생성된다", 
   assert.match(documentXml, /4\.1 m\/s/u);
   assert.match(documentXml, /\+2℃/u);
   assert.match(documentXml, /현재 조건의 최고기온이 비교 기준보다 2℃ 높습니다\./u);
+  assert.match(documentXml, /완성할 결과물/u);
+  assert.match(documentXml, /자료에서 찾은 근거/u);
+  assert.match(documentXml, /조회한 값/u);
+  assert.match(documentXml, /자료로 판단한 가능성/u);
+  assert.match(documentXml, /내가 찾은 점/u);
+  assert.match(documentXml, /자료 출처와 인용/u);
+  assert.match(documentXml, /Deutscher Wetterdienst Climate Data Center/u);
+  assert.match(documentXml, /CC BY 4\.0/u);
+  assert.match(documentXml, /dwd_cdc_hourly_observations/u);
+  assert.match(documentXml, /CTC Latte WebUI/u);
+  assert.match(documentXml, /MIROC6/u);
+  assert.equal((documentXml.match(/Deutscher Wetterdienst Climate Data Center/gu) ?? []).length, 1);
+  assert.doesNotMatch(documentXml, /만들 결과물|자료에서 확인한 내용|선택한 자료의 값|자료가 보여주는 가능성|나의 발견/u);
   assert.doesNotMatch(documentXml, /Codex/iu);
 });
 
@@ -161,6 +255,13 @@ test("교사용 수업 활동지는 수업 설계와 실제 비교 자료가 들
   assert.match(documentXml, /학생 활동 기록지/u);
   assert.match(documentXml, /교사 지도와 평가/u);
   assert.match(documentXml, /자료 해석 범위와 확장 활동/u);
+  assert.match(documentXml, /수업 진행 순서/u);
+  assert.match(documentXml, /학생의 생각을 넓히는 질문/u);
+  assert.match(documentXml, /완성할 결과물/u);
+  assert.match(documentXml, /자료 출처와 인용/u);
+  assert.match(documentXml, /Deutscher Wetterdienst Climate Data Center/u);
+  assert.match(documentXml, /CMIP6 \/ ScenarioMIP 데이터셋 인용/u);
+  assert.doesNotMatch(documentXml, /수업 진행 흐름|학생에게 되물을 질문|만들 결과물/u);
   assert.ok((documentXml.match(/w:pageBreakBefore/gu) ?? []).length >= 6, "교사용 활동지가 독립된 여러 쪽으로 구성되지 않았습니다.");
   assert.doesNotMatch(documentXml, /Codex|\.ctwebui|\.ctcapsule|drive\.google\.com/iu);
 });
@@ -169,5 +270,96 @@ test("비교 자료 없이 교사용 DOCX 생성을 요청하면 빈 활동지�
   await assert.rejects(
     buildTeacherActivityDocx({ lessonTitle: "빈 활동지", snapshots: [] }),
     /비교할 기후 자료가 하나 이상 필요합니다/u
+  );
+});
+
+test("DOCX attribution은 raw/no-provider를 비워 두고 dataMode 기반 공급자 추론을 거부한다", () => {
+  const rawSnapshot = {
+    ...baseline,
+    dataMode: "raw-model-grid",
+    observationAttribution: rawObservationAttribution
+  };
+  const content = buildDocxAttributionContent([rawSnapshot]);
+  assert.deepEqual(content.providers, []);
+  assert.deepEqual(content.markAssets, []);
+  assert.throws(
+    () => buildDocxAttributionContent([{ ...baseline, observationAttribution: rawObservationAttribution }]),
+    /자료 유형과 관측자료 출처/u
+  );
+});
+
+test("DOCX attribution은 공급자 정적 필드를 엄격히 dedupe하고 usedRowCount를 합산하지 않는다", () => {
+  const content = buildDocxAttributionContent([baseline, comparison]);
+  assert.equal(content.providers.length, 1);
+  assert.equal(content.providers[0].usedRowCount, 240);
+  assert.equal(content.providers[0].citation, dwdProvider.citation);
+  assert.throws(
+    () => buildDocxAttributionContent([
+      baseline,
+      {
+        ...comparison,
+        observationAttribution: {
+          ...dwdObservationAttribution,
+          providers: [{ ...dwdProvider, citation: "변조된 인용" }]
+        }
+      }
+    ]),
+    /공급자 정보가 서로 다릅니다/u
+  );
+});
+
+test("DOCX는 Backend descriptor와 일치하는 로컬 결과 표시 마크만 패키지에 포함한다", async () => {
+  const originalFetch = globalThis.fetch;
+  const fetchedPaths = [];
+  globalThis.fetch = async (assetPath) => {
+    fetchedPaths.push(String(assetPath));
+    const filename = path.basename(String(assetPath));
+    const filePath = path.join(root, "source", "public", "assets", "licenses", filename);
+    const bytes = await fs.readFile(filePath);
+    return {
+      ok: true,
+      async arrayBuffer() {
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      }
+    };
+  };
+
+  try {
+    const blob = await buildStudentNotebookDocx({
+      baseline: {
+        ...baseline,
+        observationAttribution: kmaObservationAttribution
+      },
+      focusLabel: "출처 표시 확인",
+      note: "검증된 결과 표시 마크를 확인합니다."
+    });
+    const archive = await JSZip.loadAsync(new Uint8Array(await blob.arrayBuffer()));
+    const mediaPaths = Object.entries(archive.files)
+      .filter(([archivePath, entry]) => archivePath.startsWith("word/media/") && !entry.dir)
+      .map(([archivePath]) => archivePath);
+    assert.equal(mediaPaths.length, 2);
+    assert.deepEqual(new Set(fetchedPaths), new Set([
+      "./assets/licenses/kma_mark_1.png",
+      "./assets/licenses/kma_mark_2.png"
+    ]));
+    const relationshipsXml = await archive.file("word/_rels/document.xml.rels").async("string");
+    assert.doesNotMatch(relationshipsXml, /TargetMode="External"/u);
+  } finally {
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
+  }
+
+  assert.throws(
+    () => buildDocxAttributionContent([{
+      ...baseline,
+      observationAttribution: {
+        ...kmaObservationAttribution,
+        providers: [{
+          ...kmaProvider,
+          markAssets: [{ ...kmaMarkAssets[0], path: "licenses/unknown.png" }, kmaMarkAssets[1]]
+        }]
+      }
+    }]),
+    /결과 표장|descriptor|출처/u
   );
 });

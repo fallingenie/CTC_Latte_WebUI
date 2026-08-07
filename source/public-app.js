@@ -7,8 +7,14 @@ import { requestSaveTarget, saveBlobToTarget, shareBlobFiles } from "./browser-d
 import { climateProblemSets } from "./climate-problem-catalog.js";
 import { PUBLIC_ATTRIBUTION_CATALOG, findClimateModelAttribution } from "./attribution-catalog.js";
 import { buildClimatePdfBlob } from "./climate-pdf.js";
-import { buildAttributionBundle, buildPublicExportAttribution } from "./export-attribution.js";
+import {
+  buildAttributionBundle,
+  buildPublicExportAttribution,
+  resolveVerifiedObservationMarkAssets,
+  verifyLocalObservationMarkAssetBytes
+} from "./export-attribution.js";
 import { buildCsvWorkspaceShareFiles } from "./export-share.js";
+import { currentLocationFailureMessage, requestCurrentBrowserCoordinate } from "./browser-geolocation.js";
 import {
   PUBLIC_CLIMATE_METADATA_TIMEOUT_MS,
   PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS,
@@ -22,6 +28,7 @@ import {
   validatePublicClimateRetryableError,
   validatePublicClimateSeriesResponse,
   validatePublicDatasetMetadata,
+  validatePublicObservationAttribution,
   validatePublicRuntimeConfig
 } from "./runtime-policy.js";
 import {
@@ -53,6 +60,7 @@ import {
   normalizePublicAttributionLabels,
   openNativeDatePicker,
   parseHashLocation,
+  scheduleDialogFocusRestore,
   sanitizeNote,
   selectClimateSeriesMetrics,
   seriesPointX
@@ -69,6 +77,14 @@ import {
   validateTeacherLessonConditions,
   validateTeacherReviewReadiness
 } from "./teacher-step-flow.js";
+import {
+  CUSTOM_TEACHER_LESSON_ID,
+  buildCustomTeacherLessonSample,
+  createCustomTeacherLessonDraft,
+  customLessonSharePayload,
+  expectedOutputs,
+  validateCustomTeacherLessonDraft
+} from "./teacher-lesson-builder.js";
 const DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
 async function prepareClimateSeriesExport(response, format) {
@@ -99,15 +115,22 @@ async function prepareClimateSeriesExport(response, format) {
       csvFilename: `${stem}.csv`,
       dataMode: response.dataMode,
       model: response.model,
+      observationAttribution: response.observationAttribution,
       datasetVersion: response.datasetVersion,
       datasetUpdatedAt: response.datasetUpdatedAt,
       generatedAt: response.generatedAt
     });
+    const verifiedMarkAssets = resolveVerifiedObservationMarkAssets(response.observationAttribution);
+    const observationProviders = response.observationAttribution.providers.map((provider) => provider.name);
     share = {
-      files: await buildCsvWorkspaceShareFiles(blob, csvBlob, csvSpecification),
+      files: await buildCsvWorkspaceShareFiles(blob, csvBlob, csvSpecification, response.observationAttribution),
       label: "Google Workspace로 공유",
-      note: "CSV와 기상청 원본 표장 2개를 함께 보냅니다. Google Drive에 보관한 뒤 CSV를 스프레드시트로 열어 공동 편집할 수 있습니다.",
-      text: "Google 스프레드시트에서 열 수 있는 날짜별 기후 자료와 출처 표장입니다."
+      note: verifiedMarkAssets.length > 0
+        ? `CSV와 관측자료 제공자가 요구하는 출처 표시 이미지 ${verifiedMarkAssets.length}개를 함께 보냅니다. Google Drive에 보관한 뒤 CSV를 스프레드시트로 열어 공동 편집할 수 있습니다.`
+        : "이 결과에는 함께 제공해야 할 관측자료 출처 표시 이미지가 없습니다. Google Drive에 보관한 뒤 CSV를 스프레드시트로 열어 공동 편집할 수 있습니다.",
+      text: observationProviders.length > 0
+        ? `Google 스프레드시트에서 열 수 있는 날짜별 기후 자료와 ${observationProviders.join(", ")}의 출처 정보입니다.`
+        : "Google 스프레드시트에서 열 수 있는 날짜별 기후 모델 원자료입니다."
     };
   } else if (format === "html") {
     blob = new Blob([buildInteractiveClimateHtml(response, await buildInteractiveAttributionPayload(response))], { type: "text/html;charset=utf-8" });
@@ -140,20 +163,27 @@ async function buildInteractiveAttributionPayload(response) {
   const record = buildPublicExportAttribution({
     dataMode: response.dataMode,
     model: response.model,
+    observationAttribution: response.observationAttribution,
     datasetVersion: response.datasetVersion,
     datasetUpdatedAt: response.datasetUpdatedAt,
     generatedAt: response.generatedAt
   });
-  const markDataUrls = await Promise.all([
-    imageAssetDataUrl("./assets/licenses/kma_mark_1.png"),
-    imageAssetDataUrl("./assets/licenses/kma_mark_2.png")
-  ]);
+  const markAssets = resolveVerifiedObservationMarkAssets(response.observationAttribution);
+  const markDataUrls = await Promise.all(markAssets.map(async (asset) => ({
+    name: asset.name,
+    dataUrl: await imageAssetDataUrl(asset)
+  })));
   return { ...record, markDataUrls };
 }
-async function imageAssetDataUrl(path) {
-  const response = await fetch(path, { cache: "force-cache" });
+async function imageAssetDataUrl(asset) {
+  const response = await fetch(asset.sourceUrl, {
+    cache: "no-cache",
+    credentials: "same-origin",
+    redirect: "error"
+  });
   if (!response.ok) throw new Error("출처 표시 이미지를 불러오지 못했습니다.");
-  const blob = await response.blob();
+  const bytes = await verifyLocalObservationMarkAssetBytes(asset, await response.arrayBuffer());
+  const blob = new Blob([bytes], { type: asset.mediaType });
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("출처 표시 이미지를 읽지 못했습니다."));
@@ -233,13 +263,17 @@ async function buildClimateReportCanvas(response) {
   );
   context.fillText("이 자료는 기후 시나리오 교육·연구용 결과이며 단기 기상예보가 아닙니다.", 88, footerY + 38);
   const attribution = normalizePublicAttributionLabels(response.attributionLabels).join(" · ") || "기후 자료 출처 정보 포함";
-  context.fillText(`자료 고지: ${attribution}`, 88, footerY + 76);
+  const observationAttribution = canonicalObservationAttributionForResult(response);
+  const observationNotice = observationAttribution?.usesObservationData
+    ? `관측자료: ${observationAttribution.providers.map((provider) => provider.name).join(" · ")}`
+    : "관측자료 사용 없음";
+  context.fillText(`자료 고지: ${attribution} · ${observationNotice}`, 88, footerY + 76);
   context.fillText(`생성 시각: ${new Date(response.generatedAt).toLocaleString("ko-KR")}`, 88, footerY + 114);
   context.font = '18px "Segoe UI", "Noto Sans KR", sans-serif';
   context.fillText(`자료판: ${response.datasetVersion}`, 88, footerY + 152);
   context.fillText(`자료 갱신 시각: ${response.datasetUpdatedAt}`, 88, footerY + 186);
   context.fillText(`제작자: ${PUBLIC_ATTRIBUTION_CATALOG.project.creator.displayName} · GitHub ${PUBLIC_ATTRIBUTION_CATALOG.project.creator.githubHandle}`, 88, footerY + 220);
-  await drawKmaAttributionMarks(context, response, width);
+  await drawObservationAttributionMarks(context, response, width);
   Object.defineProperty(canvas, "pdfPageBreaks", {
     value: Object.freeze([
       headerHeight,
@@ -434,24 +468,38 @@ function canvasBlob(canvas, type, quality) {
     canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("이미지 파일을 만들지 못했습니다.")), type, quality);
   });
 }
-async function drawKmaAttributionMarks(context, response, canvasWidth) {
-  const [markOne, markTwo] = await Promise.all([
-    loadImageAsset("./assets/licenses/kma_mark_1.png"),
-    loadImageAsset("./assets/licenses/kma_mark_2.png")
-  ]);
-  const markOneWidth = 132;
-  const markOneHeight = markOneWidth * markOne.naturalHeight / markOne.naturalWidth;
-  const markTwoWidth = 112;
-  const markTwoHeight = markTwoWidth * markTwo.naturalHeight / markTwo.naturalWidth;
+async function drawObservationAttributionMarks(context, response, canvasWidth) {
+  const observationAttribution = canonicalObservationAttributionForResult(response);
+  if (!observationAttribution) {
+    throw new Error("관측자료 출처 정보를 확인할 수 없어 이미지 생성을 중단했습니다.");
+  }
+  if (!observationAttribution.usesObservationData) return;
+  const markAssets = resolveVerifiedObservationMarkAssets(observationAttribution);
+  const marks = await Promise.all(markAssets.map(async (asset) => ({
+    asset,
+    image: await loadImageAsset(await imageAssetDataUrl(asset))
+  })));
   const right = canvasWidth - 88;
   const top = 82;
-  context.drawImage(markOne, right - markOneWidth - markTwoWidth - 18, top, markOneWidth, markOneHeight);
-  context.drawImage(markTwo, right - markTwoWidth, top, markTwoWidth, markTwoHeight);
+  let cursor = right;
+  let maximumHeight = 0;
+  for (const { image } of [...marks].reverse()) {
+    const width = 112;
+    const height = width * image.naturalHeight / image.naturalWidth;
+    cursor -= width;
+    context.drawImage(image, cursor, top, width, height);
+    cursor -= 18;
+    maximumHeight = Math.max(maximumHeight, height);
+  }
   context.save();
   context.fillStyle = "#43514c";
   context.font = '16px "Segoe UI", "Noto Sans KR", sans-serif';
   context.textAlign = "right";
-  context.fillText(response.dataMode === "raw-model-grid" ? "ASOS 관측 보정 미적용" : "대한민국 기상청 ASOS 자료 포함", right, top + Math.max(markOneHeight, markTwoHeight) + 24);
+  context.fillText(
+    `관측자료: ${observationAttribution.providers.map((provider) => provider.name).join(" · ")}`,
+    right,
+    top + maximumHeight + 24
+  );
   context.restore();
 }
 function loadImageAsset(path) {
@@ -642,19 +690,45 @@ function describeWorkspaceShareError(error) {
   return "공유 창을 열지 못했습니다. 잠시 후 다시 시도하거나 기기에 저장해 주세요.";
 }
 
+const DIALOG_FOCUSABLE_SELECTOR = 'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])';
+function trapDialogTab(event, dialog) {
+  if (event.key !== "Tab" || !dialog) return;
+  const focusable = [...dialog.querySelectorAll(DIALOG_FOCUSABLE_SELECTOR)].filter(
+    (element) => element.getAttribute("aria-hidden") !== "true"
+  );
+  if (!focusable.length) {
+    event.preventDefault();
+    dialog.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function FileDeliveryDialog({ delivery, onClose, onResult }) {
   const dialogRef = useRef(null);
+  const openerRef = useRef(null);
   const shareButtonRef = useRef(null);
   const [status, setStatus] = useState("idle");
   const [message, setMessage] = useState("저장하거나 공유할 방법을 선택하세요.");
   const busy = status === "working";
   useEffect(() => {
     if (!delivery) return;
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     window.setTimeout(() => (shareButtonRef.current ?? dialogRef.current?.querySelector("button"))?.focus(), 40);
     return () => {
       document.body.style.overflow = previousOverflow;
+      openerRef.current?.focus();
+      openerRef.current = null;
     };
   }, [delivery]);
   if (!delivery) return null;
@@ -715,7 +789,9 @@ function FileDeliveryDialog({ delivery, onClose, onResult }) {
     if (event.key === "Escape" && !busy) {
       event.preventDefault();
       onClose();
+      return;
     }
+    trapDialogTab(event, dialogRef.current);
   };
 
   return /* @__PURE__ */ jsx("div", { className: "export-dialog-backdrop", onMouseDown: (event) => event.target === event.currentTarget && !busy && onClose(), children: /* @__PURE__ */ jsxs(
@@ -727,6 +803,7 @@ function FileDeliveryDialog({ delivery, onClose, onResult }) {
       onKeyDown: handleKeyDown,
       ref: dialogRef,
       role: "dialog",
+      tabIndex: -1,
       children: [
         /* @__PURE__ */ jsxs("header", { children: [
           /* @__PURE__ */ jsxs("div", { children: [
@@ -775,7 +852,11 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
   const reloadPreviewRef = useRef();
   const handledRefreshSequenceRef = useRef(datasetState.refreshSequence);
   const observedDialogDatasetVersionRef = useRef(metadata?.datasetVersion);
+  const observedDialogDatasetUpdatedAtRef = useRef(metadata?.datasetUpdatedAt);
   const expectedDataModeRef = useRef(context?.expectedDataMode);
+  const currentDialogDatasetIdentity = `${metadata?.datasetVersion ?? ""}|${metadata?.datasetUpdatedAt ?? ""}`;
+  const latestDialogDatasetIdentityRef = useRef(currentDialogDatasetIdentity);
+  latestDialogDatasetIdentityRef.current = currentDialogDatasetIdentity;
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [selectedMetrics, setSelectedMetrics] = useState([]);
@@ -974,18 +1055,29 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
   reloadPreviewRef.current = loadPreview;
   useEffect(() => {
     const nextDatasetVersion = metadata?.datasetVersion;
-    const versionTransition = observedDialogDatasetVersionRef.current !== nextDatasetVersion;
+    const nextDatasetUpdatedAt = metadata?.datasetUpdatedAt;
+    const identityTransition = observedDialogDatasetVersionRef.current !== nextDatasetVersion
+      || observedDialogDatasetUpdatedAtRef.current !== nextDatasetUpdatedAt;
     observedDialogDatasetVersionRef.current = nextDatasetVersion;
+    observedDialogDatasetUpdatedAtRef.current = nextDatasetUpdatedAt;
     const datasetRefresh = datasetState.refreshSequence > handledRefreshSequenceRef.current;
     if (datasetRefresh) handledRefreshSequenceRef.current = datasetState.refreshSequence;
-    if (!nextDatasetVersion || (!versionTransition && !datasetRefresh)) return;
+    if (!identityTransition && !datasetRefresh) return;
+    setPreparedDelivery(null);
+    if (!nextDatasetVersion || !nextDatasetUpdatedAt) return;
     expectedDataModeRef.current = undefined;
+    if (status === "exporting") {
+      setResponse(void 0);
+      setStatus("error");
+      setMessage("기후자료가 갱신되어 저장을 중단했습니다. 미리보기를 다시 불러오세요.");
+      return;
+    }
     const shouldReload = Boolean(context) && (status === "loading" || (Boolean(response) && status !== "exporting"));
     if (!shouldReload) return;
     seriesControllerRef.current?.abort();
     const timer = window.setTimeout(() => reloadPreviewRef.current?.({ datasetRefresh, retainExistingResult: true }), 0);
     return () => window.clearTimeout(timer);
-  }, [datasetState.refreshSequence, metadata?.datasetVersion]);
+  }, [datasetState.refreshSequence, metadata?.datasetUpdatedAt, metadata?.datasetVersion]);
   const exportFile = async () => {
     if (!hasCurrentPreview) {
       setStatus("error");
@@ -995,7 +1087,11 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
     setStatus("exporting");
     setMessage(`${format.toUpperCase()} 파일을 만들고 있습니다.`);
     try {
+      const exportDatasetIdentity = currentDialogDatasetIdentity;
       const delivery = await prepareClimateSeriesExport(response, format);
+      if (latestDialogDatasetIdentityRef.current !== exportDatasetIdentity) {
+        throw new Error("기후자료가 갱신되어 저장을 중단했습니다. 미리보기를 다시 불러오세요.");
+      }
       if (delivery.share) {
         setPreparedDelivery(delivery);
         setStatus("ready");
@@ -1025,26 +1121,16 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
       requestClose();
       return;
     }
-    if (event.key !== "Tab" || !dialogRef.current) return;
-    const focusable = [...dialogRef.current.querySelectorAll(
-      'button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])'
-    )];
-    if (!focusable.length) return;
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
+    trapDialogTab(event, dialogRef.current);
   };
   if (!context) return null;
   if (preparedDelivery) {
     return /* @__PURE__ */ jsx(FileDeliveryDialog, {
       delivery: preparedDelivery,
-      onClose: () => setPreparedDelivery(null),
+      onClose: () => {
+        setPreparedDelivery(null);
+        scheduleDialogFocusRestore(closeButtonRef);
+      },
       onResult: (result) => {
         setStatus("ready");
         setMessage(describeSaveResult(result, preparedDelivery.label));
@@ -1060,6 +1146,7 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
       onKeyDown: handleKeyDown,
       ref: dialogRef,
       role: "dialog",
+      tabIndex: -1,
       children: [
         /* @__PURE__ */ jsxs("header", { className: "export-dialog-header", children: [
           /* @__PURE__ */ jsxs("div", { children: [
@@ -1199,7 +1286,8 @@ function ClimateExportDialog({ context, datasetState, onClose }) {
                   /* @__PURE__ */ jsx("span", { children: response.dataMode === "raw-model-grid" ? "자료 기준" : "기준 지점 거리" }),
                   /* @__PURE__ */ jsx("strong", { children: response.dataMode === "raw-model-grid" ? "기후 모델 원자료" : response.nearestDistanceKm === void 0 ? "확인됨" : `${response.nearestDistanceKm.toFixed(1)}km` })
                 ] })
-              ] })
+              ] }),
+              /* @__PURE__ */ jsx(ObservationAttributionPanel, { response })
             ] }) : /* @__PURE__ */ jsxs("div", { className: `export-preview-empty ${status}`, children: [
               status === "loading" ? /* @__PURE__ */ jsx(LoaderCircle, { className: "spin", size: 30 }) : /* @__PURE__ */ jsx(Eye, { size: 30 }),
               /* @__PURE__ */ jsx("strong", { children: status === "loading" ? "기간 자료를 읽고 있습니다" : "내보낼 자료를 먼저 확인하세요" }),
@@ -1244,6 +1332,11 @@ function InteractiveSeriesChart({
     setReferenceIndex(void 0);
     setViewWindow({ start: 0, end: dates.length });
   }, [dates, metric.key]);
+  useEffect(() => {
+    setHoveredIndex((current) => current === void 0
+      ? current
+      : Math.max(viewWindow.start, Math.min(viewWindow.end - 1, current)));
+  }, [viewWindow.start, viewWindow.end]);
   const visibleDates = dates.slice(viewWindow.start, viewWindow.end);
   const visibleMetric = useMemo(
     () => sliceSeriesMetric(metric, viewWindow.start, viewWindow.end),
@@ -1277,6 +1370,42 @@ function InteractiveSeriesChart({
   const resetView = () => setViewWindow({ start: 0, end: dates.length });
   const hoveredRatio = localHoveredIndex === void 0 ? 0 : localHoveredIndex / Math.max(visibleDates.length - 1, 1);
   const tooltipEdge = hoveredRatio < 0.2 ? "edge-start" : hoveredRatio > 0.8 ? "edge-end" : "";
+  const handleChartKeyDown = (event) => {
+    const current = hoveredIndex !== void 0 && hoveredIndex >= viewWindow.start && hoveredIndex < viewWindow.end
+      ? hoveredIndex
+      : viewWindow.start;
+    let next;
+    if (event.key === "ArrowLeft") next = Math.max(viewWindow.start, current - 1);
+    if (event.key === "ArrowRight") next = Math.min(viewWindow.end - 1, current + 1);
+    if (event.key === "Home") next = viewWindow.start;
+    if (event.key === "End") next = viewWindow.end - 1;
+    if (next !== void 0) {
+      event.preventDefault();
+      setHoveredIndex(next);
+      return;
+    }
+    if (event.key === "+" || event.key === "=") {
+      event.preventDefault();
+      zoom(-1, hoveredIndex === void 0 ? 0.5 : hoveredRatio);
+      return;
+    }
+    if (event.key === "-" || event.key === "_") {
+      event.preventDefault();
+      zoom(1, hoveredIndex === void 0 ? 0.5 : hoveredRatio);
+      return;
+    }
+    if (event.key === "0") {
+      event.preventDefault();
+      resetView();
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      const selected = hoveredIndex === void 0 ? viewWindow.start : hoveredIndex;
+      setHoveredIndex(selected);
+      setReferenceIndex(selected);
+    }
+  };
   return /* @__PURE__ */ jsxs("div", { className: "interactive-series-chart", children: [
     /* @__PURE__ */ jsxs("div", { className: "chart-heading", children: [
       /* @__PURE__ */ jsxs("div", { children: [
@@ -1309,8 +1438,12 @@ function InteractiveSeriesChart({
     ] }),
     /* @__PURE__ */ jsxs("div", { className: "chart-plot-shell", children: [
       /* @__PURE__ */ jsxs("svg", {
+        "aria-describedby": "chart-interaction-readout",
+        "aria-keyshortcuts": "ArrowLeft ArrowRight Home End Plus Minus 0 Enter Space",
         "aria-label": `${metric.label} 대화형 기간 그래프. 휠로 확대하거나 그래프를 끌어 이동하고, 날짜를 누르면 첫 번째 비교 날짜로 저장됩니다.`,
         onDoubleClick: resetView,
+        onFocus: () => setHoveredIndex((current) => current ?? viewWindow.start),
+        onKeyDown: handleChartKeyDown,
         onPointerCancel: (event) => {
           dragRef.current = void 0;
           event.currentTarget.releasePointerCapture?.(event.pointerId);
@@ -1353,7 +1486,8 @@ function InteractiveSeriesChart({
           const ratio = Math.max(0, Math.min(1, (viewX - 48) / 692));
           zoom(event.deltaY, ratio);
         },
-        role: "img",
+        role: "group",
+        tabIndex: 0,
         viewBox: "0 0 760 280",
         children: [
           [0, 1, 2, 3, 4].map((tick) => /* @__PURE__ */ jsx("line", { className: "chart-gridline", x1: "48", x2: "740", y1: 28 + tick * 51, y2: 28 + tick * 51 }, tick)),
@@ -1378,7 +1512,7 @@ function InteractiveSeriesChart({
         reference ? /* @__PURE__ */ jsxs("span", { className: comparison?.delta > 0 ? "positive" : comparison?.delta < 0 ? "negative" : "", children: ["첫 번째 날짜와의 차이 ", formatSignedChartValue(comparison?.delta, metric.unit), " · ", formatSignedPercent(comparison?.percent), " · ", formatSignedDays(elapsedDays)] }) : /* @__PURE__ */ jsx("small", { children: "날짜를 누르면 첫 번째 비교 날짜로 저장됩니다." })
       ] }) : null
     ] }),
-    hovered ? /* @__PURE__ */ jsxs("div", { className: "chart-hover-readout", children: [
+    hovered ? /* @__PURE__ */ jsxs("div", { className: "chart-hover-readout", id: "chart-interaction-readout", "aria-live": "polite", children: [
       /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "가리킨 날짜" }), /* @__PURE__ */ jsx("strong", { children: hovered.date })] }),
       /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: rawGrid ? "기후 모델 원자료" : "현재 값" }), /* @__PURE__ */ jsx("strong", { children: displayChartValue(hovered.corrected, metric.unit) })] }),
       !rawGrid && metric.raw ? /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "보정 전" }), /* @__PURE__ */ jsx("strong", { children: displayChartValue(hovered.raw, metric.unit) })] }) : null,
@@ -1391,7 +1525,7 @@ function InteractiveSeriesChart({
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "날짜 차이" }), /* @__PURE__ */ jsx("strong", { children: formatSignedDays(elapsedDays) })] })
         ] })
       ] }) : /* @__PURE__ */ jsxs("div", { className: "chart-reference-hint", children: [/* @__PURE__ */ jsx(Target, { size: 15 }), " 날짜를 눌러 첫 번째 비교 날짜로 정하세요."] })
-    ] }) : /* @__PURE__ */ jsx("div", { className: "chart-hover-readout muted", children: "그래프를 가리키면 값을 확인할 수 있습니다. 휠로 확대하고 그래프를 끌어 기간을 옮겨 보세요." })
+    ] }) : /* @__PURE__ */ jsx("div", { className: "chart-hover-readout muted", id: "chart-interaction-readout", "aria-live": "polite", children: "그래프를 가리키거나 Tab으로 선택한 뒤 방향키를 누르면 값을 확인할 수 있습니다. 휠 또는 +, - 키로 확대하고 그래프를 끌어 기간을 옮겨 보세요." })
   ] });
 }
 function sliceSeriesMetric(metric, start, end) {
@@ -1581,7 +1715,7 @@ function validateRemoteChunkResponse(response, request, expectedUpdatedAt) {
   const datasetMatches = isMatchingPublicDatasetIdentity(response, request.datasetVersion, expectedUpdatedAt);
   const requestMatches = response.stationLabel === request.stationLabel && coordinateMatches && response.date === request.date && response.scenario === request.scenario && response.model === request.model && datasetMatches;
   const hasValues = response.values.length > 0;
-  const hasAttribution = response.attributionReady;
+  const hasAttribution = canonicalObservationAttributionForResult(response) !== undefined;
   const safeText = hasNoRuntimePublicLeak([
     response.stationLabel,
     String(response.latitude),
@@ -2026,7 +2160,7 @@ function SourceCitationDisclosure({ metadata }) {
     /* @__PURE__ */ jsxs("div", { className: "source-citation-panel", children: [
       /* @__PURE__ */ jsxs("header", { children: [
         /* @__PURE__ */ jsx("strong", { children: "CMIP6/downscaleCMIP6 자료 출처" }),
-        /* @__PURE__ */ jsx("p", { children: "기후 모델, 관측자료, 자료 처리 방법의 출처와 인용 정보를 확인할 수 있습니다." }),
+        /* @__PURE__ */ jsx("p", { children: "기후 모델과 자료 처리 방법의 고정 인용 정보를 확인할 수 있습니다. 실제 사용된 관측자료 출처는 각 조회 결과에 표시됩니다." }),
         basisDate ? /* @__PURE__ */ jsxs("small", { children: ["현재 자료 기준일: ", basisDate] }) : null
       ] }),
       /* @__PURE__ */ jsxs("section", { children: [
@@ -2043,17 +2177,75 @@ function SourceCitationDisclosure({ metadata }) {
           /* @__PURE__ */ jsx("a", { href: reference.source.url, rel: "noreferrer", target: "_blank", children: "DOI" })
         ] }, reference.id)) })
       ] }),
-      /* @__PURE__ */ jsxs("section", { className: "source-kma-notice", children: [
-        /* @__PURE__ */ jsx("h2", { children: "대한민국 기상청 ASOS" }),
-        /* @__PURE__ */ jsx("p", { children: "관측 보정이 적용된 결과에는 대한민국 기상청 ASOS 자료가 포함됩니다." }),
-        /* @__PURE__ */ jsx("a", { href: "https://www.data.go.kr/data/15057210/openapi.do", rel: "noreferrer", target: "_blank", children: "ASOS 시간자료 출처 보기" }),
-        /* @__PURE__ */ jsxs("div", { children: [
-          /* @__PURE__ */ jsx("img", { alt: "공공누리 제1유형 출처 표시", src: "./assets/licenses/kma_mark_1.png" }),
-          /* @__PURE__ */ jsx("img", { alt: "제3자 권리 포함 저작권 표시", src: "./assets/licenses/kma_mark_2.png" })
-        ] })
-      ] }),
       /* @__PURE__ */ jsx("a", { className: "source-citation-link", href: `${catalog.project.repositoryUrl}/blob/main/CITATION.cff`, rel: "noreferrer", target: "_blank", children: "전체 인용 정보 보기" })
     ] })
+  ] });
+}
+function canonicalObservationAttributionForResult(response) {
+  try {
+    const observationAttribution = validatePublicObservationAttribution(response?.observationAttribution);
+    const rawOnly = response?.dataMode === "raw-model-grid"
+      && response.attributionReady === false
+      && observationAttribution.ready === true
+      && observationAttribution.usesObservationData === false
+      && observationAttribution.providerIds.length === 0
+      && observationAttribution.providers.length === 0;
+    const observationResult = response?.dataMode === "bias-corrected"
+      && response.attributionReady === true
+      && observationAttribution.ready === true
+      && observationAttribution.usesObservationData === true
+      && observationAttribution.providerIds.length > 0;
+    return rawOnly || observationResult ? observationAttribution : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function withSnapshotObservationAttribution(snapshot, response) {
+  if (!snapshot) return undefined;
+  const observationAttribution = canonicalObservationAttributionForResult(response);
+  if (!observationAttribution) return undefined;
+  return {
+    ...snapshot,
+    dataMode: response.dataMode,
+    observationAttribution
+  };
+}
+function ObservationAttributionPanel({ response }) {
+  const observationAttribution = canonicalObservationAttributionForResult(response);
+  if (!observationAttribution?.usesObservationData) return null;
+  let markAssets;
+  try {
+    markAssets = resolveVerifiedObservationMarkAssets(observationAttribution);
+  } catch {
+    return /* @__PURE__ */ jsx("section", { className: "observation-attribution-panel blocked", role: "alert", children: "관측자료 제공자가 요구하는 출처 표시 이미지를 검증할 수 없어 출처 표시를 중단했습니다." });
+  }
+  return /* @__PURE__ */ jsxs("section", { className: "observation-attribution-panel", "aria-label": "이 결과에 사용된 관측자료 출처", children: [
+    /* @__PURE__ */ jsxs("header", { children: [
+      /* @__PURE__ */ jsx(BookOpen, { size: 17 }),
+      /* @__PURE__ */ jsxs("div", { children: [
+        /* @__PURE__ */ jsx("strong", { children: "이 결과에 사용된 관측자료" }),
+        /* @__PURE__ */ jsx("span", { children: "이 조회 결과에 명시된 관측자료 제공자만 표시합니다." })
+      ] })
+    ] }),
+    /* @__PURE__ */ jsx("div", { className: "observation-provider-list", children: observationAttribution.providers.map((provider) => {
+      const providerMarks = markAssets.filter((asset) => asset.providerId === provider.providerId || asset.providerIds?.includes(provider.providerId));
+      return /* @__PURE__ */ jsxs("article", { className: "observation-provider", children: [
+        /* @__PURE__ */ jsxs("div", { className: "observation-provider-heading", children: [
+          /* @__PURE__ */ jsx("strong", { children: provider.name }),
+          /* @__PURE__ */ jsx("span", { children: provider.dataset })
+        ] }),
+        /* @__PURE__ */ jsx("p", { children: provider.attributionText }),
+        /* @__PURE__ */ jsx("p", { className: "observation-provider-citation", children: provider.citation }),
+        /* @__PURE__ */ jsxs("div", { className: "observation-provider-license", children: [
+          /* @__PURE__ */ jsx("span", { children: provider.licenseName }),
+          provider.licenseUrl ? /* @__PURE__ */ jsx("a", { href: provider.licenseUrl, rel: "noreferrer", target: "_blank", children: "라이선스 보기" }) : null
+        ] }),
+        providerMarks.length > 0 ? /* @__PURE__ */ jsx("div", { className: "observation-provider-marks", children: providerMarks.map((asset) => /* @__PURE__ */ jsx("img", {
+          alt: asset.alt,
+          src: asset.sourceUrl
+        }, asset.name)) }) : null
+      ] }, provider.providerId);
+    }) })
   ] });
 }
 function formatCitationAuthors(authors) {
@@ -2087,9 +2279,17 @@ function QueryPage({ audience, datasetState }) {
     ? queryPresets.find((preset) => preset.problemSetId === sharedLessonState.problemSetId && preset.problemRevision === sharedLessonState.problemRevision)
     : undefined;
   const [selectedPresetId, setSelectedPresetId] = useState(sharedProblemPreset?.id ?? (sharedLessonState ? "custom" : initialPreset.id));
+  const [sharedLessonDetails, setSharedLessonDetails] = useState(sharedLessonState);
   const [problemCategory, setProblemCategory] = useState("all");
+  const [problemLibraryOpen, setProblemLibraryOpen] = useState(() => !window.matchMedia?.("(max-width: 600px)").matches);
   const activePreset = queryPresets.find((preset) => preset.id === selectedPresetId) ?? initialPreset;
-  const activeMystery = activePreset.problem?.mystery;
+  const sharedCustomProblem = useMemo(() => buildSharedCustomLessonProblem(sharedLessonDetails), [sharedLessonDetails]);
+  const activeProblem = activePreset.problem ?? (selectedPresetId === "custom" ? sharedCustomProblem : undefined);
+  const activePeriodStart = activeProblem?.dataPlan?.periodStart ?? activePreset.periodStart;
+  const activePeriodEnd = activeProblem?.dataPlan?.periodEnd ?? activePreset.periodEnd;
+  const activeVariableKeys = activeProblem?.dataPlan?.variableKeys ?? activePreset.variableKeys ?? [];
+  const activeDerivedKeys = activeProblem?.dataPlan?.derivedKeys ?? activePreset.derivedKeys ?? [];
+  const activeMystery = activeProblem?.mystery;
   const [mysteryGuess, setMysteryGuess] = useState("");
   const [mysteryRevealed, setMysteryRevealed] = useState(false);
   const locationConcealed = Boolean(activeMystery?.hiddenLocation && !mysteryRevealed);
@@ -2109,6 +2309,12 @@ function QueryPage({ audience, datasetState }) {
   );
   const [latitudeInput, setLatitudeInput] = useState((sharedLessonState?.latitude ?? initialPreset.latitude).toFixed(4));
   const [longitudeInput, setLongitudeInput] = useState((sharedLessonState?.longitude ?? initialPreset.longitude).toFixed(4));
+  const coordinateDraftPending = latitudeInput.trim() === ""
+    || longitudeInput.trim() === ""
+    || !Number.isFinite(Number(latitudeInput))
+    || !Number.isFinite(Number(longitudeInput))
+    || Math.abs(Number(latitudeInput) - coordinates.latitude) > 0.0000001
+    || Math.abs(Number(longitudeInput) - coordinates.longitude) > 0.0000001;
   const [exportContext, setExportContext] = useState(null);
   const [studentFileDelivery, setStudentFileDelivery] = useState(null);
   const metadata = datasetState.metadata;
@@ -2137,15 +2343,21 @@ function QueryPage({ audience, datasetState }) {
     [date, raw, remoteState]
   );
   const hasExportableMetrics = hasCurrentDatasetResult
+    && !coordinateDraftPending
     && metricsForSelection.some((metric) => metric.available !== false && Number.isFinite(metric.numericValue));
-  const currentSnapshot = useMemo(() => hasCurrentDatasetResult ? createMetricSnapshot(metricsForSelection, {
-    date,
-    latitude: coordinates.latitude,
-    longitude: coordinates.longitude,
-    scenario,
-    model,
-    label: activeStudySite ? `${activePreset.label.replace(/^[A-Z]\s+/u, "")} · ${activeStudySite.label}` : activePreset.label.replace(/^[A-Z]\s+/u, "")
-  }) : void 0, [hasCurrentDatasetResult, metricsForSelection, date, coordinates.latitude, coordinates.longitude, scenario, model, activePreset.label, activeStudySite]);
+  const currentSnapshot = useMemo(() => withSnapshotObservationAttribution(
+    hasCurrentDatasetResult ? createMetricSnapshot(metricsForSelection, {
+      date,
+      latitude: coordinates.latitude,
+      longitude: coordinates.longitude,
+      scenario,
+      model,
+      label: activeStudySite
+        ? `${activePreset.label.replace(/^[A-Z]\s+/u, "")} · ${activeStudySite.label}`
+        : activeProblem?.presentation?.shortLabel ?? activePreset.label.replace(/^[A-Z]\s+/u, "")
+    }) : void 0,
+    remoteState.response
+  ), [hasCurrentDatasetResult, metricsForSelection, date, coordinates.latitude, coordinates.longitude, scenario, model, activePreset.label, activeProblem?.presentation?.shortLabel, activeStudySite, remoteState.response]);
   const comparisonRows = useMemo(
     () => compareMetricSnapshots(comparisonBaseline, currentSnapshot),
     [comparisonBaseline, currentSnapshot]
@@ -2180,6 +2392,8 @@ function QueryPage({ audience, datasetState }) {
   }, [date, coordinates.latitude, coordinates.longitude, scenario, model, selectedPresetId]);
   useEffect(() => {
     setComparisonBaseline(void 0);
+    setExportContext(null);
+    setStudentFileDelivery(null);
   }, [metadata?.datasetUpdatedAt, metadata?.datasetVersion]);
   useEffect(() => {
     setMysteryGuess("");
@@ -2216,6 +2430,7 @@ function QueryPage({ audience, datasetState }) {
       const problemPreset = shared.problemSetId
         ? queryPresets.find((preset) => preset.problemSetId === shared.problemSetId && preset.problemRevision === shared.problemRevision)
         : undefined;
+      setSharedLessonDetails(shared);
       setSelectedPresetId(problemPreset?.id ?? "custom");
       setDate(shared.date);
       setScenario(shared.scenario);
@@ -2225,9 +2440,11 @@ function QueryPage({ audience, datasetState }) {
       setCoordinates({ latitude: shared.latitude, longitude: shared.longitude });
       setComparisonBaseline(void 0);
       setQueryMessage(sharedLessonMessage(shared));
+      setProblemLibraryOpen(false);
     };
     const showExamples = () => {
       const preset = queryPresets[0];
+      setSharedLessonDetails(undefined);
       setSelectedPresetId(preset.id);
       setDate(preset.date);
       setScenario(preset.scenario);
@@ -2235,9 +2452,10 @@ function QueryPage({ audience, datasetState }) {
       setRaw(preset.raw);
       setLearningFocus(preset.focus ?? "heat");
       setCoordinates({ latitude: preset.latitude, longitude: preset.longitude });
+      setProblemLibraryOpen(true);
       setQueryMessage("예시 보기를 열었습니다. 다른 예시나 지도를 눌러 조건을 바꿀 수 있습니다.");
-      presetGridRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
       window.setTimeout(() => {
+        presetGridRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
         presetGridRef.current?.querySelector("button")?.focus();
       }, 80);
     };
@@ -2256,6 +2474,7 @@ function QueryPage({ audience, datasetState }) {
     const nextDate = metadata?.dateStart && metadata?.dateEnd ? clipPeriod(preset.date, preset.date, metadata.dateStart, metadata.dateEnd).start : preset.date;
     const nextModel = availableModels.includes(preset.model) ? preset.model : availableModels[0] ?? cmip6ModelOptions[0];
     const nextScenario = availableScenarios.includes(preset.scenario) ? preset.scenario : availableScenarios[0] ?? initialPreset.scenario;
+    setSharedLessonDetails(undefined);
     setSelectedPresetId(preset.id);
     setDate(nextDate);
     setScenario(nextScenario);
@@ -2263,16 +2482,17 @@ function QueryPage({ audience, datasetState }) {
     setRaw(preset.raw);
     setLearningFocus(preset.focus ?? "heat");
     setCoordinates({ latitude: preset.latitude, longitude: preset.longitude });
-      setQueryMessage(`${preset.label} 예시를 열었습니다. 필요하면 지도에서 다른 위치를 고르세요.`);
+    if (window.matchMedia?.("(max-width: 600px)").matches) setProblemLibraryOpen(false);
+    setQueryMessage(`${preset.label} 예시를 열었습니다. 필요하면 지도에서 다른 위치를 고르세요.`);
   };
   const selectStudySite = (site) => {
     setSelectedPresetId(activePreset.id);
     setLearningFocus(activePreset.focus ?? "heat");
     setCoordinates({ latitude: site.latitude, longitude: site.longitude });
-    setQueryMessage(`${site.label}을 비교할 지역으로 골랐습니다. ${activePreset.periodStart}부터 ${activePreset.periodEnd}까지 실제 기후 자료를 모델별로 비교해 보세요.`);
+    setQueryMessage(`${site.label}을 비교할 지역으로 골랐습니다. ${activePeriodStart}부터 ${activePeriodEnd}까지 실제 기후 자료를 모델별로 비교해 보세요.`);
   };
   const selectMapCoordinate = (nextCoordinate) => {
-    setSelectedPresetId(activePreset.problemSetId && activePreset.allowCustomLocation ? activePreset.id : "custom");
+    setSelectedPresetId(activeProblem?.dataPlan?.allowCustomLocation ? selectedPresetId : "custom");
     setCoordinates(nextCoordinate);
     setQueryMessage("위치를 바꾸었습니다. 결과와 자료 내보내기 조건도 새 위치에 맞게 바뀌었습니다.");
   };
@@ -2291,7 +2511,7 @@ function QueryPage({ audience, datasetState }) {
       latitude: clamp(nextLatitude, -mercatorLatitudeLimit, mercatorLatitudeLimit),
       longitude: normalizeLongitude(nextLongitude)
     };
-    setSelectedPresetId(activePreset.problemSetId && activePreset.allowCustomLocation ? activePreset.id : "custom");
+    setSelectedPresetId(activeProblem?.dataPlan?.allowCustomLocation ? selectedPresetId : "custom");
     setCoordinates(nextCoordinates);
     setQueryMessage(`${date} · ${model} · ${formatCoordinatePair(nextCoordinates.latitude, nextCoordinates.longitude)} 기준으로 값과 저장 기준을 갱신했습니다.`);
   };
@@ -2299,6 +2519,10 @@ function QueryPage({ audience, datasetState }) {
     if (!metric.key) return;
     if (datePending) {
       setQueryMessage("변경한 날짜를 적용한 뒤 기간 자료를 내보내세요.");
+      return;
+    }
+    if (coordinateDraftPending) {
+      setQueryMessage("변경한 위도와 경도를 먼저 적용하세요.");
       return;
     }
     if (!hasCurrentDatasetResult) {
@@ -2318,16 +2542,20 @@ function QueryPage({ audience, datasetState }) {
       expectedDataMode: remoteState.response?.dataMode,
       initialMetrics: [metric.key],
       includeRaw: raw && !usesRawModelGrid,
-      initialStartDate: activePreset.periodStart,
-      initialEndDate: activePreset.periodEnd,
-      derivedKeys: activePreset.derivedKeys,
-      seasonMonths: commonSeasonMonths(activePreset.problem),
-      exploration: problemExploration(activePreset.problem)
+      initialStartDate: activePeriodStart,
+      initialEndDate: activePeriodEnd,
+      derivedKeys: activeDerivedKeys,
+      seasonMonths: commonSeasonMonths(activeProblem),
+      exploration: problemExploration(activeProblem)
     });
   };
   const exportAllMetrics = () => {
     if (datePending) {
       setQueryMessage("변경한 날짜를 적용한 뒤 전체 자료를 내보내세요.");
+      return;
+    }
+    if (coordinateDraftPending) {
+      setQueryMessage("변경한 위도와 경도를 먼저 적용하세요.");
       return;
     }
     if (!hasCurrentDatasetResult) {
@@ -2340,7 +2568,7 @@ function QueryPage({ audience, datasetState }) {
     }
     const initialMetrics = [...new Set([
       ...metricsForSelection.filter((metric) => metric.key && metric.available !== false && Number.isFinite(metric.numericValue)).map((metric) => metric.key),
-      ...(activePreset.derivedKeys ?? [])
+      ...activeDerivedKeys
     ])];
     setExportContext({
       date,
@@ -2351,14 +2579,18 @@ function QueryPage({ audience, datasetState }) {
       expectedDataMode: remoteState.response?.dataMode,
       initialMetrics,
       includeRaw: raw && !usesRawModelGrid,
-      initialStartDate: activePreset.periodStart,
-      initialEndDate: activePreset.periodEnd,
-      derivedKeys: activePreset.derivedKeys,
-      seasonMonths: commonSeasonMonths(activePreset.problem),
-      exploration: problemExploration(activePreset.problem)
+      initialStartDate: activePeriodStart,
+      initialEndDate: activePeriodEnd,
+      derivedKeys: activeDerivedKeys,
+      seasonMonths: commonSeasonMonths(activeProblem),
+      exploration: problemExploration(activeProblem)
     });
   };
   const openProblemPeriod = (period) => {
+    if (datePending || coordinateDraftPending) {
+      setQueryMessage(datePending ? "변경한 날짜를 먼저 적용하세요." : "변경한 위도와 경도를 먼저 적용하세요.");
+      return;
+    }
     if (!hasCurrentDatasetResult) {
       setQueryMessage("최신 기후자료 조회가 끝난 뒤 기간 자료를 확인할 수 있습니다.");
       return;
@@ -2374,18 +2606,22 @@ function QueryPage({ audience, datasetState }) {
       scenario,
       model,
       expectedDataMode: remoteState.response?.dataMode,
-      initialMetrics: [...(activePreset.variableKeys ?? []), ...(activePreset.derivedKeys ?? [])],
+      initialMetrics: [...activeVariableKeys, ...activeDerivedKeys],
       includeRaw: raw && !usesRawModelGrid,
       initialStartDate: period.start,
       initialEndDate: period.end,
-      derivedKeys: activePreset.derivedKeys,
+      derivedKeys: activeDerivedKeys,
       seasonMonths: period.seasonMonths,
-      exploration: problemExploration(activePreset.problem)
+      exploration: problemExploration(activeProblem)
     });
   };
   const saveComparisonBaseline = () => {
     if (datePending) {
       setQueryMessage("변경한 날짜를 먼저 적용하세요.");
+      return;
+    }
+    if (coordinateDraftPending) {
+      setQueryMessage("변경한 위도와 경도를 먼저 적용하세요.");
       return;
     }
     if (!currentSnapshot) return;
@@ -2395,6 +2631,10 @@ function QueryPage({ audience, datasetState }) {
   const saveStudentNotebook = async () => {
     if (datePending) {
       setQueryMessage("변경한 날짜를 적용한 뒤 탐구 기록을 저장하세요.");
+      return;
+    }
+    if (coordinateDraftPending) {
+      setQueryMessage("변경한 위도와 경도를 먼저 적용하세요.");
       return;
     }
     if (!currentSnapshot) return;
@@ -2415,7 +2655,7 @@ function QueryPage({ audience, datasetState }) {
         focusLabel: focus.label,
         conclusion: studentConclusion,
         note: studentNote,
-        problem: activePreset.problem
+        problem: activeProblem
       });
       const googleDocsBlob = await buildGoogleDocsImportHtml(blob, { title: "기후 탐구 기록" });
       setStudentFileDelivery(createDocxDelivery({
@@ -2436,8 +2676,21 @@ function QueryPage({ audience, datasetState }) {
     /* @__PURE__ */ jsxs("div", { className: "query-layout", children: [
       /* @__PURE__ */ jsxs("section", { className: "query-panel", children: [
         /* @__PURE__ */ jsx("h2", { children: audience === "student" ? "탐구할 문제를 골라 보세요" : "조회 조건" }),
-        /* @__PURE__ */ jsx(ProblemCategoryControl, { label: "학생 문제 주제", onChange: setProblemCategory, value: problemCategory }),
-        /* @__PURE__ */ jsx("div", { className: "preset-grid", ref: presetGridRef, children: visiblePresets.map((preset) => /* @__PURE__ */ jsxs(
+        /* @__PURE__ */ jsxs("button", {
+          "aria-expanded": problemLibraryOpen,
+          className: "student-problem-library-toggle",
+          onClick: () => setProblemLibraryOpen((current) => !current),
+          type: "button",
+          children: [
+            /* @__PURE__ */ jsx(BookOpen, { size: 18 }),
+            /* @__PURE__ */ jsxs("span", { children: [
+              /* @__PURE__ */ jsx("strong", { children: activeProblem?.presentation?.shortLabel ?? activePreset.label }),
+              /* @__PURE__ */ jsx("small", { children: problemLibraryOpen ? "문제 목록 닫기" : "다른 문제 고르기" })
+            ] })
+          ]
+        }),
+        problemLibraryOpen ? /* @__PURE__ */ jsx(ProblemCategoryControl, { label: "학생 문제 주제", onChange: setProblemCategory, value: problemCategory }) : null,
+        problemLibraryOpen ? /* @__PURE__ */ jsx("div", { className: "preset-grid", ref: presetGridRef, children: visiblePresets.map((preset) => /* @__PURE__ */ jsxs(
           "button",
           {
             "aria-pressed": selectedPresetId === preset.id,
@@ -2451,7 +2704,7 @@ function QueryPage({ audience, datasetState }) {
             ]
           },
           preset.id
-        )) }),
+        )) }) : null,
         activePreset.studySites ? /* @__PURE__ */ jsxs("section", { className: "regional-study-sites", children: [
           /* @__PURE__ */ jsxs("div", { className: "regional-study-heading", children: [
             /* @__PURE__ */ jsx(CloudRain, { size: 17 }),
@@ -2476,8 +2729,14 @@ function QueryPage({ audience, datasetState }) {
           /* @__PURE__ */ jsx(Globe2, { size: 18 }),
           /* @__PURE__ */ jsxs("span", { children: [/* @__PURE__ */ jsx("strong", { children: "위치를 추리해 보세요" }), /* @__PURE__ */ jsx("small", { children: "답을 고를 때까지 위치와 지명을 보여 주지 않습니다." })] })
         ] }) : /* @__PURE__ */ jsxs("div", { className: "field-pair", children: [
-          /* @__PURE__ */ jsx(CoordinateInput, { label: "위도", max: mercatorLatitudeLimit, min: -mercatorLatitudeLimit, onChange: setLatitudeInput, value: latitudeInput }),
-          /* @__PURE__ */ jsx(CoordinateInput, { label: "경도", max: 180, min: -180, onChange: setLongitudeInput, value: longitudeInput })
+          /* @__PURE__ */ jsx(CoordinateInput, { label: "위도", max: mercatorLatitudeLimit, min: -mercatorLatitudeLimit, onChange: (value) => {
+            setLatitudeInput(value);
+            setQueryMessage("위도를 바꿨습니다. 선택한 위치 확인을 눌러 적용하세요.");
+          }, value: latitudeInput }),
+          /* @__PURE__ */ jsx(CoordinateInput, { label: "경도", max: 180, min: -180, onChange: (value) => {
+            setLongitudeInput(value);
+            setQueryMessage("경도를 바꿨습니다. 선택한 위치 확인을 눌러 적용하세요.");
+          }, value: longitudeInput })
         ] }),
         /* @__PURE__ */ jsxs("label", { className: "select-field", children: [
           "배출 경로",
@@ -2495,7 +2754,7 @@ function QueryPage({ audience, datasetState }) {
           /* @__PURE__ */ jsx(Search, { size: 18 }),
           locationConcealed ? "정답을 확인하면 위치 보기" : "선택한 위치 확인"
         ] }),
-        /* @__PURE__ */ jsx("div", { className: "mini-status ok", children: queryMessage })
+        /* @__PURE__ */ jsx("div", { className: `mini-status ${coordinateDraftPending || remoteState.status === "error" ? "warn" : "ok"}`, "aria-live": "polite", children: queryMessage })
       ] }),
       locationConcealed ? /* @__PURE__ */ jsx(MysteryLocationPanel, {
         guess: mysteryGuess,
@@ -2518,7 +2777,7 @@ function QueryPage({ audience, datasetState }) {
           date,
           latitude: coordinates.latitude,
           longitude: coordinates.longitude,
-          mapTone: activePreset.mapTone,
+          mapTone: activeProblem?.presentation?.mapTone ?? activePreset.mapTone,
           onCoordinateChange: selectMapCoordinate
         }
       ),
@@ -2531,29 +2790,32 @@ function QueryPage({ audience, datasetState }) {
           ] })
         ] }),
         /* @__PURE__ */ jsx("div", { className: `mini-status ${remoteState.status === "ready" ? "ok" : "warn"}`, "aria-live": "polite", children: remoteState.message }),
-        /* @__PURE__ */ jsx(MetricGrid, { items: metricsForSelection, onExportMetric: locationConcealed || !hasCurrentDatasetResult || datePending ? undefined : exportMetric }),
+        /* @__PURE__ */ jsx(MetricGrid, { items: metricsForSelection, onExportMetric: locationConcealed || !hasCurrentDatasetResult || datePending || coordinateDraftPending ? undefined : exportMetric }),
+        /* @__PURE__ */ jsx(ObservationAttributionPanel, { response: remoteState.response }),
         /* @__PURE__ */ jsx(StudentWorkbench, {
-          actionsDisabled: datePending,
+          actionsDisabled: datePending || coordinateDraftPending,
           baseline: comparisonBaseline,
           comparisonRows,
           currentSnapshot,
           focus: learningFocus,
           conclusion: studentConclusion,
-          conclusionOptions: activePreset.conclusionOptions,
+          conclusionOptions: activeProblem?.inquiry?.hypothesisChoices ?? activePreset.conclusionOptions,
           note: studentNote,
-          problemPrompt: learningFocus === activePreset.focus ? activePreset.problem?.roles.student.prompt : undefined,
+          problemPrompt: activeProblem?.roles?.student?.prompt,
           onConclusionChange: setStudentConclusion,
           onFocusChange: setLearningFocus,
           onNoteChange: (value) => setStudentNote(sanitizeNote(value)),
           onOpenProblemPeriod: openProblemPeriod,
           onSaveBaseline: saveComparisonBaseline,
           onSaveNotebook: saveStudentNotebook,
-          problem: activePreset.problem,
+          problem: activeProblem,
           mysteryRevealed,
           mysteryGuess
         }),
-        /* @__PURE__ */ jsx(NoticeCard, { title: "현재 탐구", body: activePreset.summary }),
-        /* @__PURE__ */ jsx(NoticeCard, { title: "자료를 읽을 때 주의할 점", body: locationConcealed ? `${activePreset.dataNote} 위치는 답을 고를 때까지 공개하지 않습니다.` : `${activePreset.dataNote} 현재 위치는 ${formatCoordinatePair(coordinates.latitude, coordinates.longitude)}입니다.` })
+        /* @__PURE__ */ jsx(NoticeCard, { title: "현재 탐구", body: activeProblem?.inquiry?.question ?? activePreset.summary }),
+        /* @__PURE__ */ jsx(NoticeCard, { title: "자료를 읽을 때 주의할 점", body: locationConcealed
+          ? `${activeProblem?.inquiry?.interpretationLimit ?? activePreset.dataNote} 위치는 답을 고를 때까지 공개하지 않습니다.`
+          : `${activeProblem?.inquiry?.interpretationLimit ?? activePreset.dataNote} 현재 위치는 ${formatCoordinatePair(coordinates.latitude, coordinates.longitude)}입니다.` })
       ] })
     ] }),
     /* @__PURE__ */ jsx(ClimateExportDialog, { context: exportContext, datasetState, onClose: () => setExportContext(null) }),
@@ -2571,7 +2833,57 @@ const studentFocusOptions = [
   { key: "rain", label: "비의 변화", icon: CloudRain, prompt: "6~10월 동안 비가 많이 내린 시기를 찾고, 그 시기가 우리가 알고 있던 6~7월과 다른지 지점과 모델별로 비교해 보세요." },
   { key: "wind", label: "바람과 체감", icon: Wind, prompt: "풍속과 체감기온 또는 열지수의 변화를 함께 살펴보세요. 두 값이 함께 변해도 원인과 결과로 단정하지 마세요." }
 ];
+function buildSharedCustomLessonProblem(shared) {
+  const custom = shared?.customLesson;
+  if (!custom) return undefined;
+  const metricKeys = custom.metricKeys ?? [];
+  const derivedKeys = metricKeys.includes("apparentTemperature") ? ["apparentTemperature"] : [];
+  const variableKeys = metricKeys.filter((key) => key !== "apparentTemperature");
+  const periodStart = shared.periodStart ?? shared.date;
+  const periodEnd = shared.periodEnd ?? shared.date;
+  return {
+    id: CUSTOM_TEACHER_LESSON_ID,
+    revision: 1,
+    category: shared.focus === "rain" ? "rain" : shared.focus === "wind" ? "wind" : shared.focus === "temperature" ? "temperature" : "heat",
+    presentation: {
+      title: custom.title,
+      shortLabel: custom.title,
+      detail: "교사가 직접 구성한 탐구 수업",
+      tags: metricKeys.map((key) => problemVariableLabels[key] ?? key),
+      iconKey: shared.focus,
+      mapTone: shared.focus
+    },
+    inquiry: {
+      objective: custom.objective,
+      question: custom.question,
+      hypothesisChoices: [],
+      interpretationLimit: custom.interpretationLimit
+    },
+    dataPlan: {
+      anchorDate: shared.date,
+      periodStart,
+      periodEnd,
+      comparisonPeriods: [{ id: "teacher-shared-period", label: "교사가 정한 탐구 기간", start: periodStart, end: periodEnd }],
+      scenario: shared.scenario,
+      defaultModel: shared.model,
+      raw: false,
+      allowCustomLocation: true,
+      variableKeys,
+      derivedKeys,
+      sites: [{ id: "teacher-shared-site", label: "수업 시작 위치", detail: "교사가 정한 위치", latitude: shared.latitude, longitude: shared.longitude }]
+    },
+    evidenceRequirements: { ...custom.evidenceRequirements },
+    roles: {
+      student: {
+        prompt: "교사가 정한 질문에 답할 수 있도록 위치·날짜·기후 모델이 다른 자료를 비교하고, 수치로 확인한 근거와 한계를 함께 기록하세요.",
+        output: custom.outputs
+      },
+      teacher: { assessmentCriteria: [] }
+    }
+  };
+}
 function sharedLessonMessage(shared) {
+  if (shared.customLesson?.title) return `교사가 만든 ‘${shared.customLesson.title}’ 수업을 열었습니다. 첫 번째 자료를 정한 뒤 비교 조건을 바꾸어 보세요.`;
   return shared.source === "public" ? "일반 요약에서 고른 자료를 자세히 열었습니다. 첫 번째 비교 자료를 정한 뒤 위치, 날짜 또는 기후 모델을 바꾸어 보세요." : "교사가 공유한 수업을 열었습니다. 첫 번째 비교 자료를 정한 뒤 위치, 날짜 또는 기후 모델을 바꾸어 보세요.";
 }
 function MysteryLocationPanel({ guess, mystery, onGuess, onReveal }) {
@@ -2601,7 +2913,7 @@ function MysteryLocationPanel({ guess, mystery, onGuess, onReveal }) {
     ] })
   ] });
 }
-function StudentProblemBrief({ mysteryGuess, mysteryRevealed, onOpenPeriod, problem }) {
+function StudentProblemBrief({ actionsDisabled = false, mysteryGuess, mysteryRevealed, onOpenPeriod, problem }) {
   const variables = problem.dataPlan.variableKeys.map((key) => problemVariableLabels[key] ?? key);
   const periods = problem.dataPlan.comparisonPeriods ?? [{
     id: "full",
@@ -2637,6 +2949,7 @@ function StudentProblemBrief({ mysteryGuess, mysteryRevealed, onOpenPeriod, prob
     /* @__PURE__ */ jsxs("div", { className: "student-problem-periods", children: [
       /* @__PURE__ */ jsx("strong", { children: periods.length > 1 ? "비교할 기간 열기" : "탐구 기간 자료 열기" }),
       /* @__PURE__ */ jsx("div", { children: periods.map((period) => /* @__PURE__ */ jsxs("button", {
+        disabled: actionsDisabled,
         onClick: () => onOpenPeriod(period),
         type: "button",
         children: [
@@ -2664,7 +2977,7 @@ function StudentWorkbench({ actionsDisabled = false, baseline, comparisonRows, c
         /* @__PURE__ */ jsx("p", { children: "기후 모델 자료에서 위치·날짜·모델이 다른 두 자료를 비교하고, 찾은 내용을 기록합니다." })
       ] })
     ] }),
-    problem ? /* @__PURE__ */ jsx(StudentProblemBrief, { mysteryGuess, mysteryRevealed, onOpenPeriod: onOpenProblemPeriod, problem }) : null,
+    problem ? /* @__PURE__ */ jsx(StudentProblemBrief, { actionsDisabled, mysteryGuess, mysteryRevealed, onOpenPeriod: onOpenProblemPeriod, problem }) : null,
     /* @__PURE__ */ jsx("div", { className: "student-focus-options", role: "group", "aria-label": "탐구 주제", children: studentFocusOptions.map(({ key, label, icon: Icon }) => /* @__PURE__ */ jsxs("button", { "aria-pressed": focus === key, className: focus === key ? "active" : "", onClick: () => onFocusChange(key), type: "button", children: [
       /* @__PURE__ */ jsx(Icon, { size: 16 }),
       label
@@ -2714,13 +3027,25 @@ function formatWorkbenchNumber(value) {
   return Number(value).toLocaleString("ko-KR", { maximumFractionDigits: 2 });
 }
 function ClimateLoadingOverlay({ onCancel }) {
+  const cancelButtonRef = useRef(null);
+  const dialogRef = useRef(null);
+  const openerRef = useRef(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   useEffect(() => {
+    openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     const startedAt = Date.now();
     const timer = window.setInterval(() => {
       setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1e3));
     }, 1e3);
-    return () => window.clearInterval(timer);
+    window.setTimeout(() => cancelButtonRef.current?.focus(), 40);
+    return () => {
+      window.clearInterval(timer);
+      document.body.style.overflow = previousOverflow;
+      openerRef.current?.focus();
+      openerRef.current = null;
+    };
   }, []);
   return /* @__PURE__ */ jsx("div", { className: "climate-loading-backdrop", role: "presentation", children: /* @__PURE__ */ jsxs(
     "section",
@@ -2729,14 +3054,24 @@ function ClimateLoadingOverlay({ onCancel }) {
       "aria-labelledby": "climate-loading-title",
       "aria-modal": "true",
       className: "climate-loading-dialog",
+      onKeyDown: (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onCancel();
+          return;
+        }
+        trapDialogTab(event, dialogRef.current);
+      },
+      ref: dialogRef,
       role: "dialog",
+      tabIndex: -1,
       children: [
         /* @__PURE__ */ jsxs("div", { className: "climate-loading-heading", children: [
           /* @__PURE__ */ jsx("div", { className: "climate-loading-icon", children: /* @__PURE__ */ jsx(LoaderCircle, { size: 28 }) }),
           /* @__PURE__ */ jsxs("div", { className: "climate-loading-copy", children: [
             /* @__PURE__ */ jsx("span", { className: "eyebrow", children: "실제 기후 자료 조회 중" }),
             /* @__PURE__ */ jsx("h2", { id: "climate-loading-title", children: "선택한 위치의 자료를 확인하고 있습니다" }),
-            /* @__PURE__ */ jsx("p", { id: "climate-loading-description", children: "선택한 위치 주변에 보정에 사용할 관측소가 없어 기후 모델 원자료를 읽고 있습니다. 이 경우 시간이 더 걸릴 수 있습니다. 조회가 끝날 때까지 새로고침하거나 창을 닫지 마세요." })
+            /* @__PURE__ */ jsx("p", { id: "climate-loading-description", children: "선택한 위치와 기간의 실제 기후 자료를 확인하고 있습니다. 자료의 위치와 범위에 따라 시간이 더 걸릴 수 있습니다. 조회가 끝날 때까지 새로고침하거나 창을 닫지 마세요." })
           ] })
         ] }),
         /* @__PURE__ */ jsxs("div", { className: "climate-loading-status", children: [
@@ -2747,7 +3082,7 @@ function ClimateLoadingOverlay({ onCancel }) {
           ] }),
           /* @__PURE__ */ jsxs("div", { className: "loading-completion", children: [
             /* @__PURE__ */ jsx("small", { children: "완료되면 이 창이 닫히고 결과가 자동으로 바뀝니다." }),
-            /* @__PURE__ */ jsx("button", { className: "loading-cancel-button", onClick: onCancel, type: "button", children: "취소" })
+            /* @__PURE__ */ jsx("button", { className: "loading-cancel-button", onClick: onCancel, ref: cancelButtonRef, type: "button", children: "취소" })
           ] })
         ] })
       ]
@@ -2827,7 +3162,8 @@ const teacherDataStatusLabels = {
   missing: "자료 없음",
   error: "확인 실패",
   cancelled: "조회 취소",
-  loading: "자료 확인 중"
+  loading: "자료 확인 중",
+  idle: "조건 입력 중"
 };
 function teacherDataStatusLabel(status) {
   return teacherDataStatusLabels[status] ?? "자료 확인 중";
@@ -2928,6 +3264,7 @@ function TeacherPage({ datasetState }) {
   const [lessonScenario, setLessonScenario] = useState("고배출 경로");
   const [lessonModel, setLessonModel] = useState(cmip6ModelOptions[0]);
   const [lessonFocus, setLessonFocus] = useState("heat");
+  const [customLessonDraft, setCustomLessonDraft] = useState(() => createCustomTeacherLessonDraft());
   const [activeTeacherSampleId, setActiveTeacherSampleId] = useState();
   const [teacherProblemCategory, setTeacherProblemCategory] = useState("all");
   const metadata = datasetState.metadata;
@@ -2936,7 +3273,28 @@ function TeacherPage({ datasetState }) {
   const [exportContext, setExportContext] = useState(null);
   const [teacherFileDelivery, setTeacherFileDelivery] = useState(null);
   const [shareOutcome, setShareOutcome] = useState("idle");
-  const activeTeacherSample = teacherLessonSamples.find((sample) => sample.id === activeTeacherSampleId);
+  const catalogTeacherSample = teacherLessonSamples.find((sample) => sample.id === activeTeacherSampleId);
+  const isCustomTeacherLesson = activeTeacherSampleId === CUSTOM_TEACHER_LESSON_ID;
+  const customLessonValidation = useMemo(
+    () => validateCustomTeacherLessonDraft(customLessonDraft, lessonDate),
+    [customLessonDraft, lessonDate]
+  );
+  const lastValidCustomTeacherSampleRef = useRef();
+  const activeTeacherSample = useMemo(() => {
+    if (!isCustomTeacherLesson) return catalogTeacherSample;
+    if (!customLessonValidation.valid) return lastValidCustomTeacherSampleRef.current;
+    const sample = buildCustomTeacherLessonSample({
+        date: lessonDate,
+        draft: customLessonDraft,
+        location: lessonLocation,
+        model: lessonModel,
+        objective: lessonObjective,
+        scenario: lessonScenario,
+        title: lessonTitle
+    });
+    lastValidCustomTeacherSampleRef.current = sample;
+    return sample;
+  }, [catalogTeacherSample, customLessonDraft, customLessonValidation.valid, isCustomTeacherLesson, lessonDate, lessonLocation, lessonModel, lessonObjective, lessonScenario, lessonTitle]);
   const visibleTeacherSamples = teacherLessonSamples.filter((sample) => teacherProblemCategory === "all" || sample.problem.category === teacherProblemCategory);
   const comparisonLimit = activeTeacherSample ? Math.max(
     3,
@@ -2954,12 +3312,18 @@ function TeacherPage({ datasetState }) {
     { id: "coast", label: "해안", detail: "부산 해안", latitude: 35.18, longitude: 129.08, icon: Waves },
     { id: "mountain", label: "산지", detail: "대관령", latitude: 37.68, longitude: 128.72, icon: Mountain }
   ];
-  const lessonLocations = activeTeacherSample?.sites ?? defaultLessonLocations;
+  const lessonLocations = catalogTeacherSample?.sites ?? defaultLessonLocations;
   const availableModels = normalizeMetadataOptions(metadata, "models", cmip6ModelOptions);
   const availableScenarios = normalizeMetadataOptions(metadata, "scenarios", ["고배출 경로"]);
+  const currentTeacherStep = teacherFlowState.currentStep;
+  const isLessonSelection = currentTeacherStep === TEACHER_STEP_IDS.LESSON_SELECTION;
+  const isLessonConditions = currentTeacherStep === TEACHER_STEP_IDS.LESSON_CONDITIONS;
+  const isActivityComposition = currentTeacherStep === TEACHER_STEP_IDS.ACTIVITY_COMPOSITION;
+  const isReviewAndShare = currentTeacherStep === TEACHER_STEP_IDS.REVIEW_AND_SHARE;
   const remoteState = useRemoteMetricResponse({
     coordinate: { latitude: lessonLocation.latitude, longitude: lessonLocation.longitude },
     date: lessonDate,
+    enabled: isActivityComposition || isReviewAndShare,
     scenario: lessonScenario,
     model: lessonModel,
     requestDatasetRefresh: datasetState.requestRefresh,
@@ -2972,6 +3336,13 @@ function TeacherPage({ datasetState }) {
     () => deriveClimateMetrics({ date: lessonDate, raw: false, remoteState }),
     [lessonDate, remoteState]
   );
+  const visibleLessonMetrics = useMemo(
+    () => isCustomTeacherLesson
+      ? lessonMetrics.filter((metric) => customLessonDraft.metricKeys.includes(metric.key))
+      : lessonMetrics,
+    [customLessonDraft.metricKeys, isCustomTeacherLesson, lessonMetrics]
+  );
+  const customActivityIdentity = `${customLessonDraft.metricKeys.join(",")}|${customLessonDraft.periodStart}|${customLessonDraft.periodEnd}`;
   const requiredTeacherMetricKeys = useMemo(
     () => activeTeacherSample
       ? [...new Set([...activeTeacherSample.variableKeys, ...activeTeacherSample.derivedKeys])]
@@ -2984,14 +3355,17 @@ function TeacherPage({ datasetState }) {
   );
   const hasCurrentTeacherResult = teacherQueryStatus === TEACHER_QUERY_STATUSES.READY
     && isMatchingPublicDatasetIdentity(remoteState.response, metadata?.datasetVersion, metadata?.datasetUpdatedAt);
-  const currentSnapshot = useMemo(() => hasCurrentTeacherResult ? createMetricSnapshot(lessonMetrics, {
-    date: lessonDate,
-    latitude: lessonLocation.latitude,
-    longitude: lessonLocation.longitude,
-    scenario: lessonScenario,
-    model: lessonModel,
-    label: lessonLocation.label
-  }) : void 0, [hasCurrentTeacherResult, lessonMetrics, lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonLocation.label, lessonScenario, lessonModel]);
+  const currentSnapshot = useMemo(() => withSnapshotObservationAttribution(
+    hasCurrentTeacherResult ? createMetricSnapshot(visibleLessonMetrics, {
+      date: lessonDate,
+      latitude: lessonLocation.latitude,
+      longitude: lessonLocation.longitude,
+      scenario: lessonScenario,
+      model: lessonModel,
+      label: lessonLocation.label
+    }) : void 0,
+    remoteState.response
+  ), [hasCurrentTeacherResult, visibleLessonMetrics, lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonLocation.label, lessonScenario, lessonModel, remoteState.response]);
   useLayoutEffect(() => {
     dispatchTeacherFlow({
       type: TEACHER_FLOW_ACTIONS.UPDATE_CONDITIONS,
@@ -3012,10 +3386,28 @@ function TeacherPage({ datasetState }) {
       materials: comparisonPoints
     });
   }, [comparisonPoints]);
+  useLayoutEffect(() => {
+    if (!isCustomTeacherLesson) return;
+    dispatchTeacherFlow({
+      type: TEACHER_FLOW_ACTIONS.UPDATE_COMPARISON_REQUIREMENTS,
+      requirements: customLessonDraft.evidenceRequirements
+    });
+  }, [customLessonDraft.evidenceRequirements, isCustomTeacherLesson]);
   useEffect(() => {
     setComparisonPoints([]);
     setStarted(false);
+    setExportContext(null);
+    setTeacherFileDelivery(null);
+    setSaveOutcome("idle");
+    setShareOutcome("idle");
   }, [metadata?.datasetUpdatedAt, metadata?.datasetVersion]);
+  useEffect(() => {
+    if (!isCustomTeacherLesson) return;
+    setComparisonPoints([]);
+    setStarted(false);
+    setExportContext(null);
+    setTeacherFileDelivery(null);
+  }, [customActivityIdentity, isCustomTeacherLesson]);
   useEffect(() => {
     dispatchTeacherFlow({
       type: TEACHER_FLOW_ACTIONS.SET_QUERY_STATUS,
@@ -3026,15 +3418,29 @@ function TeacherPage({ datasetState }) {
     teacherStepPanelRef.current?.scrollIntoView({ block: "start", behavior: "auto" });
     teacherStepHeadingRef.current?.focus({ preventScroll: true });
   }, [teacherFlowState.currentStep]);
-  const currentTeacherStep = teacherFlowState.currentStep;
-  const isLessonSelection = currentTeacherStep === TEACHER_STEP_IDS.LESSON_SELECTION;
-  const isLessonConditions = currentTeacherStep === TEACHER_STEP_IDS.LESSON_CONDITIONS;
-  const isActivityComposition = currentTeacherStep === TEACHER_STEP_IDS.ACTIVITY_COMPOSITION;
-  const isReviewAndShare = currentTeacherStep === TEACHER_STEP_IDS.REVIEW_AND_SHARE;
   const currentTeacherStepCopy = teacherStepCopy[currentTeacherStep];
-  const teacherConditionValidation = validateTeacherLessonConditions(teacherFlowState);
-  const teacherReviewValidation = validateTeacherReviewReadiness(teacherFlowState);
+  const baseTeacherConditionValidation = validateTeacherLessonConditions(teacherFlowState);
+  const customLessonRangeErrors = isCustomTeacherLesson ? [
+    metadata?.dateStart && customLessonDraft.periodStart < metadata.dateStart
+      ? { field: "periodStart", message: `탐구 시작일은 제공 범위인 ${metadata.dateStart} 이후여야 합니다.` }
+      : null,
+    metadata?.dateEnd && customLessonDraft.periodEnd > metadata.dateEnd
+      ? { field: "periodEnd", message: `탐구 종료일은 제공 범위인 ${metadata.dateEnd} 이전이어야 합니다.` }
+      : null
+  ].filter(Boolean) : [];
+  const customLessonErrors = isCustomTeacherLesson ? [...customLessonValidation.errors, ...customLessonRangeErrors] : [];
+  const teacherConditionValidation = {
+    errors: [...baseTeacherConditionValidation.errors, ...customLessonErrors],
+    valid: baseTeacherConditionValidation.valid && customLessonErrors.length === 0
+  };
+  const baseTeacherReviewValidation = validateTeacherReviewReadiness(teacherFlowState);
+  const teacherReviewValidation = {
+    errors: [...baseTeacherReviewValidation.errors, ...customLessonErrors],
+    valid: baseTeacherReviewValidation.valid && customLessonErrors.length === 0
+  };
   const teacherConditionErrorFields = new Set(teacherConditionValidation.errors.map((error) => error.field));
+  const customLessonReadyForShare = isCustomTeacherLesson && teacherConditionValidation.valid;
+  const teacherShareBlocked = isCustomTeacherLesson && !customLessonReadyForShare;
   const lessonToken = useMemo(() => encodeLessonState({
     source: "teacher",
     date: lessonDate,
@@ -3042,12 +3448,13 @@ function TeacherPage({ datasetState }) {
     longitude: lessonLocation.longitude,
     scenario: lessonScenario,
     model: lessonModel,
-    focus: lessonFocus,
-    problemSetId: activeTeacherSample?.id,
-    problemRevision: activeTeacherSample?.revision,
-    periodStart: activeTeacherSample?.periodStart,
-    periodEnd: activeTeacherSample?.periodEnd
-  }), [lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonScenario, lessonModel, lessonFocus, activeTeacherSample]);
+    focus: activeTeacherSample?.focus ?? lessonFocus,
+    problemSetId: isCustomTeacherLesson ? undefined : activeTeacherSample?.id,
+    problemRevision: isCustomTeacherLesson ? undefined : activeTeacherSample?.revision,
+    periodStart: isCustomTeacherLesson && !customLessonReadyForShare ? undefined : activeTeacherSample?.periodStart,
+    periodEnd: isCustomTeacherLesson && !customLessonReadyForShare ? undefined : activeTeacherSample?.periodEnd,
+    customLesson: customLessonReadyForShare ? customLessonSharePayload(activeTeacherSample) : undefined
+  }), [lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonScenario, lessonModel, lessonFocus, activeTeacherSample, customLessonReadyForShare, isCustomTeacherLesson]);
   const studentLink = useMemo(() => {
     const url = new URL(window.location.href);
     url.search = "";
@@ -3075,10 +3482,59 @@ function TeacherPage({ datasetState }) {
   useEffect(() => {
     setSaveOutcome("idle");
     setShareOutcome("idle");
-  }, [lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonScenario, lessonModel]);
+  }, [activeTeacherSampleId, comparisonPoints, customLessonDraft, lessonDate, lessonLocation.latitude, lessonLocation.longitude, lessonModel, lessonObjective, lessonScenario, lessonTitle]);
   const selectLessonLocation = (location) => {
     setLessonLocation(location);
     setTeacherMessage(`${location.label} 위치의 기후 모델 자료를 불러옵니다.`);
+  };
+  const updateCustomLessonDraft = (patch) => {
+    setCustomLessonDraft((current) => createCustomTeacherLessonDraft({
+      ...current,
+      ...patch,
+      evidenceRequirements: {
+        ...current.evidenceRequirements,
+        ...(patch.evidenceRequirements ?? {})
+      }
+    }));
+  };
+  const toggleCustomLessonMetric = (metricKey) => {
+    const selected = customLessonDraft.metricKeys.includes(metricKey);
+    updateCustomLessonDraft({
+      metricKeys: selected
+        ? customLessonDraft.metricKeys.filter((key) => key !== metricKey)
+        : [...customLessonDraft.metricKeys, metricKey]
+    });
+  };
+  const changeLessonDate = (nextDate) => {
+    const previousDate = lessonDate;
+    setLessonDate(nextDate);
+    if (isCustomTeacherLesson && customLessonDraft.periodStart === previousDate) {
+      updateCustomLessonDraft({
+        periodStart: nextDate,
+        periodEnd: calendarPeriodEnd(nextDate, 1)
+      });
+    }
+  };
+  const startCustomTeacherLesson = () => {
+    const nextDraft = createCustomTeacherLessonDraft({
+      ...customLessonDraft,
+      periodStart: lessonDate,
+      periodEnd: calendarPeriodEnd(lessonDate, 1)
+    });
+    setCustomLessonDraft(nextDraft);
+    setActiveTeacherSampleId(CUSTOM_TEACHER_LESSON_ID);
+    setLessonTitle("내가 만드는 기후 탐구 수업");
+    setLessonObjective("선택한 위치와 기후 모델의 자료를 비교하고, 수치로 확인한 근거와 자료의 한계를 함께 설명한다.");
+    setLessonFocus("temperature");
+    setComparisonPoints([]);
+    setStarted(false);
+    dispatchTeacherFlow({
+      type: TEACHER_FLOW_ACTIONS.SELECT_LESSON,
+      lessonId: CUSTOM_TEACHER_LESSON_ID,
+      requirements: nextDraft.evidenceRequirements
+    });
+    dispatchTeacherFlow({ type: TEACHER_FLOW_ACTIONS.NEXT });
+    setTeacherMessage("직접 수업 만들기를 시작했습니다. 질문, 기후 지표, 탐구 기간과 비교 조건을 정하세요.");
   };
   const applyTeacherSample = (sample) => {
     setActiveTeacherSampleId(sample.id);
@@ -3130,11 +3586,20 @@ function TeacherPage({ datasetState }) {
       setTeacherMessage(`첫 번째 비교 자료는 ${lessonLocation.label}입니다. 이제 위치, 날짜 또는 기후 모델을 바꾸어 다른 자료를 추가하세요.`);
   };
   const copyStudentLink = async () => {
+    if (teacherShareBlocked) {
+      setShareOutcome("idle");
+      setTeacherMessage("직접 만든 수업의 오류를 모두 해결한 뒤 학생용 링크를 공유하세요.");
+      return;
+    }
     const copied = await copyTextToClipboard(studentLink);
     setShareOutcome(copied ? "copied" : "failed");
     setTeacherMessage(copied ? "현재 수업 조건이 담긴 학생용 링크를 복사했습니다." : "링크를 복사하지 못했습니다. 학생 화면 열기를 사용하세요.");
   };
   const openStudentLesson = () => {
+    if (teacherShareBlocked) {
+      setTeacherMessage("직접 만든 수업의 오류를 모두 해결한 뒤 학생 화면을 여세요.");
+      return;
+    }
     window.location.hash = `/query?lesson=${lessonToken}`;
   };
   const saveTeacherPack = async () => {
@@ -3251,6 +3716,19 @@ function TeacherPage({ datasetState }) {
           /* @__PURE__ */ jsx(ProblemCategoryControl, { label: "교사용 문제 주제", onChange: setTeacherProblemCategory, value: teacherProblemCategory })
         ] })
       ] }),
+      /* @__PURE__ */ jsxs("div", { className: "teacher-custom-start", children: [
+        /* @__PURE__ */ jsxs("div", { children: [
+          /* @__PURE__ */ jsx("span", { className: "teacher-custom-start-icon", children: /* @__PURE__ */ jsx(NotebookPen, { size: 22 }) }),
+          /* @__PURE__ */ jsxs("div", { children: [
+            /* @__PURE__ */ jsx("strong", { children: "교사가 직접 수업 만들기" }),
+            /* @__PURE__ */ jsx("p", { children: "전 세계 지도에서 위치를 고르고 질문, 기후 지표, 탐구 기간과 비교 방법을 직접 정합니다." })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxs("button", { onClick: startCustomTeacherLesson, type: "button", children: [
+          "새 수업 만들기",
+          /* @__PURE__ */ jsx(ArrowRight, { size: 17 })
+        ] })
+      ] }),
       /* @__PURE__ */ jsx("div", { className: "teacher-sample-list", children: visibleTeacherSamples.map((sample) => /* @__PURE__ */ jsxs("article", { className: activeTeacherSampleId === sample.id ? "active" : "", children: [
         /* @__PURE__ */ jsxs("div", { children: [
           /* @__PURE__ */ jsx("span", { className: "teacher-sample-label", children: sample.label }),
@@ -3270,7 +3748,7 @@ function TeacherPage({ datasetState }) {
     ] }) : null,
     !isLessonSelection ? /* @__PURE__ */ jsxs("div", { className: `teacher-layout teacher-step-content${isReviewAndShare ? " review" : ""}`, children: [
       !isReviewAndShare ? /* @__PURE__ */ jsxs("section", { className: "teacher-map-column", children: [
-        /* @__PURE__ */ jsx(MapPanel, { compact: false, date: lessonDate, latitude: lessonLocation.latitude, longitude: lessonLocation.longitude, mapTone: lessonFocus === "rain" || lessonLocation.id === "coast" ? "rain" : "school", rawModelGrid: remoteState.response?.dataMode === "raw-model-grid", onCoordinateChange: selectTeacherMapCoordinate }),
+        /* @__PURE__ */ jsx(MapPanel, { compact: false, date: lessonDate, latitude: lessonLocation.latitude, longitude: lessonLocation.longitude, mapTone: activeTeacherSample?.focus === "rain" || lessonLocation.id === "coast" ? "rain" : "school", rawModelGrid: remoteState.response?.dataMode === "raw-model-grid", onCoordinateChange: selectTeacherMapCoordinate }),
         /* @__PURE__ */ jsxs("div", { className: "teacher-map-note", children: [
           /* @__PURE__ */ jsx("span", { className: "teacher-note-icon", children: /* @__PURE__ */ jsx(lessonLocation.icon, { size: 18 }) }),
           /* @__PURE__ */ jsxs("div", { children: [
@@ -3302,6 +3780,75 @@ function TeacherPage({ datasetState }) {
           "학습 목표",
           /* @__PURE__ */ jsx("textarea", { "aria-invalid": teacherConditionErrorFields.has("objective"), maxLength: 300, onChange: (event) => setLessonObjective(event.target.value), value: lessonObjective })
         ] }),
+        isLessonConditions && isCustomTeacherLesson ? /* @__PURE__ */ jsxs("section", { className: "teacher-custom-plan", "aria-labelledby": "teacher-custom-plan-title", children: [
+          /* @__PURE__ */ jsxs("div", { className: "teacher-custom-plan-heading", children: [
+            /* @__PURE__ */ jsx(Target, { size: 18 }),
+            /* @__PURE__ */ jsxs("div", { children: [
+              /* @__PURE__ */ jsx("h3", { id: "teacher-custom-plan-title", children: "탐구 활동 설계" }),
+              /* @__PURE__ */ jsx("p", { children: "학생이 무엇을 묻고 어떤 자료로 답할지 정합니다." })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxs("label", { className: "teacher-text-field", children: [
+            "학생에게 제시할 질문",
+            /* @__PURE__ */ jsx("textarea", {
+              "aria-invalid": teacherConditionErrorFields.has("question"),
+              maxLength: 500,
+              onChange: (event) => updateCustomLessonDraft({ question: event.target.value }),
+              rows: 3,
+              value: customLessonDraft.question
+            })
+          ] }),
+          /* @__PURE__ */ jsxs("fieldset", { className: "teacher-metric-picker", children: [
+            /* @__PURE__ */ jsx("legend", { children: "살펴볼 기후 지표" }),
+            /* @__PURE__ */ jsx("div", { children: metricOptions.map(({ key, label, icon: Icon }) => /* @__PURE__ */ jsxs("label", { className: customLessonDraft.metricKeys.includes(key) ? "selected" : "", children: [
+              /* @__PURE__ */ jsx("input", { checked: customLessonDraft.metricKeys.includes(key), onChange: () => toggleCustomLessonMetric(key), type: "checkbox" }),
+              /* @__PURE__ */ jsx(Icon, { size: 17 }),
+              /* @__PURE__ */ jsx("span", { children: label })
+            ] }, key)) })
+          ] }),
+          /* @__PURE__ */ jsxs("div", { className: "teacher-period-fields", children: [
+            /* @__PURE__ */ jsxs("label", { children: [
+              "탐구 시작일",
+              /* @__PURE__ */ jsx("input", { "aria-invalid": teacherConditionErrorFields.has("periodStart"), max: metadata?.dateEnd, min: metadata?.dateStart, onChange: (event) => updateCustomLessonDraft({ periodStart: event.target.value }), type: "date", value: customLessonDraft.periodStart })
+            ] }),
+            /* @__PURE__ */ jsxs("label", { children: [
+              "탐구 종료일",
+              /* @__PURE__ */ jsx("input", { "aria-invalid": teacherConditionErrorFields.has("periodEnd"), max: metadata?.dateEnd, min: metadata?.dateStart, onChange: (event) => updateCustomLessonDraft({ periodEnd: event.target.value }), type: "date", value: customLessonDraft.periodEnd })
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxs("label", { className: "teacher-text-field", children: [
+            "학생이 완성할 결과물",
+            /* @__PURE__ */ jsx("textarea", {
+              "aria-invalid": teacherConditionErrorFields.has("outputText"),
+              maxLength: 800,
+              onChange: (event) => updateCustomLessonDraft({ outputText: event.target.value }),
+              placeholder: "결과물 한 가지를 한 줄에 입력하세요.",
+              rows: 3,
+              value: customLessonDraft.outputText
+            })
+          ] }),
+          /* @__PURE__ */ jsxs("details", { className: "teacher-advanced-options", children: [
+            /* @__PURE__ */ jsx("summary", { children: "비교 조건과 해석 기준 조정" }),
+            /* @__PURE__ */ jsxs("div", { className: "teacher-requirement-fields", children: [
+              /* @__PURE__ */ jsxs("label", { children: [
+                "비교할 위치 수",
+                /* @__PURE__ */ jsx("select", { onChange: (event) => updateCustomLessonDraft({ evidenceRequirements: { minimumSites: Number(event.target.value) } }), value: customLessonDraft.evidenceRequirements.minimumSites, children: [1, 2, 3, 4].map((value) => /* @__PURE__ */ jsxs("option", { value, children: [value, "곳 이상"] }, value)) })
+              ] }),
+              /* @__PURE__ */ jsxs("label", { children: [
+                "비교할 기후 모델 수",
+                /* @__PURE__ */ jsx("select", { onChange: (event) => updateCustomLessonDraft({ evidenceRequirements: { minimumModels: Number(event.target.value) } }), value: customLessonDraft.evidenceRequirements.minimumModels, children: [1, 2, 3, 4].map((value) => /* @__PURE__ */ jsxs("option", { value, children: [value, "개 이상"] }, value)) })
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxs("label", { className: "toggle-row teacher-ensemble-toggle", children: [
+              /* @__PURE__ */ jsx("input", { checked: customLessonDraft.evidenceRequirements.includeEnsemble, onChange: (event) => updateCustomLessonDraft({ evidenceRequirements: { includeEnsemble: event.target.checked } }), type: "checkbox" }),
+              "여러 모델 종합값도 비교하도록 하기"
+            ] }),
+            /* @__PURE__ */ jsxs("label", { className: "teacher-text-field", children: [
+              "자료를 해석할 때 주의할 점",
+              /* @__PURE__ */ jsx("textarea", { "aria-invalid": teacherConditionErrorFields.has("interpretationLimit"), maxLength: 1000, onChange: (event) => updateCustomLessonDraft({ interpretationLimit: event.target.value }), rows: 3, value: customLessonDraft.interpretationLimit })
+            ] })
+          ] })
+        ] }) : null,
         /* @__PURE__ */ jsx("div", { className: "lesson-location-options", hidden: isReviewAndShare, role: "group", "aria-label": "수업 위치 선택", children: lessonLocations.map((location) => {
           const LocationIcon = location.icon;
           return /* @__PURE__ */ jsxs("button", { "aria-pressed": lessonLocation.id === location.id, className: lessonLocation.id === location.id ? "active" : "", onClick: () => selectLessonLocation(location), type: "button", children: [
@@ -3313,7 +3860,7 @@ function TeacherPage({ datasetState }) {
             lessonLocation.id === location.id ? /* @__PURE__ */ jsx(Check, { size: 16 }) : null
           ] }, location.id);
         }) }),
-        !isReviewAndShare ? /* @__PURE__ */ jsx(DateField, { label: "살펴볼 날짜", min: metadata?.dateStart, max: metadata?.dateEnd, onChange: setLessonDate, onPendingChange: setLessonDatePending, value: lessonDate }) : null,
+        !isReviewAndShare ? /* @__PURE__ */ jsx(DateField, { label: "살펴볼 날짜", min: metadata?.dateStart, max: metadata?.dateEnd, onChange: changeLessonDate, onPendingChange: setLessonDatePending, value: lessonDate }) : null,
         /* @__PURE__ */ jsxs("div", { className: "teacher-select-grid", hidden: isReviewAndShare, children: [
           /* @__PURE__ */ jsxs("label", { className: "select-field", children: [
             "배출 경로",
@@ -3339,6 +3886,10 @@ function TeacherPage({ datasetState }) {
         isReviewAndShare ? /* @__PURE__ */ jsxs("section", { className: "teacher-review-brief", "aria-label": "수업 조건 확인", children: [
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "수업명" }), /* @__PURE__ */ jsx("strong", { children: lessonTitle })] }),
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "학습 목표" }), /* @__PURE__ */ jsx("strong", { children: lessonObjective })] }),
+          isCustomTeacherLesson ? /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "탐구 질문" }), /* @__PURE__ */ jsx("strong", { children: customLessonDraft.question })] }) : null,
+          isCustomTeacherLesson ? /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "기후 지표" }), /* @__PURE__ */ jsx("strong", { children: customLessonDraft.metricKeys.map((key) => problemVariableLabels[key] ?? key).join(" · ") })] }) : null,
+          isCustomTeacherLesson ? /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "탐구 기간" }), /* @__PURE__ */ jsxs("strong", { children: [customLessonDraft.periodStart, " ~ ", customLessonDraft.periodEnd] })] }) : null,
+          isCustomTeacherLesson ? /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "완성할 결과물" }), /* @__PURE__ */ jsx("strong", { children: expectedOutputs(customLessonDraft.outputText).join(" · ") })] }) : null,
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "위치와 날짜" }), /* @__PURE__ */ jsxs("strong", { children: [lessonLocation.label, " · ", lessonDate] })] }),
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "배출 경로와 기후 모델" }), /* @__PURE__ */ jsxs("strong", { children: [lessonScenario, " · ", lessonModel] })] }),
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "비교 근거" }), /* @__PURE__ */ jsx("strong", { children: `${comparisonPoints.length}개 자료 · 지역 ${comparisonSiteCount}곳 · 기후 모델 ${comparisonModelCount}개` })] })
@@ -3359,8 +3910,8 @@ function TeacherPage({ datasetState }) {
           /* @__PURE__ */ jsxs("section", { className: "teacher-action-group", children: [
             /* @__PURE__ */ jsxs("div", { className: "teacher-action-heading", children: [/* @__PURE__ */ jsx("strong", { children: "학생과 공유" }), /* @__PURE__ */ jsx("small", { children: "현재 자료를 시작점으로 학생이 위치와 날짜를 바꾸며 탐구합니다." })] }),
             /* @__PURE__ */ jsxs("div", { className: "teacher-actions", children: [
-              /* @__PURE__ */ jsxs("button", { disabled: !started, type: "button", onClick: openStudentLesson, children: [/* @__PURE__ */ jsx(Link, { size: 16 }), "학생 화면 열기"] }),
-              /* @__PURE__ */ jsxs("button", { disabled: !started, type: "button", onClick: copyStudentLink, children: [/* @__PURE__ */ jsx(ClipboardCopy, { size: 16 }), shareOutcome === "copied" ? "학생용 링크 복사 완료" : "학생용 링크 복사"] })
+              /* @__PURE__ */ jsxs("button", { disabled: !started || teacherShareBlocked, type: "button", onClick: openStudentLesson, children: [/* @__PURE__ */ jsx(Link, { size: 16 }), "학생 화면 열기"] }),
+              /* @__PURE__ */ jsxs("button", { disabled: !started || teacherShareBlocked, type: "button", onClick: copyStudentLink, children: [/* @__PURE__ */ jsx(ClipboardCopy, { size: 16 }), shareOutcome === "copied" ? "학생용 링크 복사 완료" : "학생용 링크 복사"] })
             ] })
           ] }),
           /* @__PURE__ */ jsxs("section", { className: "teacher-action-group", children: [
@@ -3386,7 +3937,8 @@ function TeacherPage({ datasetState }) {
         /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("h2", { children: "수업에 사용할 기후 모델 자료" }), /* @__PURE__ */ jsx("p", { children: "선택한 위치, 날짜, 배출 경로, 기후 모델에 해당하는 값을 보여 줍니다." })] }),
         /* @__PURE__ */ jsxs("button", { className: "secondary-action", disabled: !started || !currentSnapshot || lessonDatePending, onClick: addComparisonPoint, type: "button", children: [/* @__PURE__ */ jsx(BookmarkPlus, { size: 16 }), "비교 목록에 추가"] })
       ] }),
-      /* @__PURE__ */ jsx(MetricGrid, { items: lessonMetrics }),
+      /* @__PURE__ */ jsx(MetricGrid, { items: visibleLessonMetrics }),
+      /* @__PURE__ */ jsx(ObservationAttributionPanel, { response: remoteState.response }),
       comparisonPoints.length > 0 ? /* @__PURE__ */ jsx("div", { className: "teacher-comparison-list", children: comparisonPoints.map((point) => /* @__PURE__ */ jsxs("article", { children: [
         /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: point.label }), /* @__PURE__ */ jsxs("span", { children: [point.date, " · ", formatCoordinatePair(point.latitude, point.longitude)] }), /* @__PURE__ */ jsxs("span", { children: [point.scenario, " · ", point.model] }), /* @__PURE__ */ jsx("small", { children: point.values.slice(0, 3).map((metric) => `${metric.label} ${formatPublicMetricValue({ key: metric.key, numericValue: metric.value, unit: metric.unit })}`).join(" · ") })] }),
         /* @__PURE__ */ jsx("button", { "aria-label": `${point.label} 비교 지점 삭제`, onClick: () => setComparisonPoints((current) => current.filter((item) => item.id !== point.id)), type: "button", children: /* @__PURE__ */ jsx(Trash2, { size: 16 }) })
@@ -3401,8 +3953,11 @@ function TeacherPage({ datasetState }) {
     /* @__PURE__ */ jsx(TeacherStepNavigation, {
       state: teacherFlowState,
       onPrevious: () => dispatchTeacherFlow({ type: TEACHER_FLOW_ACTIONS.PREVIOUS }),
-      onNext: () => dispatchTeacherFlow({ type: TEACHER_FLOW_ACTIONS.NEXT }),
-      nextDisabled: lessonDatePending
+      onNext: () => {
+        if (isLessonConditions && !teacherConditionValidation.valid) return;
+        dispatchTeacherFlow({ type: TEACHER_FLOW_ACTIONS.NEXT });
+      },
+      nextDisabled: lessonDatePending || (isLessonConditions && !teacherConditionValidation.valid)
     })
     ] }),
     /* @__PURE__ */ jsx(ClimateExportDialog, { context: exportContext, datasetState, onClose: () => setExportContext(null) }),
@@ -3414,7 +3969,7 @@ function TeacherPage({ datasetState }) {
         setTeacherMessage(describeSaveResult(result, "수업 활동지"));
       }
     }),
-    remoteState.status === "loading" ? /* @__PURE__ */ jsx(ClimateLoadingOverlay, { onCancel: remoteState.cancel }) : null
+    (isActivityComposition || isReviewAndShare) && remoteState.status === "loading" ? /* @__PURE__ */ jsx(ClimateLoadingOverlay, { onCancel: remoteState.cancel }) : null
   ] });
 }
 function PublicPage({ datasetState }) {
@@ -3479,21 +4034,18 @@ function PublicPage({ datasetState }) {
     window.addEventListener("beforeunload", preventRefresh);
     return () => window.removeEventListener("beforeunload", preventRefresh);
   }, [remoteState.status]);
-  const moveToCurrentLocation = () => {
-    if (!navigator.geolocation) {
-      setMessage("이 브라우저에서는 현재 위치 기능을 사용할 수 없습니다. 지도에서 직접 위치를 선택하세요.");
-      return;
-    }
+  const moveToCurrentLocation = async () => {
     setLocating(true);
     setMessage("브라우저에서 현재 위치를 확인하고 있습니다.");
-    navigator.geolocation.getCurrentPosition((position) => {
-      setCoordinates({ latitude: clamp(position.coords.latitude, -mercatorLatitudeLimit, mercatorLatitudeLimit), longitude: normalizeLongitude(position.coords.longitude) });
-      setLocating(false);
+    try {
+      const coordinate = await requestCurrentBrowserCoordinate();
+      setCoordinates(coordinate);
       setMessage("현재 위치로 이동했습니다. 실제 기후 자료를 다시 불러옵니다.");
-    }, () => {
+    } catch (error) {
+      setMessage(currentLocationFailureMessage(error));
+    } finally {
       setLocating(false);
-      setMessage("현재 위치 권한을 사용할 수 없습니다. 지도에서 직접 위치를 선택하세요.");
-    }, { enableHighAccuracy: false, maximumAge: 300000, timeout: 10000 });
+    }
   };
   const changePublicYear = (year) => {
     const candidate = `${year}${dateMonthDay}`;
@@ -3640,6 +4192,7 @@ function PublicPage({ datasetState }) {
           /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("strong", { children: "쉽게 읽기" }), /* @__PURE__ */ jsx("p", { children: plainLanguageSummary })] })
         ] }),
         /* @__PURE__ */ jsx(MetricGrid, { items: publicMetrics, onExportMetric: hasCurrentDatasetResult && !publicDatePending ? exportPublicMetric : undefined }),
+        /* @__PURE__ */ jsx(ObservationAttributionPanel, { response: remoteState.response }),
         /* @__PURE__ */ jsxs("div", { className: "public-results-footer", children: [
           /* @__PURE__ */ jsxs("div", { children: [
             /* @__PURE__ */ jsx("strong", { children: "현재 화면" }),
@@ -3656,6 +4209,7 @@ function PublicPage({ datasetState }) {
 function useRemoteMetricResponse({
   coordinate,
   date,
+  enabled = true,
   scenario,
   model,
   requestDatasetRefresh,
@@ -3674,14 +4228,24 @@ function useRemoteMetricResponse({
   );
   const [state, setState] = useState({
     conditionKey,
-    status: "loading",
-    message: "실제 기후 자료를 불러오고 있습니다."
+    status: enabled ? "loading" : "idle",
+    message: enabled ? "실제 기후 자료를 불러오고 있습니다." : "수업 조건을 정한 뒤 기후 자료를 확인합니다."
   });
   const controllerRef = useRef();
   const cancelledConditionRef = useRef();
   const completedRefreshSequenceRef = useRef(refreshSequence);
   const observedDatasetVersionRef = useRef(datasetVersion);
   useEffect(() => {
+    if (!enabled) {
+      controllerRef.current?.abort();
+      controllerRef.current = void 0;
+      setState({
+        conditionKey,
+        status: "idle",
+        message: "수업 조건을 정한 뒤 기후 자료를 확인합니다."
+      });
+      return;
+    }
     if (cancelledConditionRef.current && cancelledConditionRef.current !== conditionKey) {
       cancelledConditionRef.current = void 0;
     }
@@ -3785,7 +4349,7 @@ function useRemoteMetricResponse({
       controller.abort();
       if (controllerRef.current === controller) controllerRef.current = void 0;
     };
-  }, [conditionKey, datasetStatus, datasetUpdatedAt, datasetVersion, request, requestDatasetRefresh, refreshSequence]);
+  }, [conditionKey, datasetStatus, datasetUpdatedAt, datasetVersion, enabled, request, requestDatasetRefresh, refreshSequence]);
   const cancel = () => {
     if (state.status !== "loading") return;
     cancelledConditionRef.current = conditionKey;
@@ -3968,6 +4532,8 @@ function MapPanel({
   const mapElementRef = useRef(null);
   const dragRef = useRef(null);
   const suppressClickRef = useRef(false);
+  const [locatingCurrentPosition, setLocatingCurrentPosition] = useState(false);
+  const [locationNotice, setLocationNotice] = useState("");
   useEffect(() => {
     setMapCenter({ latitude, longitude });
   }, [latitude, longitude]);
@@ -4026,6 +4592,24 @@ function MapPanel({
   };
   const resetMapCenter = () => {
     setMapCenter({ latitude, longitude });
+  };
+  const locateCurrentPosition = async () => {
+    if (locatingCurrentPosition || !onCoordinateChange) return;
+    setLocatingCurrentPosition(true);
+    const locatingMessage = "브라우저에서 현재 위치를 확인하고 있습니다.";
+    setLocationNotice(locatingMessage);
+    try {
+      const coordinate = await requestCurrentBrowserCoordinate();
+      setMapCenter(coordinate);
+      onCoordinateChange(coordinate);
+      const successMessage = "현재 위치를 지도에 적용했습니다. 해당 위치의 기후 자료를 확인합니다.";
+      setLocationNotice(successMessage);
+    } catch (error) {
+      const failureMessage = currentLocationFailureMessage(error);
+      setLocationNotice(failureMessage);
+    } finally {
+      setLocatingCurrentPosition(false);
+    }
   };
   const startDrag = (event) => {
     if (!onCoordinateChange) return;
@@ -4129,10 +4713,11 @@ function MapPanel({
       ] }),
       /* @__PURE__ */ jsx("span", { children: rawModelGrid ? "기후 모델 원자료" : raw ? "보정 전 값 함께 보기" : "보정한 값" })
     ] }),
-    /* @__PURE__ */ jsxs("div", { className: "map-controls", "aria-label": "지도 확대 축소", children: [
-      /* @__PURE__ */ jsx("button", { onClick: () => changeZoom(1), type: "button", "aria-label": "지도 확대", children: "+" }),
-      /* @__PURE__ */ jsx("button", { onClick: () => changeZoom(-1), type: "button", "aria-label": "지도 축소", children: "-" }),
-      /* @__PURE__ */ jsx("button", { onClick: resetMapCenter, type: "button", "aria-label": "선택 지점으로 이동", children: /* @__PURE__ */ jsx(LocateFixed, { size: 17 }) })
+    /* @__PURE__ */ jsxs("div", { className: "map-controls", "aria-label": "지도 조작", children: [
+      /* @__PURE__ */ jsx("button", { onClick: () => changeZoom(1), title: "지도 확대", type: "button", "aria-label": "지도 확대", children: "+" }),
+      /* @__PURE__ */ jsx("button", { onClick: () => changeZoom(-1), title: "지도 축소", type: "button", "aria-label": "지도 축소", children: "-" }),
+      /* @__PURE__ */ jsx("button", { onClick: resetMapCenter, title: "선택한 지점으로 이동", type: "button", "aria-label": "선택한 지점으로 이동", children: /* @__PURE__ */ jsx(Target, { size: 17 }) }),
+      onCoordinateChange ? /* @__PURE__ */ jsx("button", { disabled: locatingCurrentPosition, onClick: locateCurrentPosition, title: "현재 위치 찾기", type: "button", "aria-label": "현재 위치 찾기", children: locatingCurrentPosition ? /* @__PURE__ */ jsx(LoaderCircle, { className: "spin", size: 17 }) : /* @__PURE__ */ jsx(Navigation, { size: 17 }) }) : null
     ] }),
     /* @__PURE__ */ jsx(
       "div",
@@ -4181,11 +4766,7 @@ function MapPanel({
     /* @__PURE__ */ jsx("div", { className: "map-attribution", children: "지도 데이터: OpenStreetMap 기여자" }),
     /* @__PURE__ */ jsxs("div", { className: "map-status", children: [
       /* @__PURE__ */ jsxs("strong", { children: ["선택한 위치 ", formatCoordinatePair(latitude, longitude)] }),
-      /* @__PURE__ */ jsxs("span", { children: [
-        date,
-        " 기준, ",
-        onCoordinateChange ? "지도를 눌러 위치를 바꿀 수 있습니다" : "예시 위치입니다"
-      ] })
+      /* @__PURE__ */ jsx("span", { "aria-live": "polite", children: locationNotice || `${date} 기준, ${onCoordinateChange ? "지도를 눌러 위치를 바꿀 수 있습니다" : "예시 위치입니다"}` })
     ] })
   ] });
 }
@@ -4320,11 +4901,16 @@ function CoordinateInput({
 }) {
   const isLatitude = label === "위도";
   const negative = String(value).startsWith("-") || Number(value) < 0;
-  const direction = isLatitude ? negative ? "S" : "N" : negative ? "W" : "E";
+  const inferredDirection = isLatitude ? negative ? "S" : "N" : negative ? "W" : "E";
+  const [direction, setDirection] = useState(inferredDirection);
   const directionOptions = isLatitude ? [["N", "N(북위)"], ["S", "S(남위)"]] : [["E", "E(동경)"], ["W", "W(서경)"]];
   const absoluteValue = String(value).replace(/^-/, "");
   const absoluteMaximum = Math.max(Math.abs(Number(min)), Math.abs(Number(max)));
+  useEffect(() => {
+    if (absoluteValue !== "") setDirection(inferredDirection);
+  }, [absoluteValue, inferredDirection]);
   const changeDirection = (nextDirection) => {
+    setDirection(nextDirection);
     const shouldBeNegative = ["S", "W"].includes(nextDirection);
     onChange(absoluteValue === "" ? "" : `${shouldBeNegative ? "-" : ""}${absoluteValue}`);
   };
@@ -4339,7 +4925,9 @@ function CoordinateInput({
           inputMode: "decimal",
           max: absoluteMaximum,
           min: 0,
-          onChange: (event) => onChange(`${negative ? "-" : ""}${event.target.value}`),
+          onChange: (event) => onChange(event.target.value === ""
+            ? ""
+            : `${["S", "W"].includes(direction) ? "-" : ""}${event.target.value}`),
           step: "0.0001",
           type: "number",
           value: absoluteValue
