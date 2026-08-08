@@ -50,7 +50,21 @@ export default defineConfig({
   plugins: [createAppShellAssetManifestPlugin()],
   build: {
     outDir: path.resolve(sourceRoot, "..", "dist"),
-    emptyOutDir: true
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalizedId = id.replaceAll("\\", "/");
+          if (/\/node_modules\/(?:react|react-dom|scheduler)\//u.test(normalizedId)) return "react-vendor";
+          if (normalizedId.includes("/node_modules/@astryxdesign/") || normalizedId.includes("/node_modules/@stylexjs/")) return "astryx-vendor";
+          if (/\/node_modules\/(?:pdf-lib|@pdf-lib\/fontkit)\//u.test(normalizedId)) return "pdf-vendor";
+          if (normalizedId.includes("/node_modules/docx/")) return "docx-vendor";
+          if (normalizedId.includes("/node_modules/jszip/")) return "archive-vendor";
+          if (normalizedId.includes("/node_modules/lucide-react/")) return "icons-vendor";
+          return void 0;
+        }
+      }
+    }
   },
   server: {
     host: "127.0.0.1",

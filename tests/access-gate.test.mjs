@@ -47,7 +47,11 @@ test("index는 본 앱 대신 접근 게이트만 시작한다", () => {
   assert.match(indexSource, /src="\.\/access-gate\.js"/u);
   assert.doesNotMatch(indexSource, /(?:src|href)="\.\/public-app\.(?:js|css)"/u);
   assert.match(gateSource, /import\("\.\/public-app\.js"\)/u);
-  assert.match(publicAppSource, /^import "\.\/public-app\.css";/u);
+  assert.match(publicAppSource, /^import "@astryxdesign\/core\/reset\.css";/u);
+  assert.match(publicAppSource, /import "@astryxdesign\/core\/astryx\.css";/u);
+  assert.match(publicAppSource, /import "@astryxdesign\/theme-neutral\/theme\.css";/u);
+  assert.match(publicAppSource, /import "\.\/public-app\.css";/u);
+  assert.match(publicAppSource, /import "\.\/astryx-theme\.css";/u);
 });
 
 test("접근 화면은 한국어 입력 안내와 오류 상태를 제공한다", () => {
