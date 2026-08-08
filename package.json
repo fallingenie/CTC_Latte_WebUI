@@ -7,6 +7,9 @@
   "engines": {
     "node": "^20.19.0 || >=22.12.0"
   },
+  "astryx": {
+    "theme": "@astryxdesign/theme-neutral"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite --config source/vite.config.js",
@@ -25,6 +28,8 @@
     "verify:deployment": "pnpm build && node scripts/verify-reproducible-build.mjs && pnpm attest:production && pnpm verify:public-data && node scripts/verify-production-data-policy.mjs --require-attestation"
   },
   "dependencies": {
+    "@astryxdesign/core": "^0.3.0",
+    "@astryxdesign/theme-neutral": "^0.3.0",
     "@pdf-lib/fontkit": "^1.1.1",
     "docx": "^9.7.1",
     "jszip": "^3.10.1",
@@ -35,6 +40,7 @@
     "react-dom": "^19.2.3"
   },
   "devDependencies": {
+    "@astryxdesign/cli": "^0.3.0",
     "vite": "^7.3.0"
   }
 }

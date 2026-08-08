@@ -1,12 +1,17 @@
+import "@astryxdesign/core/reset.css";
+import "@astryxdesign/core/astryx.css";
+import "@astryxdesign/theme-neutral/theme.css";
 import "./public-app.css";
+import "./astryx-theme.css";
 import { jsx, jsxs, Fragment } from "react/jsx-runtime";
 import { useRef, useState, useEffect, useLayoutEffect, useMemo, useReducer, useCallback, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { X, CalendarDays, Download, Table2, FileText, Image as ImageIcon, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge, Mountain, Waves, ArrowLeft, ArrowRight, Sun, Moon, Monitor, BookOpen, BookmarkPlus, ClipboardCopy, Navigation, Plus, Minus, Trash2, NotebookPen, Target, Link, LockKeyhole, RefreshCw, Share2 } from "lucide-react";
+import { X, CalendarDays, Download, Table2, FileText, Image as ImageIcon, Eye, ThermometerSun, ThermometerSnowflake, CloudRain, Wind, Check, LoaderCircle, CloudSun, Search, MapPin, GraduationCap, UsersRound, HardDriveDownload, PlayCircle, Activity, School, Globe2, LocateFixed, Droplets, TriangleAlert, Gauge, Mountain, Waves, ArrowLeft, ArrowRight, Monitor, BookOpen, BookmarkPlus, ClipboardCopy, Navigation, Plus, Minus, Trash2, NotebookPen, Target, Link, LockKeyhole, RefreshCw, Share2 } from "lucide-react";
+import { ClimateAppShell } from "./astryx-app-shell.js";
+import { useThemeMode } from "./theme-mode.js";
 import { requestSaveTarget, saveBlobToTarget, shareBlobFiles } from "./browser-download.js";
 import { climateProblemSets } from "./climate-problem-catalog.js";
 import { PUBLIC_ATTRIBUTION_CATALOG, findClimateModelAttribution } from "./attribution-catalog.js";
-import { buildClimatePdfBlob } from "./climate-pdf.js";
 import {
   buildAttributionBundle,
   buildPublicExportAttribution,
@@ -143,7 +148,12 @@ async function prepareClimateSeriesExport(response, format) {
     };
   } else {
     const canvas = await buildClimateReportCanvas(response);
-    blob = format === "png" ? await canvasBlob(canvas, "image/png") : await buildClimatePdfBlob(canvas, response);
+    if (format === "png") {
+      blob = await canvasBlob(canvas, "image/png");
+    } else {
+      const { buildClimatePdfBlob } = await import("./climate-pdf.js");
+      blob = await buildClimatePdfBlob(canvas, response);
+    }
   }
   return {
     label: `${format.toUpperCase()} 기간 자료`,
@@ -2051,82 +2061,23 @@ function usePublicDatasetMetadata() {
 }
 function App() {
   const route = useHashRoute();
-  const [themeMode, setThemeMode] = useThemeMode();
+  const { mode: themeMode, resolvedMode, setMode: setThemeMode } = useThemeMode();
   const datasetState = usePublicDatasetMetadata();
   const page = useMemo(() => renderRoute(route, datasetState), [route, datasetState]);
   useEffect(() => {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [route]);
-  return /* @__PURE__ */ jsxs("div", { className: `app route-${route.slice(1)}`, children: [
-    /* @__PURE__ */ jsx("header", { className: "site-header", children: /* @__PURE__ */ jsxs("div", { className: "site-header-inner", children: [
-      /* @__PURE__ */ jsxs("button", { className: "brand", onClick: () => setRoute("/query"), type: "button", "aria-label": "기후 타임캡슐 학생 탐색으로 이동", children: [
-        /* @__PURE__ */ jsx("span", { className: "brand-mark", children: /* @__PURE__ */ jsx(CloudSun, { size: 23 }) }),
-        /* @__PURE__ */ jsxs("span", { className: "brand-copy", children: [
-          /* @__PURE__ */ jsx("strong", { children: "기후 타임캡슐" }),
-          /* @__PURE__ */ jsx("small", { children: "미래 기후 지도" })
-        ] })
-      ] }),
-      /* @__PURE__ */ jsx("nav", { className: "nav", "aria-label": "사용자 화면 탐색", children: publicNavItems.map((item) => /* @__PURE__ */ jsxs("button", { className: route === item.route ? "nav-item active" : "nav-item", onClick: () => setRoute(item.route), type: "button", children: [
-        item.icon,
-        /* @__PURE__ */ jsx("span", { children: item.label })
-      ] }, item.route)) }),
-      /* @__PURE__ */ jsxs("div", { className: "header-actions", children: [
-        /* @__PURE__ */ jsx(ThemeControl, { mode: themeMode, onChange: setThemeMode }),
-        /* @__PURE__ */ jsxs("button", { className: "header-example-button", onClick: openExamplePicker, type: "button", children: [
-          /* @__PURE__ */ jsx(Search, { size: 17 }),
-          "예시 보기"
-        ] })
-      ] })
-    ] }) }),
-    /* @__PURE__ */ jsxs("main", { className: "main", children: [
-      /* @__PURE__ */ jsx(TopBar, { metadata: datasetState.metadata, route }),
-      page
-    ] }),
-    /* @__PURE__ */ jsx(SiteFooter, {})
-  ] });
-}
-function useThemeMode() {
-  const [mode, setMode] = useState(() => {
-    try {
-      const saved = window.localStorage.getItem("ctc:theme-mode");
-      return ["system", "light", "dark"].includes(saved) ? saved : "system";
-    } catch {
-      return "system";
-    }
+  return /* @__PURE__ */ jsx(ClimateAppShell, {
+    footer: /* @__PURE__ */ jsx(SiteFooter, {}),
+    navItems: publicNavItems,
+    onOpenExamples: openExamplePicker,
+    onThemeModeChange: setThemeMode,
+    page,
+    resolvedThemeMode: resolvedMode,
+    route,
+    themeMode,
+    topBar: /* @__PURE__ */ jsx(TopBar, { metadata: datasetState.metadata, route })
   });
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const applyTheme = () => {
-      const resolved = mode === "system" ? media.matches ? "dark" : "light" : mode;
-      document.documentElement.dataset.theme = resolved;
-      document.documentElement.dataset.themeMode = mode;
-      document.documentElement.style.colorScheme = resolved;
-    };
-    try {
-      window.localStorage.setItem("ctc:theme-mode", mode);
-    } catch {
-    }
-    applyTheme();
-    media.addEventListener?.("change", applyTheme);
-    return () => media.removeEventListener?.("change", applyTheme);
-  }, [mode]);
-  return [mode, setMode];
-}
-function ThemeControl({ mode, onChange }) {
-  const options = [
-    { key: "system", label: "시스템 설정 따르기", icon: Monitor },
-    { key: "light", label: "밝게 보기", icon: Sun },
-    { key: "dark", label: "어둡게 보기", icon: Moon }
-  ];
-  return /* @__PURE__ */ jsx("div", { className: "theme-control", role: "group", "aria-label": "화면 테마", children: options.map(({ key, label, icon: Icon }) => /* @__PURE__ */ jsx("button", {
-    "aria-label": label,
-    "aria-pressed": mode === key,
-    className: mode === key ? "active" : "",
-    onClick: () => onChange(key),
-    title: label,
-    type: "button",
-    children: /* @__PURE__ */ jsx(Icon, { size: 16 })
-  }, key)) });
 }
 function ProblemCategoryControl({ value, onChange, label }) {
   return /* @__PURE__ */ jsx("div", { className: "problem-category-control", role: "group", "aria-label": label, children: problemCategoryOptions.map((option) => /* @__PURE__ */ jsx("button", {

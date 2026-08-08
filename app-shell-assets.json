@@ -3,17 +3,19 @@
   "assets": [
     "assets/Pretendard-Regular-PCFjemQu.ttf",
     "assets/PretendardVariable-CJuje-Rk.woff2",
-    "assets/_commonjsHelpers-Cpj98o6Y.js",
-    "assets/docx-google-docs-qUS6E_55.js",
-    "assets/fontkit.es-CFlb1edg.js",
-    "assets/index-BQiiVruS.js",
-    "assets/index-Bq7-wtxO.js",
-    "assets/index-Csj-L4S2.js",
+    "assets/archive-vendor-_nnzlRcC.js",
+    "assets/astryx-vendor-G4xza4pg.js",
+    "assets/astryx-vendor-Rp5vk9IO.css",
+    "assets/climate-pdf-qLjc4Uzx.js",
+    "assets/docx-google-docs-D5pz3U7t.js",
+    "assets/docx-vendor-lva4FqnK.js",
+    "assets/icons-vendor-W3SYuyGd.js",
     "assets/index-DgK6lkiJ.css",
-    "assets/jszip.min-DkUyrEX8.js",
-    "assets/preload-helper-PPVm8Dsz.js",
-    "assets/public-app-B-55QvyH.css",
-    "assets/public-app-BzfQU0aj.js",
-    "assets/student-docx-Bp0AYZBB.js"
+    "assets/index-JXBqRxeP.js",
+    "assets/pdf-vendor-DlZAYVrA.js",
+    "assets/public-app-CugVbqcx.js",
+    "assets/public-app-DT6S4LGP.css",
+    "assets/react-vendor-Bj2qpdZ1.js",
+    "assets/student-docx-C-CMKItP.js"
   ]
 }
