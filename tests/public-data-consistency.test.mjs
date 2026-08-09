@@ -139,6 +139,30 @@ test("자료 기준의 일시적인 502 HTML 응답은 JSON 계약 판정 전에
   assert.equal(evidence.completedSamples, 2);
 });
 
+test("503 JSON 응답은 다시 시도 가능한 공개 오류 계약을 유지한다", async () => {
+  let metadataCalls = 0;
+  const publicFetch = createPublicFetch();
+  const fetchImplementation = async (url, options) => {
+    if (new URL(url).pathname === "/api/climate/metadata") {
+      metadataCalls += 1;
+      return jsonResponse({ code: "unexpected", retryable: true }, 503);
+    }
+    return publicFetch(url, options);
+  };
+
+  await assert.rejects(
+    verifyPublicDataConsistency({
+      baseUrl: "https://climate.example.test",
+      sampleCount: 2,
+      seed: "invalid-retryable-contract-seed",
+      fetchImplementation,
+      retryDelayMs: 0
+    }),
+    /다시 시도 가능한 오류 계약이 올바르지 않습니다/u
+  );
+  assert.equal(metadataCalls, 1);
+});
+
 test("공개 API 대조는 providerIds와 providers가 다른 응답을 거부한다", async () => {
   const fetchImplementation = createPublicFetch({
     mutateQuery(payload) {
