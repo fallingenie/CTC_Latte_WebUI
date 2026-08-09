@@ -19,12 +19,15 @@ import {
   validateMountedDatasetReady
 } from "../scripts/release-candidate-data.mjs";
 import { createReleasePointerFile } from "../scripts/create-release-pointer.mjs";
+import { inspectLegacyRcDataset } from "../scripts/inspect-legacy-rc-dataset.mjs";
 import {
   createReleaseRequestHandler,
   parseAllowedOrigins,
+  startLegacyRcServer,
   startReleaseCandidateServer,
   terminateChild,
   validateGatewayPublicationReadiness,
+  validateLegacyRcServerEnvironment,
   validateReleaseServerEnvironment,
   waitForGateway
 } from "../scripts/start-release-candidate-server.mjs";
@@ -198,6 +201,22 @@ test("구형 비봉인 자료판은 명시적으로 고정한 시험 모드에�
     }),
     /CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES/u
   );
+});
+
+test("legacy RC 배포 결합값은 현재 GCS 파일 내용과 선언 크기에서 계산한다", async (context) => {
+  const fixture = await createMountedReleaseFixture();
+  context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
+  const legacy = await downgradeFixtureToLegacyV2(fixture.webDataRoot);
+  const expectedDatasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
+  const manifest = JSON.parse(await fs.readFile(path.join(fixture.webDataRoot, "manifest.json"), "utf8"));
+  const expectedBytes = manifest.artifacts.reduce((total, artifact) => total + artifact.size_bytes, 0);
+
+  assert.deepEqual(await inspectLegacyRcDataset(fixture.webDataRoot), {
+    acknowledgedIntegrityGapBytes: expectedBytes,
+    datasetVersion: expectedDatasetVersion,
+    generationId: legacy.generationId,
+    manifestBindingSha256: legacy.manifestBindingSha256
+  });
 });
 
 test("시험 예외는 운영 포인터 또는 봉인된 v3 자료판에 적용하지 않는다", async (context) => {
@@ -888,6 +907,41 @@ test("env-only legacy와 testOnly 결과는 gateway spawn과 공개 bind 전에 
   assert.equal(createCount, 0);
 });
 
+test("legacy RC 경로는 지정된 Cloud Run 서비스와 명시적 승인에서만 열린다", async () => {
+  const baseEnvironment = {
+    K_SERVICE: "ctc-latte-rc",
+    CTC_RC_DATA_MODE: LEGACY_TEST_DATASET_MODE,
+    CTC_TEST_DATASET_MODE: LEGACY_TEST_DATASET_MODE,
+    CTC_RC_DATA_ACKNOWLEDGEMENT: "I_ACKNOWLEDGE_UNSEALED_RC_DATA"
+  };
+  assert.deepEqual(validateLegacyRcServerEnvironment(baseEnvironment), {
+    acknowledgement: "I_ACKNOWLEDGE_UNSEALED_RC_DATA",
+    mode: LEGACY_TEST_DATASET_MODE,
+    serviceName: "ctc-latte-rc"
+  });
+
+  const rejectedEnvironments = [
+    { ...baseEnvironment, K_SERVICE: "ctc-latte-production" },
+    { ...baseEnvironment, CTC_RC_DATA_MODE: "" },
+    { ...baseEnvironment, CTC_TEST_DATASET_MODE: "" },
+    { ...baseEnvironment, CTC_RC_DATA_ACKNOWLEDGEMENT: "" },
+    { ...baseEnvironment, CTC_RELEASE_POINTER: "/mnt/current.json" },
+    { ...baseEnvironment, CTC_RELEASE_TOKEN: "a".repeat(64) }
+  ];
+  for (const environment of rejectedEnvironments) {
+    assert.throws(() => validateLegacyRcServerEnvironment(environment));
+  }
+
+  let resolverCalled = false;
+  await assert.rejects(
+    () => startLegacyRcServer({
+      env: { ...baseEnvironment, K_SERVICE: "ctc-latte-production" },
+      resolveReleaseData: async () => { resolverCalled = true; }
+    })
+  );
+  assert.equal(resolverCalled, false);
+});
+
 test("attribution readiness 실패는 공개 서버 생성과 listen 전에 gateway를 회수한다", async () => {
   const previousExitCode = process.exitCode;
   const distRoot = path.resolve("dist");
@@ -1219,6 +1273,30 @@ test("Cloud Run 배포는 공개 읽기 전용 GCS와 API, 체크섬 승격을 �
   assert.match(dockerfile, /^FROM node:22-trixie-slim AS frontend-build$/mu);
   assert.match(dockerfile, /^USER 10001:10001$/mu);
   assert.doesNotMatch(requirements, /[<>~]=?/u);
+});
+
+test("legacy RC 배포는 단일 GCS 버킷과 전용 RC 진입점을 서비스 계정으로 결합한다", async () => {
+  const deployScript = await fs.readFile(new URL("../deploy/deploy-gcs-legacy-rc.ps1", import.meta.url), "utf8");
+  const cloudBuild = await fs.readFile(new URL("../deploy/cloudbuild-legacy-rc.yaml", import.meta.url), "utf8");
+  const dockerfile = await fs.readFile(new URL("../deploy/Dockerfile.legacy-rc", import.meta.url), "utf8");
+  const entrypoint = await fs.readFile(new URL("../scripts/start-legacy-rc-server.mjs", import.meta.url), "utf8");
+
+  assert.match(deployScript, /\$serviceName = 'ctc-latte-rc'/u);
+  assert.match(deployScript, /\$bucketName = 'ctc_latte'/u);
+  assert.match(deployScript, /\$bucketPrefix = 'webui'/u);
+  assert.match(deployScript, /roles\/storage\.objectViewer/u);
+  assert.match(deployScript, /readonly=true/u);
+  assert.match(deployScript, /only-dir=\$bucketPrefix/u);
+  assert.match(deployScript, /--clear-volumes/u);
+  assert.match(deployScript, /--clear-volume-mounts/u);
+  assert.match(deployScript, /CTC_RC_DATA_MODE=legacy-unsealed/u);
+  assert.match(deployScript, /CTC_TEST_EXPECTED_DATASET_VERSION/u);
+  assert.match(deployScript, /CTC_RC_BACKEND_COMMIT/u);
+  assert.match(deployScript, /--service-account/u);
+  assert.doesNotMatch(deployScript, /reader-key|private_key|GOOGLE_APPLICATION_CREDENTIALS/iu);
+  assert.match(cloudBuild, /Dockerfile\.legacy-rc/u);
+  assert.match(dockerfile, /start-legacy-rc-server\.mjs/u);
+  assert.match(entrypoint, /startLegacyRcServer/u);
 });
 
 async function createMountedReleaseFixture({

@@ -7,7 +7,11 @@ import {
   validatePublicDatasetMetadata,
   validatePublicObservationAttribution
 } from "../source/runtime-policy.js";
-import { resolveReleaseDataEnvironment } from "./release-candidate-data.mjs";
+import {
+  LEGACY_TEST_DATASET_MODE,
+  resolveLegacyTestDataEnvironment,
+  resolveReleaseDataEnvironment
+} from "./release-candidate-data.mjs";
 import {
   LOOPBACK_HOST,
   ProductionDeploymentError,
@@ -19,6 +23,8 @@ const DEFAULT_PUBLIC_PORT = 8080;
 const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 8_000;
 const API_PREFIX = "/api/climate/";
+const LEGACY_RC_SERVICE_NAME = "ctc-latte-rc";
+const LEGACY_RC_ACKNOWLEDGEMENT = "I_ACKNOWLEDGE_UNSEALED_RC_DATA";
 const SECURITY_HEADERS = Object.freeze({
   "Content-Security-Policy": "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob: https://tile.openstreetmap.org; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:",
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -58,11 +64,12 @@ export function createReleaseRequestHandler({
   distRoot,
   gatewayPort,
   allowedOrigins = new Set(),
+  responseHeaders = SECURITY_HEADERS,
   fileSystem = fs,
   fetchImplementation = globalThis.fetch
 }) {
   return async function releaseRequestHandler(request, response) {
-    applyHeaders(response, SECURITY_HEADERS);
+    applyHeaders(response, responseHeaders);
     let pathname;
     try {
       pathname = new URL(request.url || "/", "http://release.local").pathname;
@@ -89,19 +96,68 @@ export function createReleaseRequestHandler({
   };
 }
 
-export async function startReleaseCandidateServer({
+export function validateLegacyRcServerEnvironment(env = process.env) {
+  if (String(env.K_SERVICE || "").trim() !== LEGACY_RC_SERVICE_NAME) {
+    throw new ProductionDeploymentError("Legacy RC data can run only on the ctc-latte-rc service.");
+  }
+  if (String(env.CTC_RC_DATA_MODE || "").trim() !== LEGACY_TEST_DATASET_MODE
+    || String(env.CTC_TEST_DATASET_MODE || "").trim() !== LEGACY_TEST_DATASET_MODE) {
+    throw new ProductionDeploymentError("The explicit legacy RC data mode is not enabled.");
+  }
+  if (String(env.CTC_RC_DATA_ACKNOWLEDGEMENT || "").trim() !== LEGACY_RC_ACKNOWLEDGEMENT) {
+    throw new ProductionDeploymentError("The legacy RC data integrity acknowledgement is missing.");
+  }
+  if (String(env.CTC_RELEASE_POINTER || "").trim()
+    || String(env.CTC_RELEASE_TOKEN || "").trim()) {
+    throw new ProductionDeploymentError("Legacy RC data cannot use a production release pointer or token.");
+  }
+  return Object.freeze({
+    acknowledgement: LEGACY_RC_ACKNOWLEDGEMENT,
+    mode: LEGACY_TEST_DATASET_MODE,
+    serviceName: LEGACY_RC_SERVICE_NAME
+  });
+}
+
+export async function startReleaseCandidateServer(options = {}) {
+  return startServer({
+    ...options,
+    allowTestOnly: false,
+    responseHeaders: SECURITY_HEADERS
+  });
+}
+
+export async function startLegacyRcServer(options = {}) {
+  const env = options.env ?? process.env;
+  validateLegacyRcServerEnvironment(env);
+  return startServer({
+    ...options,
+    env,
+    allowTestOnly: true,
+    resolveReleaseData: resolveLegacyTestDataEnvironment,
+    responseHeaders: Object.freeze({
+      ...SECURITY_HEADERS,
+      "Cache-Control": "no-store",
+      "X-CTC-RC-Data-Mode": LEGACY_TEST_DATASET_MODE
+    })
+  });
+}
+
+async function startServer({
   env = process.env,
   fileSystem = fs,
   fetchImplementation = globalThis.fetch,
   spawnGateway = spawnProductionGateway,
   resolveReleaseData = resolveReleaseDataEnvironment,
   createServer = http.createServer,
-  signalTarget = process
+  signalTarget = process,
+  allowTestOnly = false,
+  responseHeaders = SECURITY_HEADERS
 } = {}) {
   const serverConfiguration = validateReleaseServerEnvironment(env);
   await requireDistribution(serverConfiguration.distRoot, fileSystem);
   const release = await resolveReleaseData(env, { fileSystem });
-  if (release && Object.hasOwn(release, "testOnly")) {
+  if (release && Object.hasOwn(release, "testOnly")
+    && (allowTestOnly !== true || release.testOnly !== true)) {
     throw new ProductionDeploymentError("시험 전용 자료판은 공개 출시 서버에서 사용할 수 없습니다.");
   }
   const gatewayEnvironment = {
@@ -176,6 +232,7 @@ export async function startReleaseCandidateServer({
       distRoot: serverConfiguration.distRoot,
       gatewayPort: serverConfiguration.gatewayPort,
       allowedOrigins: serverConfiguration.allowedOrigins,
+      responseHeaders,
       fileSystem,
       fetchImplementation
     }));

@@ -80,10 +80,12 @@ test("유효하지 않은 custom lesson 편집은 builder를 호출하지 않고
 });
 
 test("제작자와 GitHub 정보는 고정되지 않은 공통 하단에 한 번만 표시한다", () => {
-  assert.equal(appSource.match(/jsx\(SiteFooter, \{\}\)/gu)?.length, 1);
+  assert.equal(appSource.match(/jsx\(SiteFooter, \{ datasetVersion: datasetState\.metadata\?\.datasetVersion \}\)/gu)?.length, 1);
   assert.match(appSource, /function SiteFooter/u);
   assert.match(appSource, /creator\.displayName/u);
   assert.match(appSource, /creator\.githubHandle/u);
+  assert.match(appSource, /ctwebui 자료판/u);
+  assert.match(appSource, /datasetVersion\.slice\(0, 12\)/u);
   const footerRule = styleSource.match(/\.site-footer\s*\{([\s\S]*?)\}/u)?.[1] ?? "";
   assert.match(footerRule, /position: static/u);
   assert.doesNotMatch(footerRule, /position:\s*(?:fixed|sticky)/u);
