@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/api/climate/:path*",
+      "destination": "https://vercel-c4c9589b---ctc-latte-rc-3rh4n6ymna-du.a.run.app/api/climate/:path*"
+    }
+  ]
+}
