@@ -110,6 +110,35 @@ test("공개 API 검증은 다시 시도 가능한 503을 재호출하고 query�
   assert.equal(calls.filter((pathname) => pathname === "/api/climate/series").length, 2);
 });
 
+test("자료 기준의 일시적인 502 HTML 응답은 JSON 계약 판정 전에 다시 시도한다", async () => {
+  const publicFetch = createPublicFetch();
+  let metadataCalls = 0;
+  const fetchImplementation = async (url, options) => {
+    if (new URL(url).pathname === "/api/climate/metadata") {
+      metadataCalls += 1;
+      if (metadataCalls === 1) {
+        return new Response("<html><body>temporary gateway error</body></html>", {
+          status: 502,
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        });
+      }
+    }
+    return publicFetch(url, options);
+  };
+
+  const evidence = await verifyPublicDataConsistency({
+    baseUrl: "https://climate.example.test",
+    sampleCount: 2,
+    seed: "metadata-html-retry-seed",
+    fetchImplementation,
+    retryDelayMs: 0,
+    now: () => new Date("2026-08-09T13:00:00Z")
+  });
+
+  assert.equal(metadataCalls, 2);
+  assert.equal(evidence.completedSamples, 2);
+});
+
 test("공개 API 대조는 providerIds와 providers가 다른 응답을 거부한다", async () => {
   const fetchImplementation = createPublicFetch({
     mutateQuery(payload) {
