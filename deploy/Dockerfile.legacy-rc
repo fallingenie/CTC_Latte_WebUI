@@ -1,0 +1,27 @@
+ARG BASE_IMAGE
+FROM node:22-trixie-slim AS frontend-build
+
+WORKDIR /build/frontend
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends python3 \
+    && python3 -c "import sys; assert sys.version_info >= (3, 12)" \
+    && rm -rf /var/lib/apt/lists/*
+RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY frontend/ ./
+RUN pnpm test && pnpm build && pnpm verify:cloud-policy
+
+FROM ${BASE_IMAGE}
+
+USER root
+COPY frontend/scripts/ /app/frontend/scripts/
+COPY frontend/source/runtime-policy.js /app/frontend/source/runtime-policy.js
+COPY --from=frontend-build /build/frontend/dist/ /app/frontend/dist/
+RUN chown -R 10001:10001 /app/frontend
+
+USER 10001:10001
+WORKDIR /app/frontend
+
+EXPOSE 8080
+CMD ["node", "scripts/start-legacy-rc-server.mjs"]

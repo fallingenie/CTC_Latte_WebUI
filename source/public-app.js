@@ -2068,7 +2068,7 @@ function App() {
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [route]);
   return /* @__PURE__ */ jsx(ClimateAppShell, {
-    footer: /* @__PURE__ */ jsx(SiteFooter, {}),
+    footer: /* @__PURE__ */ jsx(SiteFooter, { datasetVersion: datasetState.metadata?.datasetVersion }),
     navItems: publicNavItems,
     onOpenExamples: openExamplePicker,
     onThemeModeChange: setThemeMode,
@@ -2203,11 +2203,19 @@ function formatCitationAuthors(authors) {
   if (!Array.isArray(authors)) return "저자 정보 없음";
   return authors.map((author) => author.name ?? [author.familyName, author.givenNames].filter(Boolean).join(", ")).join("; ");
 }
-function SiteFooter() {
+function SiteFooter({ datasetVersion }) {
   const creator = PUBLIC_ATTRIBUTION_CATALOG.project.creator;
+  const displayedDatasetVersion = /^[0-9a-f]{64}$/u.test(String(datasetVersion || ""))
+    ? datasetVersion.slice(0, 12)
+    : null;
   return /* @__PURE__ */ jsx("footer", { className: "site-footer", children: /* @__PURE__ */ jsxs("div", { className: "site-footer-inner", children: [
     /* @__PURE__ */ jsxs("span", { children: ["제작자 ", /* @__PURE__ */ jsx("strong", { children: creator.displayName })] }),
-    /* @__PURE__ */ jsx("a", { href: creator.githubUrl, rel: "noreferrer", target: "_blank", children: `GitHub ${creator.githubHandle}` })
+    /* @__PURE__ */ jsx("a", { href: creator.githubUrl, rel: "noreferrer", target: "_blank", children: `GitHub ${creator.githubHandle}` }),
+    displayedDatasetVersion ? /* @__PURE__ */ jsxs("small", {
+      "aria-label": `ctwebui 자료판 ${datasetVersion}`,
+      title: datasetVersion,
+      children: ["ctwebui ", displayedDatasetVersion]
+    }) : null
   ] }) });
 }
 function renderRoute(route, datasetState) {

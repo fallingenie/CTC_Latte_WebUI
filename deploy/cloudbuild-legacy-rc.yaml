@@ -1,0 +1,31 @@
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - 'BASE_IMAGE=${_BASE_IMAGE}'
+      - --file
+      - frontend/deploy/Dockerfile.legacy-rc
+      - --tag
+      - '${_IMAGE}'
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - run
+      - --rm
+      - --entrypoint
+      - /bin/sh
+      - '${_IMAGE}'
+      - -ec
+      - |
+        node --version
+        python3 --version
+        test -d /app/backend
+        id -u | grep -qx 10001
+        id -g | grep -qx 10001
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - '${_IMAGE}'
+images:
+  - '${_IMAGE}'

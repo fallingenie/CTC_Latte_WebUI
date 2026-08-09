@@ -18,6 +18,7 @@ const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const MAX_SAMPLE_COUNT = 16;
 const REQUEST_ATTEMPTS = 3;
+const RETRYABLE_HTTP_STATUSES = new Set([429, 502, 503, 504]);
 const QUERY_METRIC_KEYS = Object.freeze([
   "tasmax",
   "tasmin",
@@ -291,6 +292,13 @@ async function fetchJson(url, {
       const contentType = response.headers?.get?.("content-type")?.toLowerCase() ?? "";
       const text = await readTextLimited(response, MAX_RESPONSE_BYTES);
       if (!contentType.startsWith("application/json")) {
+        if (RETRYABLE_HTTP_STATUSES.has(response.status) && attempt < REQUEST_ATTEMPTS) {
+          await delay(retryDelayMs);
+          continue;
+        }
+        if (!response.ok) {
+          throw new PublicDataConsistencyError(`${label} 조회가 HTTP ${response.status}로 실패했습니다.`);
+        }
         throw new PublicDataConsistencyError(`${label} 응답이 JSON이 아닙니다.`);
       }
       let payload;
@@ -305,6 +313,10 @@ async function fetchJson(url, {
         } catch {
           throw new PublicDataConsistencyError(`${label}의 다시 시도 가능한 오류 계약이 올바르지 않습니다.`);
         }
+        await delay(retryDelayMs);
+        continue;
+      }
+      if (RETRYABLE_HTTP_STATUSES.has(response.status) && attempt < REQUEST_ATTEMPTS) {
         await delay(retryDelayMs);
         continue;
       }
