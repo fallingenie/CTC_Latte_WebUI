@@ -110,6 +110,43 @@ test("공개 API 검증은 다시 시도 가능한 503을 재호출하고 query�
   assert.equal(calls.filter((pathname) => pathname === "/api/climate/series").length, 2);
 });
 
+test("자료 기준 조회가 일시적인 HTML 오류를 반환하면 재시도 후 대조를 계속한다", async () => {
+  let metadataAttempt = 0;
+  const calls = [];
+  const fetchImplementation = async (url, options = {}) => {
+    const pathname = new URL(url).pathname;
+    calls.push(pathname);
+    if (pathname === "/api/climate/metadata") {
+      metadataAttempt += 1;
+      if (metadataAttempt === 1) {
+        return new Response("<html>temporary gateway</html>", {
+          status: 502,
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        });
+      }
+      return jsonResponse(metadata);
+    }
+    const body = JSON.parse(options.body);
+    if (pathname === "/api/climate/query") {
+      return jsonResponse(buildQuery(body, body.latitude === 36.35 ? "bias-corrected" : "raw-model-grid"));
+    }
+    if (pathname === "/api/climate/series") {
+      return jsonResponse(buildSeries(body, body.includeRaw ? "bias-corrected" : "raw-model-grid", body.includeRaw));
+    }
+    return jsonResponse({ error: "not-found" }, 404);
+  };
+
+  const evidence = await verifyPublicDataConsistency({
+    baseUrl: "https://climate.example.test",
+    sampleCount: 2,
+    seed: "retry-html-metadata-seed",
+    fetchImplementation,
+    retryDelayMs: 0
+  });
+  assert.equal(evidence.completedSamples, 2);
+  assert.equal(calls.filter((pathname) => pathname === "/api/climate/metadata").length, 2);
+});
+
 test("공개 API 대조는 providerIds와 providers가 다른 응답을 거부한다", async () => {
   const fetchImplementation = createPublicFetch({
     mutateQuery(payload) {
