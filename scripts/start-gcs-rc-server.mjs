@@ -1,12 +1,12 @@
 import { ProductionDeploymentError } from "./start-production-gateway.mjs";
 import {
   isMainEntry,
-  startLegacyRcServer
+  startGcsRcServer
 } from "./start-release-candidate-server.mjs";
 
 if (isMainEntry(import.meta.url)) {
   try {
-    await startLegacyRcServer();
+    await startGcsRcServer();
   } catch (error) {
     const message = error instanceof ProductionDeploymentError
       ? error.message

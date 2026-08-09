@@ -4,12 +4,14 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  validatePublicClimateQueryResponse,
+  validatePublicClimateSeriesResponse,
   validatePublicDatasetMetadata,
   validatePublicObservationAttribution
 } from "../source/runtime-policy.js";
 import {
-  LEGACY_TEST_DATASET_MODE,
-  resolveLegacyTestDataEnvironment,
+  GCS_CURRENT_DATASET_MODE,
+  resolveCurrentGcsDataEnvironment,
   resolveReleaseDataEnvironment
 } from "./release-candidate-data.mjs";
 import {
@@ -22,9 +24,9 @@ const FRONTEND_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url))
 const DEFAULT_PUBLIC_PORT = 8080;
 const DEFAULT_STARTUP_TIMEOUT_MS = 120_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 8_000;
+const MAX_PROXY_RESPONSE_BYTES = 64 * 1024 * 1024;
 const API_PREFIX = "/api/climate/";
-const LEGACY_RC_SERVICE_NAME = "ctc-latte-rc";
-const LEGACY_RC_ACKNOWLEDGEMENT = "I_ACKNOWLEDGE_UNSEALED_RC_DATA";
+const GCS_RC_SERVICE_NAME = "ctc-latte-rc";
 const SECURITY_HEADERS = Object.freeze({
   "Content-Security-Policy": "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob: https://tile.openstreetmap.org; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:",
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -63,6 +65,7 @@ export function validateReleaseServerEnvironment(env = process.env) {
 export function createReleaseRequestHandler({
   distRoot,
   gatewayPort,
+  publicData,
   allowedOrigins = new Set(),
   responseHeaders = SECURITY_HEADERS,
   fileSystem = fs,
@@ -86,7 +89,13 @@ export function createReleaseRequestHandler({
         return writeJson(response, 403, { error: "허용되지 않은 웹 출처의 요청입니다." });
       }
       if (request.method === "OPTIONS") return completePreflight(request, response);
-      return proxyClimateRequest(request, response, gatewayPort);
+      if (request.method === "GET" && pathname === "/api/climate/metadata" && publicData?.metadata) {
+        return writeJson(response, 200, publicData.metadata);
+      }
+      if (request.method === "GET" && pathname === "/api/climate/attribution" && publicData?.attribution) {
+        return writeJson(response, 200, publicData.attribution);
+      }
+      return proxyClimateRequest(request, response, gatewayPort, publicData);
     }
     if (!new Set(["GET", "HEAD"]).has(request.method || "GET")) {
       response.setHeader("Allow", "GET, HEAD");
@@ -96,48 +105,40 @@ export function createReleaseRequestHandler({
   };
 }
 
-export function validateLegacyRcServerEnvironment(env = process.env) {
-  if (String(env.K_SERVICE || "").trim() !== LEGACY_RC_SERVICE_NAME) {
-    throw new ProductionDeploymentError("Legacy RC data can run only on the ctc-latte-rc service.");
+export function validateGcsRcServerEnvironment(env = process.env) {
+  if (String(env.K_SERVICE || "").trim() !== GCS_RC_SERVICE_NAME) {
+    throw new ProductionDeploymentError("GCS RC 자료는 ctc-latte-rc 서비스에서만 실행할 수 있습니다.");
   }
-  if (String(env.CTC_RC_DATA_MODE || "").trim() !== LEGACY_TEST_DATASET_MODE
-    || String(env.CTC_TEST_DATASET_MODE || "").trim() !== LEGACY_TEST_DATASET_MODE) {
-    throw new ProductionDeploymentError("The explicit legacy RC data mode is not enabled.");
-  }
-  if (String(env.CTC_RC_DATA_ACKNOWLEDGEMENT || "").trim() !== LEGACY_RC_ACKNOWLEDGEMENT) {
-    throw new ProductionDeploymentError("The legacy RC data integrity acknowledgement is missing.");
+  if (String(env.CTC_RC_DATA_MODE || "").trim() !== GCS_CURRENT_DATASET_MODE) {
+    throw new ProductionDeploymentError("현재 GCS 자료 소비 모드가 활성화되지 않았습니다.");
   }
   if (String(env.CTC_RELEASE_POINTER || "").trim()
     || String(env.CTC_RELEASE_TOKEN || "").trim()) {
-    throw new ProductionDeploymentError("Legacy RC data cannot use a production release pointer or token.");
+    throw new ProductionDeploymentError("현재 GCS 자료 경로는 별도 자료판 포인터와 함께 사용할 수 없습니다.");
   }
   return Object.freeze({
-    acknowledgement: LEGACY_RC_ACKNOWLEDGEMENT,
-    mode: LEGACY_TEST_DATASET_MODE,
-    serviceName: LEGACY_RC_SERVICE_NAME
+    mode: GCS_CURRENT_DATASET_MODE,
+    serviceName: GCS_RC_SERVICE_NAME
   });
 }
 
 export async function startReleaseCandidateServer(options = {}) {
   return startServer({
     ...options,
-    allowTestOnly: false,
     responseHeaders: SECURITY_HEADERS
   });
 }
 
-export async function startLegacyRcServer(options = {}) {
+export async function startGcsRcServer(options = {}) {
   const env = options.env ?? process.env;
-  validateLegacyRcServerEnvironment(env);
+  validateGcsRcServerEnvironment(env);
   return startServer({
     ...options,
     env,
-    allowTestOnly: true,
-    resolveReleaseData: resolveLegacyTestDataEnvironment,
+    resolveReleaseData: resolveCurrentGcsDataEnvironment,
     responseHeaders: Object.freeze({
       ...SECURITY_HEADERS,
-      "Cache-Control": "no-store",
-      "X-CTC-RC-Data-Mode": LEGACY_TEST_DATASET_MODE
+      "Cache-Control": "no-store"
     })
   });
 }
@@ -150,16 +151,11 @@ async function startServer({
   resolveReleaseData = resolveReleaseDataEnvironment,
   createServer = http.createServer,
   signalTarget = process,
-  allowTestOnly = false,
   responseHeaders = SECURITY_HEADERS
 } = {}) {
   const serverConfiguration = validateReleaseServerEnvironment(env);
   await requireDistribution(serverConfiguration.distRoot, fileSystem);
   const release = await resolveReleaseData(env, { fileSystem });
-  if (release && Object.hasOwn(release, "testOnly")
-    && (allowTestOnly !== true || release.testOnly !== true)) {
-    throw new ProductionDeploymentError("시험 전용 자료판은 공개 출시 서버에서 사용할 수 없습니다.");
-  }
   const gatewayEnvironment = {
     ...release.env,
     CTC_GATEWAY_HOST: LOOPBACK_HOST,
@@ -220,7 +216,8 @@ async function startServer({
     if (readinessTimeoutMs < 1) {
       throw new ProductionDeploymentError("게이트웨이 공개 자료 준비 확인 시간이 초과되었습니다.");
     }
-    await validateGatewayPublicationReadiness({
+    const publicData = await validateGatewayConsumerReadiness({
+      attributionCatalog: release.attributionCatalog,
       fetchImplementation,
       pointer: release.pointer,
       port: serverConfiguration.gatewayPort,
@@ -231,6 +228,7 @@ async function startServer({
     server = createServer(createReleaseRequestHandler({
       distRoot: serverConfiguration.distRoot,
       gatewayPort: serverConfiguration.gatewayPort,
+      publicData,
       allowedOrigins: serverConfiguration.allowedOrigins,
       responseHeaders,
       fileSystem,
@@ -274,7 +272,8 @@ function assertGatewayRunning(child, failed) {
   }
 }
 
-export async function validateGatewayPublicationReadiness({
+export async function validateGatewayConsumerReadiness({
+  attributionCatalog,
   fetchImplementation,
   pointer,
   port,
@@ -291,12 +290,70 @@ export async function validateGatewayPublicationReadiness({
   }
 
   const deadline = Date.now() + timeoutMs;
-  const metadataPayload = await fetchGatewayPublicationJson({
+  const metadataPayload = await fetchGatewayJson({
     deadline,
     endpoint: "metadata",
     fetchImplementation,
     port
   });
+  if (attributionCatalog === undefined) {
+    return validateUpstreamGatewayPublication({
+      deadline,
+      fetchImplementation,
+      metadataPayload,
+      pointer,
+      port
+    });
+  }
+  let canonicalAttribution;
+  try {
+    canonicalAttribution = validatePublicObservationAttribution(attributionCatalog);
+  } catch {
+    throw new ProductionDeploymentError("GCS WebUI 관측자료 출처 계약이 올바르지 않습니다.");
+  }
+  let metadata;
+  try {
+    metadata = validatePublicDatasetMetadata({
+      ...metadataPayload,
+      attributionReady: canonicalAttribution.ready,
+      observationAttribution: {
+        ...canonicalAttribution,
+        usesObservationData: false
+      }
+    });
+  } catch {
+    throw new ProductionDeploymentError("게이트웨이 공개 metadata 계약이 올바르지 않습니다.");
+  }
+  if (metadata.attributionReady !== true || metadata.datasetVersion !== pointer.datasetVersion) {
+    throw new ProductionDeploymentError("자료판 포인터와 게이트웨이 metadata 식별자가 일치하지 않습니다.");
+  }
+
+  let attribution;
+  try {
+    attribution = validatePublicObservationAttribution({
+      ...canonicalAttribution,
+      datasetVersion: metadata.datasetVersion,
+      datasetUpdatedAt: metadata.datasetUpdatedAt
+    }, {
+      requireDatasetIdentity: true
+    });
+  } catch {
+    throw new ProductionDeploymentError("게이트웨이 공개 attribution 계약이 올바르지 않습니다.");
+  }
+  if (attribution.datasetVersion !== metadata.datasetVersion
+    || attribution.datasetUpdatedAt !== metadata.datasetUpdatedAt) {
+    throw new ProductionDeploymentError("게이트웨이 metadata와 attribution 자료판 식별자가 일치하지 않습니다.");
+  }
+  return Object.freeze({ attribution, attributionCatalog: canonicalAttribution, metadata });
+}
+
+async function validateUpstreamGatewayPublication({
+  deadline,
+  fetchImplementation,
+  metadataPayload,
+  pointer,
+  port
+}) {
   let metadata;
   try {
     metadata = validatePublicDatasetMetadata(metadataPayload);
@@ -306,8 +363,7 @@ export async function validateGatewayPublicationReadiness({
   if (metadata.attributionReady !== true || metadata.datasetVersion !== pointer.datasetVersion) {
     throw new ProductionDeploymentError("자료판 포인터와 게이트웨이 metadata 식별자가 일치하지 않습니다.");
   }
-
-  const attributionPayload = await fetchGatewayPublicationJson({
+  const attributionPayload = await fetchGatewayJson({
     deadline,
     endpoint: "attribution",
     fetchImplementation,
@@ -393,7 +449,7 @@ export async function waitForGateway({
   );
 }
 
-async function fetchGatewayPublicationJson({
+async function fetchGatewayJson({
   deadline,
   endpoint,
   fetchImplementation,
@@ -462,7 +518,7 @@ async function serveStaticFile(request, response, pathname, distRoot, fileSystem
   return response.end(content);
 }
 
-function proxyClimateRequest(request, response, gatewayPort) {
+function proxyClimateRequest(request, response, gatewayPort, publicData) {
   if (!new Set(["GET", "POST"]).has(request.method || "GET")) {
     response.setHeader("Allow", "GET, POST");
     return writeJson(response, 405, { error: "허용되지 않은 요청 방식입니다." });
@@ -480,13 +536,50 @@ function proxyClimateRequest(request, response, gatewayPort) {
     headers,
     timeout: 610_000
   }, (upstreamResponse) => {
-    response.statusCode = upstreamResponse.statusCode || 502;
-    for (const name of ["content-length", "content-type"]) {
-      const value = upstreamResponse.headers[name];
-      if (value !== undefined) response.setHeader(name, value);
-    }
-    response.setHeader("Cache-Control", "no-store");
-    upstreamResponse.pipe(response);
+    const chunks = [];
+    let totalBytes = 0;
+    upstreamResponse.on("data", (chunk) => {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_PROXY_RESPONSE_BYTES) {
+        upstreamResponse.destroy(new Error("gateway-response-too-large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    upstreamResponse.once("error", () => {
+      if (!response.headersSent) {
+        writeJson(response, 502, { error: "기후자료 응답을 읽을 수 없습니다." });
+      } else {
+        response.destroy();
+      }
+    });
+    upstreamResponse.once("end", () => {
+      if (response.writableEnded || upstreamResponse.destroyed && totalBytes > MAX_PROXY_RESPONSE_BYTES) {
+        if (!response.headersSent) writeJson(response, 502, { error: "기후자료 응답 크기가 허용 범위를 벗어났습니다." });
+        return;
+      }
+      const statusCode = upstreamResponse.statusCode || 502;
+      const content = Buffer.concat(chunks);
+      const pathname = new URL(request.url || "/", "http://gateway.local").pathname;
+      if (statusCode >= 200 && statusCode < 300
+        && request.method === "POST"
+        && new Set(["/api/climate/query", "/api/climate/series"]).has(pathname)
+        && publicData?.attributionCatalog) {
+        try {
+          const payload = JSON.parse(content.toString("utf8").replace(/^\uFEFF/u, ""));
+          const projected = projectGatewayClimateResponse(payload, pathname, publicData);
+          writeJson(response, statusCode, projected);
+        } catch {
+          writeJson(response, 502, { error: "기후자료 공개 응답 계약을 구성할 수 없습니다." });
+        }
+        return;
+      }
+      response.statusCode = statusCode;
+      response.setHeader("Content-Type", upstreamResponse.headers["content-type"] || "application/octet-stream");
+      response.setHeader("Content-Length", String(content.length));
+      response.setHeader("Cache-Control", "no-store");
+      response.end(content);
+    });
   });
   const abortUpstream = () => {
     if (!upstream.destroyed) upstream.destroy(new Error("client-aborted"));
@@ -509,6 +602,31 @@ function proxyClimateRequest(request, response, gatewayPort) {
     }
   });
   request.pipe(upstream);
+}
+
+export function projectGatewayClimateResponse(payload, pathname, publicData) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new TypeError("invalid-gateway-payload");
+  }
+  const catalog = validatePublicObservationAttribution(publicData?.attributionCatalog);
+  const usesObservationData = payload.dataMode !== "raw-model-grid";
+  const observationAttribution = usesObservationData
+    ? { ...catalog, usesObservationData: true }
+    : {
+        schemaVersion: catalog.schemaVersion,
+        ready: catalog.ready,
+        usesObservationData: false,
+        providerIds: [],
+        providers: []
+      };
+  const projected = {
+    ...payload,
+    attributionReady: usesObservationData && catalog.providerIds.length > 0,
+    observationAttribution
+  };
+  return pathname === "/api/climate/series"
+    ? validatePublicClimateSeriesResponse(projected)
+    : validatePublicClimateQueryResponse(projected);
 }
 
 export function parseAllowedOrigins(value) {

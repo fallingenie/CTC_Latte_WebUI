@@ -67,7 +67,7 @@ $bucketPrefix = 'webui'
 $serviceAccount = "ctc-latte-rc-runtime@$ProjectId.iam.gserviceaccount.com"
 $frontendRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $stagingBase = [System.IO.Path]::GetFullPath((Join-Path $frontendRoot '.deploy-staging'))
-$stagingRoot = Join-Path $stagingBase ("legacy-rc-" + [guid]::NewGuid().ToString('N'))
+$stagingRoot = Join-Path $stagingBase ("gcs-rc-" + [guid]::NewGuid().ToString('N'))
 $datasetRoot = Join-Path $stagingRoot 'current.ctwebui'
 $buildRoot = Join-Path $stagingRoot 'build'
 $gcloud = Resolve-GcloudCommand
@@ -89,7 +89,7 @@ try {
     }
 
     $bindingJson = Invoke-Captured node @(
-        (Join-Path $frontendRoot 'scripts\inspect-legacy-rc-dataset.mjs'),
+        (Join-Path $frontendRoot 'scripts\inspect-gcs-rc-dataset.mjs'),
         $datasetRoot
     )
     try {
@@ -149,7 +149,7 @@ try {
     $imageTag = "${imageName}:$revisionTag"
     $buildId = Invoke-Captured $gcloud @(
         'builds', 'submit', $buildRoot,
-        '--config', (Join-Path $buildRoot 'frontend\deploy\cloudbuild-legacy-rc.yaml'),
+        '--config', (Join-Path $buildRoot 'frontend\deploy\cloudbuild-gcs-rc.yaml'),
         '--substitutions', "_IMAGE=$imageTag,_BASE_IMAGE=$RuntimeBaseImage",
         '--project', $ProjectId,
         '--format=value(id)',
@@ -178,13 +178,8 @@ try {
         'CTC_PREPARED_DATA_PROVIDER=gcs',
         'CTC_PYTHON_EXECUTABLE=python3',
         "CTC_WEB_DATA_ROOT=$mountPath",
-        'CTC_TEST_DATASET_MODE=legacy-unsealed',
-        'CTC_RC_DATA_MODE=legacy-unsealed',
-        'CTC_RC_DATA_ACKNOWLEDGEMENT=I_ACKNOWLEDGE_UNSEALED_RC_DATA',
-        "CTC_TEST_EXPECTED_DATASET_VERSION=$($binding.datasetVersion)",
-        "CTC_TEST_EXPECTED_GENERATION_ID=$($binding.generationId)",
-        "CTC_TEST_EXPECTED_MANIFEST_BINDING_SHA256=$($binding.manifestBindingSha256)",
-        "CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES=$($binding.acknowledgedIntegrityGapBytes)",
+        'CTC_RC_DATA_MODE=gcs-current',
+        "CTC_RC_EXPECTED_DATASET_VERSION=$($binding.datasetVersion)",
         "CTC_PUBLIC_WEB_ORIGINS=$PublicWebOrigin",
         'CTC_WEBUI_CMIP6_ZARR_ROOT=gs://cmip6'
     ) -join ','
@@ -203,12 +198,12 @@ try {
         '--memory', '4Gi',
         '--cpu', '2',
         '--concurrency', '4',
-        '--min', '0',
         '--max', '2',
         '--timeout', '900',
         '--ingress', 'all',
         '--allow-unauthenticated',
         '--no-iap',
+        '--no-traffic',
         '--tag', $revisionTag,
         '--quiet'
     )

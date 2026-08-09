@@ -18,10 +18,13 @@ USER root
 COPY frontend/scripts/ /app/frontend/scripts/
 COPY frontend/source/runtime-policy.js /app/frontend/source/runtime-policy.js
 COPY --from=frontend-build /build/frontend/dist/ /app/frontend/dist/
-RUN chown -R 10001:10001 /app/frontend
+RUN python3 -c "import pandas, pyarrow" \
+    && node --check /app/frontend/scripts/start-gcs-rc-server.mjs \
+    && python3 -m py_compile /app/frontend/scripts/read_ctwebui_attribution.py \
+    && chown -R 10001:10001 /app/frontend
 
 USER 10001:10001
 WORKDIR /app/frontend
 
 EXPOSE 8080
-CMD ["node", "scripts/start-legacy-rc-server.mjs"]
+CMD ["node", "scripts/start-gcs-rc-server.mjs"]

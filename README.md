@@ -13,7 +13,7 @@
 
 ## 실행
 
-일반 Frontend 개발에는 Node.js 20.19 이상 또는 22.12 이상과 pnpm이 필요합니다. `.ctwebui` publication 검증과 읽기 전용 Python 게이트웨이 통합에는 Python 3.12 이상이 추가로 필요합니다. 출시 컨테이너는 Python 3.13을 사용합니다. WebUI는 Backend 자료를 생성·정규화·재봉인하지 않습니다.
+일반 Frontend 개발에는 Node.js 20.19 이상 또는 22.12 이상과 pnpm이 필요합니다. 읽기 전용 Python 게이트웨이 통합에는 Python 3.12 이상이 추가로 필요합니다. 출시 컨테이너는 Python 3.13을 사용합니다. WebUI는 Backend 자료를 생성·정규화·재봉인하거나 Backend의 publication 적격성을 재판정하지 않습니다.
 
 ```powershell
 corepack pnpm install
@@ -55,11 +55,11 @@ corepack pnpm verify:cloud-policy
 
 ## 자료 연결
 
-브라우저의 공개 기후자료 계약은 같은 출처의 `/api/climate/query`, `/api/climate/series`, `/api/climate/metadata`, `/api/climate/attribution`으로 구성됩니다. 출시 서버는 공개 listener를 열기 전에 attribution endpoint의 exact schema v1과 metadata의 자료판 identity를 확인합니다. query와 series의 관측자료 출처는 결과별 실제 provider만을 나타내며, WebUI는 `dataMode`나 정적 카탈로그로 provider를 추론하지 않습니다. 지도 화면은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 타일 제공자에 연결됩니다.
+브라우저의 공개 기후자료 계약은 같은 출처의 `/api/climate/query`, `/api/climate/series`, `/api/climate/metadata`, `/api/climate/attribution`으로 구성됩니다. 현재 GCS RC consumer는 Backend가 만든 ctwebui의 작은 identity 파일과 실제 관측자료 출처 표를 서버 측에서 읽고, 기존 gateway 응답과 결합한 공개 schema v1을 검증한 뒤 listener를 엽니다. Backend 내부 completion·attribution publication 세대는 Frontend의 admission gate가 아닙니다. query와 series에는 실제 ctwebui 출처 카탈로그를 사용하고 `raw-model-grid` 결과에는 관측 provider를 표시하지 않습니다. 지도 화면은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 타일 제공자에 연결됩니다.
 
-프로젝트·CMIP6·방법론 인용은 Frontend 공개 카탈로그가 소유합니다. 관측 provider 이름, 데이터셋, 라이선스, 인용문, 사용 행 수와 결과 표장 요구는 Backend 응답의 exact `observationAttribution`만 사용합니다. 이 공개 출처 정보를 제외한 Google Drive·GCS 주소, 로컬·네트워크 경로와 토큰·자격 증명은 브라우저 UI 또는 내보내기에 포함하지 않습니다. GitHub Pages 연결 설정에는 검증된 공개 Cloud Run API 주소만 들어갑니다.
+프로젝트·CMIP6·방법론 인용은 Frontend 공개 카탈로그가 소유합니다. 관측 provider 이름, 데이터셋, 라이선스, 인용문, 사용 행 수와 결과 표장 요구는 ctwebui에 실제로 저장된 관측자료 출처 표만 사용합니다. 이 공개 출처 정보를 제외한 Google Drive·GCS 주소, 로컬·네트워크 경로와 토큰·자격 증명은 브라우저 UI 또는 내보내기에 포함하지 않습니다. GitHub Pages 연결 설정에는 검증된 공개 Cloud Run API 주소만 들어갑니다.
 
-운영 게이트웨이는 공개 객체 조회 전용 GCS의 준비된 Web 자료를 먼저 읽고, 해당 범위를 벗어난 조회는 Team Start가 정의한 GCS CMIP6 원자료로 보완합니다. 정적 화면은 GitHub Pages, 읽기 전용 질의 API는 공개 Cloud Run에서 제공합니다. 로컬 드라이브와 네트워크 공유 폴더는 개발·정합성 대조에만 사용할 수 있으며 운영 원본이나 장애 대체 경로로 허용하지 않습니다. `pnpm start:gateway:production`은 이 경계를 강제하고, `pnpm attest:production`은 외부 API와 loopback 게이트웨이의 실제 응답을 대조한 v3 확인서를 만듭니다. 배포 산출물과 서버 원본 정책은 `pnpm verify:cloud-policy` 및 `pnpm verify:deployment`로 확인합니다. 자세한 배포 차단 기준은 [배포 자료 원본 정책](docs/DEPLOYMENT_DATA_SOURCE_POLICY.md)을 참고하세요.
+현재 RC 게이트웨이는 단일 `ctc_latte` 버킷의 `webui/`에 운영자가 탑재한 ctwebui를 서버 측 서비스 계정으로 read-only 소비합니다. 버킷은 공개 또는 비공개일 수 있으며 브라우저에는 버킷 이름·주소·객체 경로·자격 증명을 노출하지 않습니다. 정적 화면은 GitHub Pages 또는 Vercel, 읽기 전용 질의 API는 Cloud Run에서 제공합니다. `pnpm start:rc`가 이 consumer 경로를 시작합니다. 별도의 정식 publication 경로에는 `pnpm start:gateway:production`과 배포 확인서 검증을 사용합니다. 자세한 경계는 [배포 자료 원본 정책](docs/DEPLOYMENT_DATA_SOURCE_POLICY.md)을 참고하세요.
 
 기간 자료 내보내기의 CSV 출처 묶음, PDF, PNG, 대화형 HTML과 DOCX에는 실제 결과의 관측 provider와 인용 정보를 포함합니다. KMA 표장은 해당 provider descriptor가 요구하고 로컬 원본의 이름·SHA-256·크기·media type이 모두 일치할 때만 표시·내보냅니다. `raw-model-grid` 결과에는 관측 provider나 표장을 포함하지 않습니다. 프로젝트·CMIP6·방법론 인용의 라이선스는 Frontend 카탈로그에 값이 있을 때만 표시하며, 값이 없으면 추정하지 않습니다.
 
