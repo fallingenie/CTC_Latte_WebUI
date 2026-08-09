@@ -2,6 +2,8 @@ steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - build
+      - --build-arg
+      - 'BASE_IMAGE=${_BASE_IMAGE}'
       - --file
       - frontend/deploy/Dockerfile.legacy-rc
       - --tag
@@ -18,8 +20,7 @@ steps:
       - |
         node --version
         python3 --version
-        python3 -c "import fsspec, gcsfs, numpy, pandas, pyarrow, xarray, zarr"
-        python3 -c "import sys; sys.path.insert(0, '/app/backend'); import Climate_Time_Capsule_app.services.exporting.web_query_service"
+        test -d /app/backend
         id -u | grep -qx 10001
         id -g | grep -qx 10001
   - name: gcr.io/cloud-builders/docker

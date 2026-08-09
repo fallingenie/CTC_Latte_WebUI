@@ -3,7 +3,7 @@ param(
     [string]$ProjectId = 'ee-tenerif2',
     [string]$Region = 'asia-northeast3',
     [string]$ArtifactRepository = 'ctc-latte',
-    [string]$BackendRepository,
+    [string]$RuntimeBaseImage,
     [ValidatePattern('^https://[A-Za-z0-9.-]+$')]
     [string]$PublicWebOrigin = 'https://fallingenie.github.io'
 )
@@ -66,19 +66,12 @@ $bucketName = 'ctc_latte'
 $bucketPrefix = 'webui'
 $serviceAccount = "ctc-latte-rc-runtime@$ProjectId.iam.gserviceaccount.com"
 $frontendRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-if (-not $BackendRepository) {
-    $BackendRepository = Join-Path $frontendRoot '..\CTC_Latte_main_runtime'
-}
-$backendRoot = [System.IO.Path]::GetFullPath($BackendRepository)
 $stagingBase = [System.IO.Path]::GetFullPath((Join-Path $frontendRoot '.deploy-staging'))
 $stagingRoot = Join-Path $stagingBase ("legacy-rc-" + [guid]::NewGuid().ToString('N'))
 $datasetRoot = Join-Path $stagingRoot 'current.ctwebui'
 $buildRoot = Join-Path $stagingRoot 'build'
 $gcloud = Resolve-GcloudCommand
 
-if (-not (Test-Path -LiteralPath $backendRoot -PathType Container)) {
-    throw 'Backend 저장소를 찾을 수 없습니다.'
-}
 New-Item -ItemType Directory -Path (Join-Path $datasetRoot 'meta') -Force | Out-Null
 try {
     foreach ($relativePath in @(
@@ -114,23 +107,32 @@ try {
         throw 'Frontend 저장소에 커밋되지 않은 변경이 있습니다.'
     }
     $frontendCommit = Invoke-Captured git @('-C', $frontendRoot, 'rev-parse', 'HEAD')
-    $backendRemote = Invoke-Captured git @(
-        '-C', $backendRoot, 'ls-remote', '--heads', 'origin', 'refs/heads/main'
-    )
-    $backendMatch = [regex]::Match($backendRemote, '^([0-9a-f]{40})\s+refs/heads/main$')
-    if (-not $backendMatch.Success) {
-        throw 'Backend 원격 main SHA를 확인할 수 없습니다.'
+
+    if (-not $RuntimeBaseImage) {
+        $readyRevision = Invoke-Captured $gcloud @(
+            'run', 'services', 'describe', $serviceName,
+            '--region', $Region,
+            '--project', $ProjectId,
+            '--format=value(status.latestReadyRevisionName)'
+        )
+        if (-not $readyRevision) {
+            throw '현재 준비된 RC 런타임 revision을 확인할 수 없습니다.'
+        }
+        $RuntimeBaseImage = Invoke-Captured $gcloud @(
+            'run', 'revisions', 'describe', $readyRevision,
+            '--region', $Region,
+            '--project', $ProjectId,
+            '--format=value(spec.containers[0].image)'
+        )
     }
-    $backendCommit = $backendMatch.Groups[1].Value
-    Invoke-Checked git @('-C', $backendRoot, 'fetch', '--no-tags', 'origin', 'refs/heads/main')
+    if (-not $RuntimeBaseImage) {
+        throw 'RC 런타임 기반 이미지를 확인할 수 없습니다.'
+    }
 
     New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
     $frontendArchive = Join-Path $stagingRoot 'frontend.zip'
-    $backendArchive = Join-Path $stagingRoot 'backend.zip'
     Invoke-Checked git @('-C', $frontendRoot, 'archive', '--format=zip', "--output=$frontendArchive", $frontendCommit)
-    Invoke-Checked git @('-C', $backendRoot, 'archive', '--format=zip', "--output=$backendArchive", $backendCommit)
     Expand-Archive -LiteralPath $frontendArchive -DestinationPath (Join-Path $buildRoot 'frontend')
-    Expand-Archive -LiteralPath $backendArchive -DestinationPath (Join-Path $buildRoot 'backend')
 
     Invoke-Checked $gcloud @(
         'storage', 'buckets', 'add-iam-policy-binding', "gs://$bucketName",
@@ -141,15 +143,14 @@ try {
     )
 
     $sourceCommit = $frontendCommit.Substring(0, 8)
-    $backendShort = $backendCommit.Substring(0, 8)
     $datasetShort = ([string]$binding.datasetVersion).Substring(0, 8)
-    $revisionTag = "rc-$sourceCommit-$backendShort-$datasetShort"
+    $revisionTag = "rc-$sourceCommit-$datasetShort"
     $imageName = "$Region-docker.pkg.dev/$ProjectId/$ArtifactRepository/webui-rc"
     $imageTag = "${imageName}:$revisionTag"
     $buildId = Invoke-Captured $gcloud @(
         'builds', 'submit', $buildRoot,
         '--config', (Join-Path $buildRoot 'frontend\deploy\cloudbuild-legacy-rc.yaml'),
-        '--substitutions', "_IMAGE=$imageTag",
+        '--substitutions', "_IMAGE=$imageTag,_BASE_IMAGE=$RuntimeBaseImage",
         '--project', $ProjectId,
         '--format=value(id)',
         '--quiet'
@@ -173,7 +174,6 @@ try {
         'CTC_BACKEND_ROOT=/app/backend',
         'CTC_GATEWAY_HOST=127.0.0.1',
         'CTC_GATEWAY_PORT=8765',
-        "CTC_RC_BACKEND_COMMIT=$backendCommit",
         'CTC_PREPARED_DATA_MOUNT_ROOT=/mnt/ctc-latte',
         'CTC_PREPARED_DATA_PROVIDER=gcs',
         'CTC_PYTHON_EXECUTABLE=python3',
@@ -222,11 +222,11 @@ try {
     [pscustomobject]@{
         Bucket = $bucketName
         BucketPrefix = $bucketPrefix
-        BackendCommit = $backendCommit
         BuildId = $buildId
         DatasetVersion = $binding.datasetVersion
         FrontendCommit = $frontendCommit
         Image = $imageReference
+        RuntimeBaseImage = $RuntimeBaseImage
         Service = $serviceName
         ServiceAccount = $serviceAccount
         ServiceUrl = $serviceUrl

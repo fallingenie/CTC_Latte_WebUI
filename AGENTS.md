@@ -15,6 +15,8 @@ Project-specific guidance for AI coding agents.
 - 검증이 모두 통과한 뒤에만 GitHub Pages 또는 Vercel 호스팅을 다시 공개한다.
 - 이 운영 중단 절차는 정식 배포의 보안 검증과 fail-closed 동작을 완화하거나 대체하지 않는다.
 - 서비스 계정 JSON 키를 저장소나 Frontend에 포함하지 않는다.
+- WebUI 배포는 Backend 원격 SHA를 조회하거나 Backend 소스를 archive·복사하지 않으며, Backend 작업트리·브랜치·정책을 수정하지 않는다.
+- WebUI는 `ctc_latte/webui/`에 운영자가 수동 탑재한 ctwebui와 공개 API 계약만 검증하고, Backend 버전 선택이나 ctwebui 생성 절차를 대신 결정하지 않는다.
 
 <!-- ASTRYX:START -->
 Astryx v0.3.0 · 155 components
