@@ -2,21 +2,34 @@
 
 ## 원칙
 
-운영 Web UI는 GitHub Pages에서 정적 화면을 제공하고, 기후자료 조회는 검증된 공개 Cloud Run의 `/api/climate/*`만 호출합니다. 로컬 개발에서는 기존 동일 출처 상대 경로를 사용합니다. 지도 타일은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 제공자 연결입니다. 브라우저 번들, 연결 설정과 기후자료 응답에는 Google Drive 주소, 로컬·네트워크 경로, 토큰·자격 증명과 내부 자료 확장자를 넣지 않습니다. 공개 GCS 객체 주소도 UI나 내보내기에 표시하지 않습니다.
+운영 Web UI는 GitHub Pages 또는 Vercel에서 정적 화면을 제공하고, 기후자료 조회는 검증된 공개 Cloud Run의 `/api/climate/*`만 호출합니다. 로컬 개발에서는 기존 동일 출처 상대 경로를 사용합니다. 지도 타일은 별도 이용 조건과 출처 표시를 따르는 OpenStreetMap 제공자 연결입니다. 브라우저 번들, 연결 설정과 기후자료 응답에는 Google Drive 주소, GCS 버킷·객체 주소, 로컬·네트워크 경로, 토큰·자격 증명과 내부 자료 확장자를 넣지 않습니다.
 
-이 release의 Backend read-only 계약 기준은 `05fd49a602d5530d9c0b3debf758319f6fc4ccd8`입니다. Backend는 `.ctwebui` 생성·정규화·봉인, raw fallback, 실제 관측 provider와 사용량을 소유합니다. WebUI는 publication과 공개 응답을 검증하고 표시·내보내기만 하며, 실패한 자료를 보정·재생성·재봉인하지 않습니다.
+Backend는 `.ctwebui` 생성·정규화·봉인, raw fallback, 실제 관측 provider와 사용량을 소유합니다. WebUI는 Backend가 Frontend 소비용으로 만든 ctwebui의 consumer이며 Backend validator가 아닙니다. 현재 GCS 자료의 내부 completion·attribution publication 세대를 이유로 소비를 거부하지 않고, 원본을 보정·재생성·재봉인하지도 않습니다.
+
+## 현재 GCS RC consumer
+
+- 자료 원본은 `ctc_latte` 단일 버킷의 `webui/`이며 운영자가 탑재한 최신 Update Time 자료를 우선합니다.
+- 버킷은 언제든 공개 또는 비공개로 바뀔 수 있습니다. 서버는 두 상태 모두에서 배포 서비스 계정으로 read-only 접근하고 브라우저에는 GCS 식별자와 자격 증명을 노출하지 않습니다.
+- 시작 시 `manifest.json`, `meta/completion.json`, `meta/array_index.json`, `meta/raw_cmip6_index.json`처럼 작은 control 파일만 읽어 자료판 identity를 고정합니다. Zarr·대형 Parquet 본문을 전수 해시하지 않습니다.
+- 관측자료 출처는 ctwebui에 실제로 저장된 작은 attribution Parquet만 읽어 공개 schema v1으로 투영합니다. 없는 provider·사용량·표장 정보는 추정하지 않습니다.
+- query·series 응답은 공개 응답 스키마와 자료판 identity를 검증합니다. `raw-model-grid`에는 관측 provider를 포함하지 않습니다.
+- 배포는 기존 정상 리비전의 트래픽을 유지한 채 `--no-traffic` 후보로 만들고, 후보의 metadata·attribution·query·series와 실제 화면을 확인한 뒤에만 별도 승인으로 승격합니다.
 
 공개 웹 서버는 빌드 결과인 `dist/`만 문서 루트로 배포합니다. 저장소 루트, `source/`, `config/`, `scripts/` 및 검증 증거 디렉터리를 정적 파일 서버의 공개 경로로 사용하지 않습니다.
 
 운영 게이트웨이의 자료 역할과 조회 순서는 다음과 같이 고정합니다.
 
-1. 공개 객체 조회 전용 GCS의 `*.ctwebui`를 준비된 Web 자료의 기본 원본으로 사용합니다.
+1. 서비스 계정으로 읽는 GCS의 `*.ctwebui`를 준비된 Web 자료의 기본 원본으로 사용합니다.
 2. 준비된 자료가 요청 좌표나 기간을 포함하지 않을 때 Team Start가 정의한 GCS CMIP6 원자료를 읽습니다.
 3. GCS 주소와 버킷 식별자는 배포 설정에서만 관리하고 사용자 화면과 내보내기에는 표시하지 않습니다.
 4. 로컬 드라이브, 네트워크 공유 폴더와 `file:` 주소는 운영 원본이나 장애 대체 경로로 사용하지 않습니다.
 현재 로컬 게이트웨이는 개발과 정합성 대조를 위한 임시 연결입니다. 운영 배포 대상이 아니며, 운영 장애 때 자동으로 선택되는 대체 경로에도 포함하지 않습니다.
 
-GCS 버킷 루트나 업로드 중인 디렉터리는 직접 열지 않습니다. 발행 명령은 업로드 경로를 로컬 정본과 대조한 뒤 `release-candidate/datasets/<datasetVersion>.ctwebui`로 서버 측 복사하고, 운영 프로세스는 배포할 때 지정한 `release-candidate/releases/<datasetVersion>.json` 불변 포인터가 가리키는 이 사본만 엽니다. 포인터에 기록된 `datasetVersion`이 실제 `manifest.json`, `meta/array_index.json`, `meta/raw_cmip6_index.json`의 합성 SHA-256과 일치할 때만 시작합니다. `release-candidate/current.json`은 운영자가 현재 자료판을 확인하기 위한 별칭이며 실행 중인 리비전의 자료판을 바꾸지 않습니다. 같은 업로드 경로가 다음 자료로 교체되어도 이미 배포된 리비전은 이전 불변 사본을 계속 읽습니다.
+## 정식 publication 경로
+
+아래 불변 pointer와 full content 검증은 현재 GCS RC consumer가 아니라 별도로 조율하는 정식 publication 경로에만 적용합니다.
+
+정식 발행 명령은 업로드 경로를 로컬 정본과 대조한 뒤 `release-candidate/datasets/<datasetVersion>.ctwebui`로 서버 측 복사하고, 운영 프로세스는 배포할 때 지정한 `release-candidate/releases/<datasetVersion>.json` 불변 포인터가 가리키는 이 사본만 엽니다. 포인터에 기록된 `datasetVersion`이 실제 `manifest.json`, `meta/array_index.json`, `meta/raw_cmip6_index.json`의 합성 SHA-256과 일치할 때만 시작합니다. `release-candidate/current.json`은 운영자가 현재 자료판을 확인하기 위한 별칭이며 실행 중인 리비전의 자료판을 바꾸지 않습니다.
 
 불변 pointer를 발행하기 전 `full` 검증은 모든 선언 파일과 디렉터리를 해당 선언 해시 방식으로 검사합니다. 필수 `arrays/*.zarr`에는 `directory_content_sha256_v2`만 허용하고, `directory_listing_v1`은 필수 Zarr 이외의 호환 범위로 제한합니다. 서버 `startup` 검증은 이미 full 검증을 통과해 pointer에 결합된 publication을 전제로 seal·manifest·completion·선언 inventory와 자료판 identity를 확인하되 대형 Zarr child content를 다시 해시하지 않습니다. 이어 `/api/climate/metadata`와 `/api/climate/attribution`의 자료판 identity가 pointer와 일치할 때만 공개 listener를 엽니다. Startup 통과만으로 deep content 검증을 대체할 수 없습니다.
 

@@ -18,7 +18,7 @@
     "prepare:pages": "node scripts/create-pages-runtime-config.mjs",
     "preview": "vite preview --config source/vite.config.js",
     "start:gateway:production": "node scripts/start-production-gateway.mjs",
-    "start:rc": "node scripts/start-release-candidate-server.mjs",
+    "start:rc": "node scripts/start-gcs-rc-server.mjs",
     "pointer:rc": "node scripts/create-release-pointer.mjs",
     "attest:production": "node scripts/create-production-data-attestation.mjs",
     "test": "node scripts/run-tests.mjs",

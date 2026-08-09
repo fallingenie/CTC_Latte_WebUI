@@ -9,25 +9,26 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  LEGACY_TEST_DATASET_MODE,
+  GCS_CURRENT_DATASET_MODE,
   computeMountedDatasetVersion,
   createReleasePointer,
   parseReleasePointer,
-  resolveLegacyTestDataEnvironment,
+  resolveCurrentGcsDataEnvironment,
   resolveReleaseDataEnvironment,
   validateMountedDatasetPublication,
   validateMountedDatasetReady
 } from "../scripts/release-candidate-data.mjs";
 import { createReleasePointerFile } from "../scripts/create-release-pointer.mjs";
-import { inspectLegacyRcDataset } from "../scripts/inspect-legacy-rc-dataset.mjs";
+import { inspectCurrentGcsDataset } from "../scripts/inspect-gcs-rc-dataset.mjs";
 import {
   createReleaseRequestHandler,
   parseAllowedOrigins,
-  startLegacyRcServer,
+  projectGatewayClimateResponse,
+  startGcsRcServer,
   startReleaseCandidateServer,
   terminateChild,
-  validateGatewayPublicationReadiness,
-  validateLegacyRcServerEnvironment,
+  validateGatewayConsumerReadiness,
+  validateGcsRcServerEnvironment,
   validateReleaseServerEnvironment,
   waitForGateway
 } from "../scripts/start-release-candidate-server.mjs";
@@ -61,6 +62,13 @@ const PUBLICATION_ATTRIBUTION = Object.freeze({
   providers: Object.freeze([]),
   datasetVersion: PUBLICATION_DATASET_VERSION,
   datasetUpdatedAt: PUBLICATION_DATASET_UPDATED_AT
+});
+const PUBLICATION_ATTRIBUTION_CATALOG = Object.freeze({
+  schemaVersion: 1,
+  ready: true,
+  usesObservationData: false,
+  providerIds: Object.freeze([]),
+  providers: Object.freeze([])
 });
 const PUBLICATION_OBSERVATION_PROVIDER = Object.freeze({
   providerId: "dwd",
@@ -161,94 +169,73 @@ test("공개 자료 해석은 불변 pointer·dataset 경로와 CTC_RELEASE_TOKE
   );
 });
 
-test("구형 비봉인 자료판은 명시적으로 고정한 시험 모드에서만 읽는다", async (context) => {
+test("현재 GCS 자료는 공개 identity를 고정하고 내부 publication 세대로 거부하지 않는다", async (context) => {
   const fixture = await createMountedReleaseFixture();
   context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
-  const legacy = await downgradeFixtureToLegacyV2(fixture.webDataRoot);
-  await fs.writeFile(
-    path.join(fixture.webDataRoot, "arrays", "corrected_daily.zarr", "unregistered-test-chunk"),
-    "시험용 무결성 결손",
-    "utf8"
-  );
+  await downgradeFixtureToLegacyV2(fixture.webDataRoot);
   const datasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
-  const testEnvironment = {
+  const environment = {
     CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
     CTC_WEB_DATA_ROOT: fixture.webDataRoot,
-    CTC_TEST_DATASET_MODE: LEGACY_TEST_DATASET_MODE,
-    CTC_TEST_EXPECTED_DATASET_VERSION: datasetVersion,
-    CTC_TEST_EXPECTED_GENERATION_ID: legacy.generationId,
-    CTC_TEST_EXPECTED_MANIFEST_BINDING_SHA256: legacy.manifestBindingSha256,
-    CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES: "69114"
+    CTC_RC_DATA_MODE: GCS_CURRENT_DATASET_MODE,
+    CTC_RC_EXPECTED_DATASET_VERSION: datasetVersion
   };
 
-  const result = await resolveLegacyTestDataEnvironment(testEnvironment);
-  assert.equal(result.testOnly, true);
-  assert.equal(result.acknowledgedIntegrityGapBytes, 69114);
-  assert.equal(result.pointer.releaseId, `test-${datasetVersion.slice(0, 12)}`);
+  const result = await resolveCurrentGcsDataEnvironment(environment, {
+    loadAttribution: async () => PUBLICATION_ATTRIBUTION_CATALOG
+  });
+  assert.equal(Object.hasOwn(result, "testOnly"), false);
+  assert.equal(result.pointer.releaseId, `rc-${datasetVersion.slice(0, 12)}`);
   assert.equal(result.pointer.datasetVersion, datasetVersion);
+  assert.deepEqual(result.attributionCatalog, PUBLICATION_ATTRIBUTION_CATALOG);
 
   await assert.rejects(
-    () => resolveLegacyTestDataEnvironment({
-      ...testEnvironment,
-      CTC_TEST_EXPECTED_DATASET_VERSION: "f".repeat(64)
-    }),
-    /SHA-256이 승인한 값과 일치하지 않습니다/u
-  );
-  await assert.rejects(
-    () => resolveLegacyTestDataEnvironment({
-      ...testEnvironment,
-      CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES: ""
-    }),
-    /CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES/u
+    () => resolveCurrentGcsDataEnvironment({
+      ...environment,
+      CTC_RC_EXPECTED_DATASET_VERSION: "f".repeat(64)
+    }, { loadAttribution: async () => PUBLICATION_ATTRIBUTION_CATALOG }),
+    /identity/u
   );
 });
 
-test("legacy RC 배포 결합값은 현재 GCS 파일 내용과 선언 크기에서 계산한다", async (context) => {
+test("GCS RC 배포 결합값은 작은 identity 파일에서 계산한다", async (context) => {
   const fixture = await createMountedReleaseFixture();
   context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
-  const legacy = await downgradeFixtureToLegacyV2(fixture.webDataRoot);
+  await downgradeFixtureToLegacyV2(fixture.webDataRoot);
   const expectedDatasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
-  const manifest = JSON.parse(await fs.readFile(path.join(fixture.webDataRoot, "manifest.json"), "utf8"));
-  const expectedBytes = manifest.artifacts.reduce((total, artifact) => total + artifact.size_bytes, 0);
-
-  assert.deepEqual(await inspectLegacyRcDataset(fixture.webDataRoot), {
-    acknowledgedIntegrityGapBytes: expectedBytes,
+  assert.deepEqual(await inspectCurrentGcsDataset(fixture.webDataRoot), {
     datasetVersion: expectedDatasetVersion,
-    generationId: legacy.generationId,
-    manifestBindingSha256: legacy.manifestBindingSha256
+    formatVersion: 3
   });
 });
 
-test("시험 예외는 운영 포인터 또는 봉인된 v3 자료판에 적용하지 않는다", async (context) => {
+test("현재 GCS 자료 경로는 별도 자료판 포인터와 혼용하지 않는다", async (context) => {
   const fixture = await createMountedReleaseFixture();
   context.after(() => fs.rm(fixture.tempRoot, { recursive: true, force: true }));
   const datasetVersion = await computeMountedDatasetVersion(fixture.webDataRoot);
   const environment = {
     CTC_PREPARED_DATA_MOUNT_ROOT: fixture.mountRoot,
     CTC_WEB_DATA_ROOT: fixture.webDataRoot,
-    CTC_TEST_DATASET_MODE: LEGACY_TEST_DATASET_MODE,
-    CTC_TEST_EXPECTED_DATASET_VERSION: datasetVersion,
-    CTC_TEST_EXPECTED_GENERATION_ID: "b".repeat(64),
-    CTC_TEST_EXPECTED_MANIFEST_BINDING_SHA256: JSON.parse(
-      await fs.readFile(path.join(fixture.webDataRoot, "meta", "completion.json"), "utf8")
-    ).manifest_binding_sha256,
-    CTC_TEST_ACKNOWLEDGED_INTEGRITY_GAP_BYTES: "1"
+    CTC_RC_DATA_MODE: GCS_CURRENT_DATASET_MODE,
+    CTC_RC_EXPECTED_DATASET_VERSION: datasetVersion
   };
   await assert.rejects(
     () => resolveReleaseDataEnvironment(environment),
-    /공개 출시 경로/u
+    /CTC_RELEASE_POINTER/u
   );
   await assert.rejects(
-    () => resolveLegacyTestDataEnvironment(environment),
-    /정상 배포 절차/u
+    () => resolveCurrentGcsDataEnvironment(
+      { ...environment, CTC_RELEASE_POINTER: fixture.pointerPath },
+      { loadAttribution: async () => PUBLICATION_ATTRIBUTION_CATALOG }
+    ),
+    /별도 자료판 포인터/u
   );
   await assert.rejects(
-    () => resolveLegacyTestDataEnvironment({ ...environment, CTC_RELEASE_POINTER: fixture.pointerPath }),
-    /운영 포인터/u
-  );
-  await assert.rejects(
-    () => resolveLegacyTestDataEnvironment({ ...environment, CTC_TEST_DATASET_MODE: "anything" }),
-    /명시되지 않았습니다/u
+    () => resolveCurrentGcsDataEnvironment(
+      { ...environment, CTC_RC_DATA_MODE: "anything" },
+      { loadAttribution: async () => PUBLICATION_ATTRIBUTION_CATALOG }
+    ),
+    /소비 모드/u
   );
 });
 
@@ -761,7 +748,7 @@ test("게이트웨이 준비 확인은 공개 안전 health 응답만 허용한�
 
 test("공개 listen 준비 검사는 pointer·metadata·attribution 자료판 식별자를 결합한다", async () => {
   const requestedPaths = [];
-  const result = await validateGatewayPublicationReadiness({
+  const result = await validateGatewayConsumerReadiness({
     pointer: { datasetVersion: PUBLICATION_DATASET_VERSION },
     port: 8765,
     timeoutMs: 1_000,
@@ -797,7 +784,7 @@ test("metadata와 dedicated attribution은 usesObservationData 의미를 보존�
     providerIds: ["dwd"],
     providers: [PUBLICATION_OBSERVATION_PROVIDER]
   };
-  const result = await validateGatewayPublicationReadiness({
+  const result = await validateGatewayConsumerReadiness({
     pointer: { datasetVersion: PUBLICATION_DATASET_VERSION },
     port: 8765,
     timeoutMs: 1_000,
@@ -807,6 +794,94 @@ test("metadata와 dedicated attribution은 usesObservationData 의미를 보존�
   });
   assert.deepEqual(result.metadata.observationAttribution.providerIds, ["dwd"]);
   assert.equal(result.attribution.usesObservationData, true);
+});
+
+test("GCS consumer는 기존 gateway metadata에 실제 attribution을 투영하고 별도 endpoint를 요구하지 않는다", async () => {
+  const requestedPaths = [];
+  const legacyMetadata = {
+    publicSafe: true,
+    ready: true,
+    datasetVersion: PUBLICATION_DATASET_VERSION,
+    datasetUpdatedAt: PUBLICATION_DATASET_UPDATED_AT,
+    dateStart: "2035-01-01",
+    dateEnd: "2099-12-31",
+    models: ["MODEL-A"],
+    scenarios: ["ssp585"]
+  };
+  const attributionCatalog = {
+    ...PUBLICATION_ATTRIBUTION_CATALOG,
+    usesObservationData: true,
+    providerIds: ["dwd"],
+    providers: [PUBLICATION_OBSERVATION_PROVIDER]
+  };
+  const result = await validateGatewayConsumerReadiness({
+    attributionCatalog,
+    pointer: { datasetVersion: PUBLICATION_DATASET_VERSION },
+    port: 8765,
+    timeoutMs: 1_000,
+    fetchImplementation: async (url) => {
+      requestedPaths.push(new URL(url).pathname);
+      return jsonResponse(legacyMetadata);
+    }
+  });
+  assert.deepEqual(requestedPaths, ["/api/climate/metadata"]);
+  assert.equal(result.metadata.observationAttribution.usesObservationData, false);
+  assert.deepEqual(result.metadata.observationAttribution.providerIds, ["dwd"]);
+  assert.equal(result.attribution.usesObservationData, true);
+  assert.deepEqual(result.attribution.providerIds, ["dwd"]);
+});
+
+test("GCS consumer는 query 응답의 실제 자료 모드에 맞춰 attribution을 투영한다", () => {
+  const attributionCatalog = {
+    ...PUBLICATION_ATTRIBUTION_CATALOG,
+    usesObservationData: false,
+    providerIds: ["dwd"],
+    providers: [PUBLICATION_OBSERVATION_PROVIDER]
+  };
+  const legacyQuery = {
+    requestId: "query-2050-08-01-123456789abc",
+    sourceId: "climate-data-live",
+    stationLabel: "선택한 위치 N(북위) 36.35, E(동경) 127.38",
+    latitude: 36.35,
+    longitude: 127.38,
+    date: "2050-08-01",
+    scenario: "고배출 경로",
+    model: "MIROC6",
+    coverage: "available",
+    dataMode: "bias-corrected",
+    values: [{
+      key: "tasmax",
+      label: "최고기온",
+      value: "31.25도",
+      unit: "도",
+      caption: "선택 모델 보정값",
+      tone: "hot",
+      available: true,
+      numericValue: 31.25
+    }],
+    publicSafe: true,
+    generatedAt: "2026-07-15T00:00:00Z",
+    datasetVersion: PUBLICATION_DATASET_VERSION,
+    datasetUpdatedAt: PUBLICATION_DATASET_UPDATED_AT
+  };
+
+  const corrected = projectGatewayClimateResponse(
+    legacyQuery,
+    "/api/climate/query",
+    { attributionCatalog }
+  );
+  assert.equal(corrected.attributionReady, true);
+  assert.equal(corrected.observationAttribution.usesObservationData, true);
+  assert.deepEqual(corrected.observationAttribution.providerIds, ["dwd"]);
+
+  const raw = projectGatewayClimateResponse(
+    { ...legacyQuery, dataMode: "raw-model-grid" },
+    "/api/climate/query",
+    { attributionCatalog }
+  );
+  assert.equal(raw.attributionReady, false);
+  assert.equal(raw.observationAttribution.usesObservationData, false);
+  assert.deepEqual(raw.observationAttribution.providerIds, []);
 });
 
 test("공개 listen 준비 검사는 attribution 503·스키마·자료판 불일치를 실패 폐쇄한다", async (context) => {
@@ -844,7 +919,7 @@ test("공개 listen 준비 검사는 attribution 503·스키마·자료판 불�
   for (const item of cases) {
     await context.test(item.name, async () => {
       await assert.rejects(
-        () => validateGatewayPublicationReadiness({
+        () => validateGatewayConsumerReadiness({
           pointer,
           port: 8765,
           timeoutMs: 1_000,
@@ -857,7 +932,7 @@ test("공개 listen 준비 검사는 attribution 503·스키마·자료판 불�
     });
   }
   await assert.rejects(
-    () => validateGatewayPublicationReadiness({
+    () => validateGatewayConsumerReadiness({
       pointer: { datasetVersion: "b".repeat(64) },
       port: 8765,
       timeoutMs: 1_000,
@@ -867,7 +942,7 @@ test("공개 listen 준비 검사는 attribution 503·스키마·자료판 불�
   );
 });
 
-test("env-only legacy와 testOnly 결과는 gateway spawn과 공개 bind 전에 이중 차단한다", async () => {
+test("운영 포인터 경로는 시험 전용 환경변수를 공개 bind 전에 거부한다", async () => {
   const distRoot = path.resolve("dist");
   const fileSystem = fakeDistributionFileSystem(distRoot);
   let spawnCount = 0;
@@ -886,55 +961,37 @@ test("env-only legacy와 testOnly 결과는 gateway spawn과 공개 bind 전에 
   await assert.rejects(
     () => startReleaseCandidateServer({
       ...common,
-      env: { ...common.env, CTC_TEST_DATASET_MODE: LEGACY_TEST_DATASET_MODE }
+      env: { ...common.env, CTC_TEST_DATASET_MODE: GCS_CURRENT_DATASET_MODE }
     }),
     /공개 출시 경로/u
   );
-  for (const testOnly of [true, false]) {
-    await assert.rejects(
-      () => startReleaseCandidateServer({
-        ...common,
-        resolveReleaseData: async () => ({
-          env: {},
-          pointer: { datasetVersion: PUBLICATION_DATASET_VERSION },
-          testOnly
-        })
-      }),
-      /공개 출시 서버/u
-    );
-  }
   assert.equal(spawnCount, 0);
   assert.equal(createCount, 0);
 });
 
-test("legacy RC 경로는 지정된 Cloud Run 서비스와 명시적 승인에서만 열린다", async () => {
+test("GCS RC 경로는 지정된 Cloud Run 서비스와 현재 소비 모드에서만 열린다", async () => {
   const baseEnvironment = {
     K_SERVICE: "ctc-latte-rc",
-    CTC_RC_DATA_MODE: LEGACY_TEST_DATASET_MODE,
-    CTC_TEST_DATASET_MODE: LEGACY_TEST_DATASET_MODE,
-    CTC_RC_DATA_ACKNOWLEDGEMENT: "I_ACKNOWLEDGE_UNSEALED_RC_DATA"
+    CTC_RC_DATA_MODE: GCS_CURRENT_DATASET_MODE
   };
-  assert.deepEqual(validateLegacyRcServerEnvironment(baseEnvironment), {
-    acknowledgement: "I_ACKNOWLEDGE_UNSEALED_RC_DATA",
-    mode: LEGACY_TEST_DATASET_MODE,
+  assert.deepEqual(validateGcsRcServerEnvironment(baseEnvironment), {
+    mode: GCS_CURRENT_DATASET_MODE,
     serviceName: "ctc-latte-rc"
   });
 
   const rejectedEnvironments = [
     { ...baseEnvironment, K_SERVICE: "ctc-latte-production" },
     { ...baseEnvironment, CTC_RC_DATA_MODE: "" },
-    { ...baseEnvironment, CTC_TEST_DATASET_MODE: "" },
-    { ...baseEnvironment, CTC_RC_DATA_ACKNOWLEDGEMENT: "" },
     { ...baseEnvironment, CTC_RELEASE_POINTER: "/mnt/current.json" },
     { ...baseEnvironment, CTC_RELEASE_TOKEN: "a".repeat(64) }
   ];
   for (const environment of rejectedEnvironments) {
-    assert.throws(() => validateLegacyRcServerEnvironment(environment));
+    assert.throws(() => validateGcsRcServerEnvironment(environment));
   }
 
   let resolverCalled = false;
   await assert.rejects(
-    () => startLegacyRcServer({
+    () => startGcsRcServer({
       env: { ...baseEnvironment, K_SERVICE: "ctc-latte-production" },
       resolveReleaseData: async () => { resolverCalled = true; }
     })
@@ -1275,11 +1332,11 @@ test("Cloud Run 배포는 공개 읽기 전용 GCS와 API, 체크섬 승격을 �
   assert.doesNotMatch(requirements, /[<>~]=?/u);
 });
 
-test("legacy RC 배포는 단일 GCS 버킷과 전용 RC 진입점을 서비스 계정으로 결합한다", async () => {
-  const deployScript = await fs.readFile(new URL("../deploy/deploy-gcs-legacy-rc.ps1", import.meta.url), "utf8");
-  const cloudBuild = await fs.readFile(new URL("../deploy/cloudbuild-legacy-rc.yaml", import.meta.url), "utf8");
-  const dockerfile = await fs.readFile(new URL("../deploy/Dockerfile.legacy-rc", import.meta.url), "utf8");
-  const entrypoint = await fs.readFile(new URL("../scripts/start-legacy-rc-server.mjs", import.meta.url), "utf8");
+test("GCS RC 배포는 단일 버킷의 webui prefix와 전용 consumer를 서비스 계정으로 결합한다", async () => {
+  const deployScript = await fs.readFile(new URL("../deploy/deploy-gcs-rc.ps1", import.meta.url), "utf8");
+  const cloudBuild = await fs.readFile(new URL("../deploy/cloudbuild-gcs-rc.yaml", import.meta.url), "utf8");
+  const dockerfile = await fs.readFile(new URL("../deploy/Dockerfile.gcs-rc", import.meta.url), "utf8");
+  const entrypoint = await fs.readFile(new URL("../scripts/start-gcs-rc-server.mjs", import.meta.url), "utf8");
 
   assert.match(deployScript, /\$serviceName = 'ctc-latte-rc'/u);
   assert.match(deployScript, /\$bucketName = 'ctc_latte'/u);
@@ -1289,8 +1346,9 @@ test("legacy RC 배포는 단일 GCS 버킷과 전용 RC 진입점을 서비스 
   assert.match(deployScript, /only-dir=\$bucketPrefix/u);
   assert.match(deployScript, /--clear-volumes/u);
   assert.match(deployScript, /--clear-volume-mounts/u);
-  assert.match(deployScript, /CTC_RC_DATA_MODE=legacy-unsealed/u);
-  assert.match(deployScript, /CTC_TEST_EXPECTED_DATASET_VERSION/u);
+  assert.match(deployScript, /CTC_RC_DATA_MODE=gcs-current/u);
+  assert.match(deployScript, /CTC_RC_EXPECTED_DATASET_VERSION/u);
+  assert.doesNotMatch(deployScript, /CTC_TEST_|testOnly|ACKNOWLEDGED_INTEGRITY_GAP/u);
   assert.match(deployScript, /status\.latestReadyRevisionName/u);
   assert.match(deployScript, /spec\.containers\[0\]\.image/u);
   assert.match(deployScript, /_BASE_IMAGE=\$RuntimeBaseImage/u);
@@ -1298,13 +1356,14 @@ test("legacy RC 배포는 단일 GCS 버킷과 전용 RC 진입점을 서비스 
   assert.doesNotMatch(deployScript, /ls-remote|backendArchive|archive[^\n]+backend/iu);
   assert.match(deployScript, /--service-account/u);
   assert.doesNotMatch(deployScript, /reader-key|private_key|GOOGLE_APPLICATION_CREDENTIALS/iu);
-  assert.match(cloudBuild, /Dockerfile\.legacy-rc/u);
+  assert.match(cloudBuild, /Dockerfile\.gcs-rc/u);
   assert.match(cloudBuild, /BASE_IMAGE=\$\{_BASE_IMAGE\}/u);
   assert.match(dockerfile, /^ARG BASE_IMAGE$/mu);
   assert.match(dockerfile, /^FROM \$\{BASE_IMAGE\}$/mu);
   assert.doesNotMatch(dockerfile, /COPY backend\//u);
-  assert.match(dockerfile, /start-legacy-rc-server\.mjs/u);
-  assert.match(entrypoint, /startLegacyRcServer/u);
+  assert.match(dockerfile, /start-gcs-rc-server\.mjs/u);
+  assert.match(entrypoint, /startGcsRcServer/u);
+  assert.match(deployScript, /--no-traffic/u);
 });
 
 async function createMountedReleaseFixture({

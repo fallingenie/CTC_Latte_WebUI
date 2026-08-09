@@ -5,7 +5,7 @@ steps:
       - --build-arg
       - 'BASE_IMAGE=${_BASE_IMAGE}'
       - --file
-      - frontend/deploy/Dockerfile.legacy-rc
+      - frontend/deploy/Dockerfile.gcs-rc
       - --tag
       - '${_IMAGE}'
       - .
