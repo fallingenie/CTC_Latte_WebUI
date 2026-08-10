@@ -11,7 +11,7 @@ export const DEPLOYMENT_FILES = Object.freeze([
   "runtime-config.json",
   "sw.js"
 ]);
-export const DEPLOYMENT_DIRECTORIES = Object.freeze(["assets"]);
+export const DEPLOYMENT_DIRECTORIES = Object.freeze([".well-known", "assets"]);
 export const DEFAULT_REPOSITORY_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const DEFAULT_DIST_ROOT = path.join(DEFAULT_REPOSITORY_ROOT, "dist");
 
