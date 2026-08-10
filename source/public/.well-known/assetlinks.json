@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "lattethecat.climate.capsule",
+      "sha256_cert_fingerprints": [
+        "73:63:73:01:63:6C:E4:F3:B0:15:2F:8A:E6:4F:48:09:42:E1:3D:28:4A:0D:06:07:82:52:92:21:88:A0:81:BA"
+      ]
+    }
+  }
+]

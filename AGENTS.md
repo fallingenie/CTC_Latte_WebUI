@@ -2,6 +2,14 @@
 
 Project-specific guidance for AI coding agents.
 
+## Android TWA 종속 작업 경계
+
+- 이 WebUI 작업은 `codex://threads/019fe64a-69fb-73c3-af71-436f64276de9` Android TWA 종속 작업에 대해 Frontend 공개 계약과 자료를 제공하는 Master 정본 역할만 수행한다.
+- Android 작업에는 운영 origin, manifest, 동일 출처 API 계약, Digital Asset Links, GitHub SHA와 검증 결과처럼 WebUI가 소유한 자료만 제공한다.
+- Android 저장소·브랜치·파일·빌드·디버깅·패키징·서명·Release·Play Console을 수정하거나 대신 결정하지 않으며, Android 작업의 역할·구현·진행 방식에 개입하지 않는다.
+- Android 작업의 상태 공유와 후보 전달은 읽기 전용 handoff로 취급한다. WebUI 저장소 변경은 사용자가 명시적으로 요청한 WebUI 소유 자료를 게시할 때만 이 저장소 안에서 수행한다.
+- Android 작업도 WebUI Master 저장소·브랜치·정책·API 계약·보안·fail-closed 동작·배포를 수정하거나 대신 결정하지 않는다. 공통 변경 필요 사항은 어느 쪽에서도 상대 저장소를 직접 수정하지 않고 제안 또는 자료로만 전달한다.
+
 ## WebUI 역할과 책임 경계
 
 - 이 저장소의 역할은 `CTC_Latte_WebUI` Frontend다. Backend가 생성해 운영자가 GCS에 탑재한 ctwebui를 소비하여 학생·일반 사용자·교사 화면과 내보내기에 정확히 표출한다.

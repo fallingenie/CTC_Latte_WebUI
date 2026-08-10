@@ -13,6 +13,7 @@ import { verifyReproducibleBuild } from "../scripts/verify-reproducible-build.mj
 const newAssetPath = "assets/index-current.js";
 const nestedAssetPath = "assets/chunks/chart-current.js";
 const staleAssetPath = "assets/legacy/index-stale.js";
+const digitalAssetLinksPath = ".well-known/assetlinks.json";
 
 test("배포 산출물 동기화는 stale asset을 제거하고 새 asset을 복사한다", async (context) => {
   const fixture = await createFixture();
@@ -27,6 +28,7 @@ test("배포 산출물 동기화는 stale asset을 제거하고 새 asset을 복
   assert.ok(result.removed.includes(staleAssetPath));
   assert.ok(result.removedDirectories.includes("assets/legacy"));
   assert.ok(result.copied.includes(newAssetPath));
+  assert.ok(result.copied.includes(digitalAssetLinksPath));
   await assert.rejects(
     () => fs.access(resolveArtifact(fixture.deploymentRoot, staleAssetPath)),
     { code: "ENOENT" }
@@ -38,6 +40,10 @@ test("배포 산출물 동기화는 stale asset을 제거하고 새 asset을 복
   assert.equal(
     await fs.readFile(resolveArtifact(fixture.deploymentRoot, nestedAssetPath), "utf8"),
     fixture.contents.get(nestedAssetPath)
+  );
+  assert.equal(
+    await fs.readFile(resolveArtifact(fixture.deploymentRoot, digitalAssetLinksPath), "utf8"),
+    fixture.contents.get(digitalAssetLinksPath)
   );
 });
 
@@ -83,6 +89,7 @@ async function createFixture() {
   }
   contents.set(newAssetPath, "export const current = true;\n");
   contents.set(nestedAssetPath, "export const chart = true;\n");
+  contents.set(digitalAssetLinksPath, '{"relation":[]}\n');
 
   for (const [relativePath, content] of contents) {
     await writeArtifact(buildRoot, relativePath, content);
