@@ -2,6 +2,14 @@
 
 Project-specific guidance for AI coding agents.
 
+## Frontend 정본 작업 루트
+
+- Frontend의 유일한 정본 작업 루트는 `E:\CTC_Latte_Frontend`다. 이후 Frontend 코드·문서·테스트·배포 산출물 변경과 Git 작업은 이 경로에서만 수행한다.
+- 과거 작업 루트 `E:\Climate_Time_Capsule_Canonical\CTC_Latte_WebUI`는 이전 완료 검증이 끝날 때까지 복구용으로만 보존하며, 새 변경·커밋·푸시의 출발점으로 사용하지 않는다.
+- 정본에는 Git 추적 파일과 의도적으로 추가한 Frontend 소스·문서·테스트·필수 정적 자산만 포함한다. `.ctwebui`, Backend·Android 작업물, 자격 증명, 로컬 캐시, 로그, 스크린샷, 백업과 실행 증거를 포함하지 않는다.
+- 새 작업을 시작할 때 `origin`의 최신 Update Time과 SHA를 먼저 확인하고, 이 작업 루트의 브랜치·HEAD·dirty 상태와 대조한다. 확인되지 않은 이전 복사본을 최신 정본으로 승격하지 않는다.
+- 이전 작업 루트는 자동 삭제·정리·덮어쓰기하지 않는다. 제거가 필요하면 새 정본의 파일 대조와 전체 검증을 마친 뒤 별도 승인을 받는다.
+
 ## Android TWA 종속 작업 경계
 
 - 이 WebUI 작업은 `codex://threads/019fe64a-69fb-73c3-af71-436f64276de9` Android TWA 종속 작업에 대해 Frontend 공개 계약과 자료를 제공하는 Master 정본 역할만 수행한다.
