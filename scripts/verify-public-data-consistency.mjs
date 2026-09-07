@@ -10,6 +10,7 @@ import {
   validatePublicDatasetMetadata,
   validatePublicObservationAttribution
 } from "../source/runtime-policy.js";
+import { resolvePublicSeriesMetricDisplay } from "../source/climate-result-model.js";
 
 const ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const EVIDENCE_ROOT = path.join(ROOT, ".release-evidence");
@@ -218,7 +219,9 @@ export function compareQueryAndSeries({ metadata, query, request, series, series
     const queryMetric = query.values?.find((metric) => metric?.key === key);
     if (!queryMetric || queryMetric.available !== true || !Number.isFinite(queryMetric.numericValue)) continue;
     const seriesMetric = seriesMetrics.get(key);
-    const seriesValue = seriesMetric?.corrected?.p50?.[0];
+    const seriesValue = seriesMetric
+      ? resolvePublicSeriesMetricDisplay(seriesMetric, series.dataMode).primary.p50[0]
+      : undefined;
     if (seriesMetric?.coverage?.[0] !== true || !nearlyEqual(queryMetric.numericValue, seriesValue)) {
       throw new PublicDataConsistencyError(`${key}의 단일 날짜 값과 기간 대표값이 다릅니다.`);
     }

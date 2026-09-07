@@ -662,7 +662,24 @@ function createGatewayFetch(fixture, calls, { externalDatasetUpdatedAt = backend
         model: request.model,
         coverage: "available",
         dataMode: prepared ? "bias-corrected" : "raw-model-grid",
-        metrics: [{ key: "tasmax", availableCount: 1 }],
+        metrics: [{
+          key: "tasmax",
+          label: "최고기온",
+          unit: "도",
+          corrected: {
+            p10: [prepared ? 30.2 : null],
+            p50: [prepared ? 31.2 : null],
+            p90: [prepared ? 32.2 : null]
+          },
+          ...prepared ? {} : { raw: {
+            p10: [28.4],
+            p50: [29.4],
+            p90: [30.4]
+          } },
+          coverage: [true],
+          modelCounts: [1],
+          availableCount: 1
+        }],
         includeRaw: false,
         attributionReady: prepared,
         attributionLabels: prepared

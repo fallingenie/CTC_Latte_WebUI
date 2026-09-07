@@ -307,7 +307,8 @@ test("대화형 HTML은 결측값을 0으로 바꾸지 않고 null로 보존한�
 
   assert.ok(serialized);
   const payload = JSON.parse(serialized);
-  assert.equal(payload.metrics[0].corrected.p50[1], null);
+  assert.equal(payload.metrics[0].primary.p50[1], null);
+  assert.equal(payload.metrics[0].primaryKind, "corrected");
 });
 
 test("대화형 HTML은 계절 사이의 긴 공백을 선과 범위로 이어 그리지 않는다", () => {
@@ -334,7 +335,12 @@ test("대화형 HTML은 원자료 격자값에 관측 제공자를 추론하지 
   assert.doesNotMatch(html, /KMA|ASOS|Deutscher Wetterdienst/u);
   const serialized = html.match(/<script id="climate-data" type="application\/json">([^<]+)<\/script>/u)?.[1];
   assert.ok(serialized);
-  assert.deepEqual(JSON.parse(serialized).observationAttribution, rawObservationAttribution);
+  const payload = JSON.parse(serialized);
+  assert.deepEqual(payload.observationAttribution, rawObservationAttribution);
+  assert.equal(payload.metrics[0].primaryKind, "raw");
+  assert.deepEqual(payload.metrics[0].primary, rawSeriesResponse.metrics[0].raw);
+  assert.equal(payload.metrics[0].comparison, null);
+  assert.equal("corrected" in payload.metrics[0], false);
 });
 
 test("대화형 HTML은 Backend가 요구한 로컬 검증 결과 표장만 이름과 순서대로 포함한다", () => {

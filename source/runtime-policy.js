@@ -1,3 +1,8 @@
+import {
+  validatePublicQueryDisplayShape,
+  validatePublicSeriesDisplayShape
+} from "./climate-result-model.js";
+
 export const PUBLIC_CLIMATE_READ_PATH = "/api/climate/query";
 export const PUBLIC_DATA_SOURCE_POLICY = "cloud-only";
 export const PUBLIC_CLIMATE_METADATA_TIMEOUT_MS = 10 * 1e3;
@@ -335,11 +340,15 @@ export function validatePublicDatasetMetadata(value) {
 }
 
 export function validatePublicClimateQueryResponse(value) {
-  return validatePublicClimateResponse(value, PUBLIC_QUERY_RESPONSE_ALLOWED_FIELDS);
+  return validatePublicQueryDisplayShape(
+    validatePublicClimateResponse(value, PUBLIC_QUERY_RESPONSE_ALLOWED_FIELDS)
+  );
 }
 
 export function validatePublicClimateSeriesResponse(value) {
-  const response = validatePublicClimateResponse(value, PUBLIC_SERIES_RESPONSE_ALLOWED_FIELDS);
+  const response = validatePublicSeriesDisplayShape(
+    validatePublicClimateResponse(value, PUBLIC_SERIES_RESPONSE_ALLOWED_FIELDS)
+  );
   if (!Array.isArray(response.attributionLabels)
     || response.attributionLabels.length === 0
     || new Set(response.attributionLabels).size !== response.attributionLabels.length

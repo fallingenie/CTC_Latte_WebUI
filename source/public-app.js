@@ -21,6 +21,10 @@ import {
 import { buildCsvWorkspaceShareFiles } from "./export-share.js";
 import { currentLocationFailureMessage, requestCurrentBrowserCoordinate } from "./browser-geolocation.js";
 import {
+  resolvePublicQueryMetricDisplay,
+  resolvePublicSeriesMetricDisplay
+} from "./climate-result-model.js";
+import {
   PUBLIC_CLIMATE_METADATA_TIMEOUT_MS,
   PUBLIC_DATASET_REACTIVATION_MIN_INTERVAL_MS,
   PUBLIC_DATASET_REFRESH_INTERVAL_MS,
@@ -367,8 +371,9 @@ function drawMetricChart(context, response, metric, left, top, width, height) {
   const plotWidth = width - 96;
   const plotHeight = height - 82;
   const indexes = sampledIndexes(response.dates.length, 420);
-  const valueSets = [metric.corrected.p10, metric.corrected.p50, metric.corrected.p90];
-  if (metric.raw && response.dataMode !== "raw-model-grid") valueSets.push(metric.raw.p10, metric.raw.p50, metric.raw.p90);
+  const display = resolvePublicSeriesMetricDisplay(metric, response.dataMode);
+  const valueSets = [display.primary.p10, display.primary.p50, display.primary.p90];
+  if (display.comparison) valueSets.push(display.comparison.p10, display.comparison.p50, display.comparison.p90);
   const values = valueSets.flatMap((items) => indexes.map((index) => items[index])).filter(isFiniteNumber$1);
   const [minimum, maximum] = paddedRange(values);
   const point = (indexPosition, value) => ({
@@ -390,9 +395,9 @@ function drawMetricChart(context, response, metric, left, top, width, height) {
   context.fillText(minimum.toFixed(1), left, plotTop + plotHeight);
   context.fillText(response.dates[0] ?? "", plotLeft, plotTop + plotHeight + 25);
   context.fillText(response.dates.at(-1) ?? "", plotLeft + plotWidth - 104, plotTop + plotHeight + 25);
-  drawCanvasBand(context, response.dates, indexes, metric.corrected.p10, metric.corrected.p90, point, "rgba(37,132,95,0.16)");
-  drawCanvasLine(context, response.dates, indexes, metric.corrected.p50, point, "#25845f", 4);
-  if (metric.raw && response.dataMode !== "raw-model-grid") drawCanvasLine(context, response.dates, indexes, metric.raw.p50, point, "#d99b25", 3);
+  drawCanvasBand(context, response.dates, indexes, display.primary.p10, display.primary.p90, point, "rgba(37,132,95,0.16)");
+  drawCanvasLine(context, response.dates, indexes, display.primary.p50, point, "#25845f", 4);
+  if (display.comparison) drawCanvasLine(context, response.dates, indexes, display.comparison.p50, point, "#d99b25", 3);
 }
 function drawCanvasBand(context, dates, indexes, lower, upper, point, fill) {
   const segments = [];
@@ -1333,6 +1338,15 @@ function InteractiveSeriesChart({
   dates,
   metric
 }) {
+  const metricDisplay = useMemo(
+    () => resolvePublicSeriesMetricDisplay(metric, dataMode),
+    [dataMode, metric]
+  );
+  const displayMetric = useMemo(() => ({
+    ...metric,
+    corrected: metricDisplay.primary,
+    raw: metricDisplay.comparison
+  }), [metric, metricDisplay]);
   const [hoveredIndex, setHoveredIndex] = useState();
   const [referenceIndex, setReferenceIndex] = useState();
   const [viewWindow, setViewWindow] = useState({ start: 0, end: dates.length });
@@ -1349,19 +1363,19 @@ function InteractiveSeriesChart({
   }, [viewWindow.start, viewWindow.end]);
   const visibleDates = dates.slice(viewWindow.start, viewWindow.end);
   const visibleMetric = useMemo(
-    () => sliceSeriesMetric(metric, viewWindow.start, viewWindow.end),
-    [metric, viewWindow.start, viewWindow.end]
+    () => sliceSeriesMetric(displayMetric, viewWindow.start, viewWindow.end),
+    [displayMetric, viewWindow.start, viewWindow.end]
   );
   const chart = useMemo(() => buildChartGeometry(visibleDates, visibleMetric), [visibleDates, visibleMetric]);
   const rawGrid = dataMode === "raw-model-grid";
   const hovered = hoveredIndex === void 0 ? void 0 : {
     date: dates[hoveredIndex],
-    corrected: metric.corrected.p50[hoveredIndex],
-    raw: metric.raw?.p50[hoveredIndex]
+    corrected: metricDisplay.primary.p50[hoveredIndex],
+    raw: metricDisplay.comparison?.p50[hoveredIndex]
   };
   const reference = referenceIndex === void 0 ? void 0 : {
     date: dates[referenceIndex],
-    corrected: metric.corrected.p50[referenceIndex]
+    corrected: metricDisplay.primary.p50[referenceIndex]
   };
   const comparison = hovered && reference ? chartComparison(hovered.corrected, reference.corrected) : void 0;
   const elapsedDays = hovered && reference ? Math.round((Date.parse(hovered.date) - Date.parse(reference.date)) / 864e5) : void 0;
@@ -1426,8 +1440,8 @@ function InteractiveSeriesChart({
         /* @__PURE__ */ jsx("span", { children: metric.key === "apparentTemperature" ? "월별 기준: 5~9월 열지수, 10~4월 체감기온" : rawGrid ? "굵은 선은 기후 모델 원자료의 대표값이고, 옅은 영역은 여러 모델의 값이 주로 모인 범위입니다." : "굵은 선은 보정을 반영한 대표값이고, 옅은 영역은 여러 모델의 값이 주로 모인 범위입니다." })
       ] }),
       /* @__PURE__ */ jsxs("div", { className: "chart-legend", children: [
-        /* @__PURE__ */ jsx("span", { className: "corrected", children: rawGrid ? "기후 모델 원자료" : "보정 후" }),
-        !rawGrid && metric.raw ? /* @__PURE__ */ jsx("span", { className: "raw", children: "보정 전" }) : null
+        /* @__PURE__ */ jsx("span", { className: "corrected", children: metricDisplay.primaryLabel }),
+        metricDisplay.comparison ? /* @__PURE__ */ jsx("span", { className: "raw", children: metricDisplay.comparisonLabel }) : null
       ] })
     ] }),
     /* @__PURE__ */ jsxs("div", { className: "chart-tool-row", children: [
@@ -1518,14 +1532,14 @@ function InteractiveSeriesChart({
       hovered ? /* @__PURE__ */ jsxs("div", { className: `chart-floating-tooltip ${tooltipEdge}`, role: "status", style: { left: `${6.5 + hoveredRatio * 91}%` }, children: [
         /* @__PURE__ */ jsx("strong", { children: hovered.date }),
         /* @__PURE__ */ jsxs("span", { children: [rawGrid ? "기후 모델 원자료 " : "현재 값 ", displayChartValue(hovered.corrected, metric.unit)] }),
-        !rawGrid && metric.raw ? /* @__PURE__ */ jsxs("small", { children: ["보정 전 ", displayChartValue(hovered.raw, metric.unit)] }) : null,
+        metricDisplay.comparison ? /* @__PURE__ */ jsxs("small", { children: [metricDisplay.comparisonLabel, " ", displayChartValue(hovered.raw, metric.unit)] }) : null,
         reference ? /* @__PURE__ */ jsxs("span", { className: comparison?.delta > 0 ? "positive" : comparison?.delta < 0 ? "negative" : "", children: ["첫 번째 날짜와의 차이 ", formatSignedChartValue(comparison?.delta, metric.unit), " · ", formatSignedPercent(comparison?.percent), " · ", formatSignedDays(elapsedDays)] }) : /* @__PURE__ */ jsx("small", { children: "날짜를 누르면 첫 번째 비교 날짜로 저장됩니다." })
       ] }) : null
     ] }),
     hovered ? /* @__PURE__ */ jsxs("div", { className: "chart-hover-readout", id: "chart-interaction-readout", "aria-live": "polite", children: [
       /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "가리킨 날짜" }), /* @__PURE__ */ jsx("strong", { children: hovered.date })] }),
       /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: rawGrid ? "기후 모델 원자료" : "현재 값" }), /* @__PURE__ */ jsx("strong", { children: displayChartValue(hovered.corrected, metric.unit) })] }),
-      !rawGrid && metric.raw ? /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "보정 전" }), /* @__PURE__ */ jsx("strong", { children: displayChartValue(hovered.raw, metric.unit) })] }) : null,
+      metricDisplay.comparison ? /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: metricDisplay.comparisonLabel }), /* @__PURE__ */ jsx("strong", { children: displayChartValue(hovered.raw, metric.unit) })] }) : null,
       reference ? /* @__PURE__ */ jsxs(Fragment, { children: [
         /* @__PURE__ */ jsxs("div", { children: [/* @__PURE__ */ jsx("span", { children: "첫 번째 날짜" }), /* @__PURE__ */ jsxs("strong", { children: [reference.date, " · ", displayChartValue(reference.corrected, metric.unit)] })] }),
         /* @__PURE__ */ jsxs("div", { className: `chart-comparison-detail ${comparison?.delta > 0 ? "positive" : comparison?.delta < 0 ? "negative" : ""}`, children: [
@@ -4390,20 +4404,21 @@ function deriveRemoteMetrics({
 }) {
   if (!remoteResponse || !remoteResponse.publicSafe) return [];
   const metrics = remoteResponse.values.map((metric) => {
-    const available = metric.available !== false && Number.isFinite(metric.numericValue);
-    const rawValue = Number.isFinite(metric.rawNumericValue)
-      ? formatPublicMetricValue({ ...metric, numericValue: metric.rawNumericValue })
-      : metric.rawValue;
+    const display = resolvePublicQueryMetricDisplay(metric, remoteResponse.dataMode);
+    const available = display.available && Number.isFinite(display.primaryNumericValue);
+    const rawValue = Number.isFinite(display.comparisonNumericValue)
+      ? formatPublicMetricValue({ ...metric, numericValue: display.comparisonNumericValue })
+      : display.comparisonValue;
     return {
       key: metric.key,
       label: metric.label,
-      value: available ? formatPublicMetricValue(metric) : metric.value,
-      numericValue: metric.numericValue,
+      value: available ? formatPublicMetricValue({ ...metric, numericValue: display.primaryNumericValue }) : display.primaryValue,
+      numericValue: display.primaryNumericValue,
       unit: metricDisplayUnit(metric),
       caption: toAudienceClimateCopy(metric.caption),
       tone: metric.tone,
       available,
-      ...raw && metric.rawValue !== void 0 ? { rawValue, rawNumericValue: metric.rawNumericValue } : {}
+      ...raw && display.comparisonValue !== void 0 ? { rawValue, rawNumericValue: display.comparisonNumericValue } : {}
     };
   });
   const basis = apparentTemperatureBasis(date);

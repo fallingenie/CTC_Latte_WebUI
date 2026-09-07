@@ -2,6 +2,7 @@ import {
   PUBLIC_CLIMATE_ATTRIBUTION_LABELS,
   validatePublicObservationAttribution
 } from "./runtime-policy.js";
+import { resolvePublicSeriesMetricDisplay } from "./climate-result-model.js";
 import { CUSTOM_TEACHER_METRIC_KEYS } from "./teacher-lesson-builder.js";
 
 const lessonStateVersion = 3;
@@ -532,15 +533,16 @@ export function mapScaleForZoom(latitude, zoom, maximumWidth = 48) {
 }
 
 export function resolveExportPercentiles(metric, dataMode) {
+  const display = resolvePublicSeriesMetricDisplay(metric, dataMode);
   if (dataMode === "raw-model-grid") {
     return {
       corrected: undefined,
-      raw: metric.raw ?? metric.corrected
+      raw: display.primary
     };
   }
   return {
-    corrected: metric.corrected,
-    raw: metric.raw
+    corrected: display.primary,
+    raw: display.comparison
   };
 }
 
@@ -712,13 +714,17 @@ export function buildInteractiveClimateHtml(response, attribution) {
     observationAttribution,
     exploration,
     dates: Array.isArray(response.dates) ? response.dates.map(validDate) : [],
-    metrics: Array.isArray(response.metrics) ? response.metrics.map((metric) => ({
-      key: safeText(metric.key ?? "metric", 80),
-      label: safeText(metric.label ?? "기후지표", 120),
-      unit: metricDisplayUnit(metric),
-      corrected: serializeSeriesGroup(metric.corrected),
-      raw: metric.raw ? serializeSeriesGroup(metric.raw) : null
-    })) : []
+    metrics: Array.isArray(response.metrics) ? response.metrics.map((metric) => {
+      const display = resolvePublicSeriesMetricDisplay(metric, dataMode);
+      return {
+        key: safeText(metric.key ?? "metric", 80),
+        label: safeText(metric.label ?? "기후지표", 120),
+        unit: metricDisplayUnit(metric),
+        primaryKind: display.primaryKind,
+        primary: serializeSeriesGroup(display.primary),
+        comparison: display.comparison ? serializeSeriesGroup(display.comparison) : null
+      };
+    }) : []
   };
   const serialized = JSON.stringify(payload).replace(/</gu, "\\u003c").replace(/>/gu, "\\u003e").replace(/&/gu, "\\u0026");
   const contextLine = [payload.context.coordinates, payload.context.scenario, payload.context.model].map(escapeHtml).join(" · ");
@@ -768,7 +774,7 @@ ${attributionBlock}
   const finite=(value)=>typeof value==="number"&&Number.isFinite(value);
   const clamp=(value,minimum,maximum)=>Math.min(maximum,Math.max(minimum,value));
   const metric=()=>DATA.metrics[state.metric];
-  const valueAt=(index)=>metric().corrected.p50[index];
+  const valueAt=(index)=>metric().primary.p50[index];
   const xAt=(index)=>plot.left+(state.end-state.start<=1?.5:(index-state.start)/(state.end-state.start-1))*(plot.right-plot.left);
   const fmt=(value)=>finite(value)?value.toLocaleString("ko-KR",{maximumFractionDigits:2})+metric().unit:"자료 없음";
   const continuous=(previousIndex,nextIndex)=>{
@@ -830,10 +836,10 @@ ${attributionBlock}
     return segments;
   }
   function bandPath(metricValue,yAt){
-    const indexes=sample().filter((index)=>finite(metricValue.corrected.p10[index])&&finite(metricValue.corrected.p90[index]));
+    const indexes=sample().filter((index)=>finite(metricValue.primary.p10[index])&&finite(metricValue.primary.p90[index]));
     return segmentedIndexes(indexes).filter((segment)=>segment.length>1).map((segment)=>{
-      const lower=segment.map((index)=>xAt(index).toFixed(2)+","+yAt(metricValue.corrected.p10[index]).toFixed(2));
-      const upper=[...segment].reverse().map((index)=>xAt(index).toFixed(2)+","+yAt(metricValue.corrected.p90[index]).toFixed(2));
+      const lower=segment.map((index)=>xAt(index).toFixed(2)+","+yAt(metricValue.primary.p10[index]).toFixed(2));
+      const upper=[...segment].reverse().map((index)=>xAt(index).toFixed(2)+","+yAt(metricValue.primary.p90[index]).toFixed(2));
       return "M"+lower.join(" L")+" L"+upper.join(" L")+" Z";
     }).join(" ");
   }
@@ -841,7 +847,7 @@ ${attributionBlock}
     const currentMetric=metric();
     document.getElementById("metric-title").textContent=currentMetric.label+" ("+currentMetric.unit+")";
     document.querySelectorAll("#metric-tabs button").forEach((button,index)=>button.setAttribute("aria-selected",String(index===state.metric)));
-    const groups=[currentMetric.corrected.p10,currentMetric.corrected.p50,currentMetric.corrected.p90,currentMetric.raw?.p50].filter(Boolean);
+    const groups=[currentMetric.primary.p10,currentMetric.primary.p50,currentMetric.primary.p90,currentMetric.comparison?.p50].filter(Boolean);
     const values=groups.flatMap((group)=>group.slice(state.start,state.end)).filter(finite);
     let minimum=values.length?Math.min(...values):-1;
     let maximum=values.length?Math.max(...values):1;
@@ -850,8 +856,8 @@ ${attributionBlock}
     minimum-=padding;
     maximum+=padding;
     const yAt=(value)=>plot.bottom-(value-minimum)/(maximum-minimum)*(plot.bottom-plot.top);
-    document.getElementById("line").setAttribute("d",pathFor(currentMetric.corrected.p50,yAt));
-    document.getElementById("raw-line").setAttribute("d",currentMetric.raw?pathFor(currentMetric.raw.p50,yAt):"");
+    document.getElementById("line").setAttribute("d",pathFor(currentMetric.primary.p50,yAt));
+    document.getElementById("raw-line").setAttribute("d",currentMetric.comparison?pathFor(currentMetric.comparison.p50,yAt):"");
     document.getElementById("band").setAttribute("d",bandPath(currentMetric,yAt));
     document.getElementById("grid").innerHTML=[0,1,2,3,4].map((tick)=>{
       const y=plot.top+tick*(plot.bottom-plot.top)/4;
