@@ -676,7 +676,7 @@ test("기후모델 원자료는 CSV의 raw 열에 기록한다", () => {
     corrected: undefined,
     raw: metric.corrected
   });
-  assert.deepEqual(resolveExportPercentiles(metric, "corrected"), {
+  assert.deepEqual(resolveExportPercentiles(metric, "bias-corrected"), {
     corrected: metric.corrected,
     raw: undefined
   });

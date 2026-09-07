@@ -297,11 +297,17 @@ function buildSeries(request, dataMode, includeRaw) {
       key,
       label: key,
       unit: key === "wind" ? "미터/초" : "도",
-      corrected: { p10: [values[key][0]], p50: [values[key][0]], p90: [values[key][0]] },
+      corrected: dataMode === "bias-corrected"
+        ? { p10: [values[key][0]], p50: [values[key][0]], p90: [values[key][0]] }
+        : { p10: [null], p50: [null], p90: [null] },
       coverage: [true],
       modelCounts: [1],
       availableCount: 1,
-      ...(includeRaw ? { raw: { p10: [values[key][1]], p50: [values[key][1]], p90: [values[key][1]] } } : {})
+      ...(dataMode === "raw-model-grid"
+        ? { raw: { p10: [values[key][0]], p50: [values[key][0]], p90: [values[key][0]] } }
+        : includeRaw
+          ? { raw: { p10: [values[key][1]], p50: [values[key][1]], p90: [values[key][1]] } }
+          : {})
     })),
     includeRaw,
     attributionReady: usesObservationData,
